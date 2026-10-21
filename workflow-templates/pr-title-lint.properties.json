@@ -1,0 +1,5 @@
+{
+  "name": "Vyforge — Kiểm tra tiêu đề PR",
+  "description": "Bắt buộc tiêu đề PR theo Conventional Commits.",
+  "categories": ["Automation"]
+}

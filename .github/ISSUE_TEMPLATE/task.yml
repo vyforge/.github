@@ -1,0 +1,17 @@
+name: 📋 Công việc
+description: Task kỹ thuật, refactor, cấu hình, tài liệu
+title: "[Task] "
+labels: ["task"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Nội dung công việc
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Định nghĩa hoàn thành
+      placeholder: |
+        - [ ] ...
