@@ -1,0 +1,31 @@
+name: CD
+
+on:
+  push:
+    branches: [ $default-branch ]
+    tags: [ 'v*' ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    uses: vyforge/.github/.github/workflows/container.yml@v1
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+  # Bỏ comment khi dự án có repo <du-an>-infra (Argo CD)
+  # bump:
+  #   needs: image
+  #   if: github.ref_name == github.event.repository.default_branch
+  #   uses: vyforge/.github/.github/workflows/gitops-bump.yml@v1
+  #   with:
+  #     infra-repo: vyforge/<du-an>-infra
+  #     values-file: apps/<ten-app>/values-dev.yaml
+  #     digest: ${{ needs.image.outputs.digest }}
+  #   secrets:
+  #     infra-token: ${{ secrets.INFRA_REPO_TOKEN }}

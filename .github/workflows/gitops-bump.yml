@@ -1,0 +1,77 @@
+# Reusable cập nhật digest image trong repo <du-an>-infra (Argo CD đọc repo này).
+# Chỉ bump môi trường dev; staging/prod đi bằng PR với cùng digest (không build lại).
+# Gọi sau container.yml:
+#   jobs:
+#     bump:
+#       needs: image
+#       uses: vyforge/.github/.github/workflows/gitops-bump.yml@v1
+#       with:
+#         infra-repo: vyforge/crm-infra
+#         values-file: apps/crm-backend/values-dev.yaml
+#         digest: ${{ needs.image.outputs.digest }}
+#       secrets:
+#         infra-token: ${{ secrets.INFRA_REPO_TOKEN }}
+name: GitOps bump
+
+on:
+  workflow_call:
+    inputs:
+      infra-repo:
+        description: Repo infra dạng owner/name
+        type: string
+        required: true
+      values-file:
+        description: File values cần cập nhật, tính từ gốc repo infra
+        type: string
+        required: true
+      digest:
+        description: Digest image (sha256:...)
+        type: string
+        required: true
+      key:
+        description: Đường dẫn yq tới trường digest
+        type: string
+        default: '.image.digest'
+    secrets:
+      infra-token:
+        description: Token (fine-grained PAT hoặc GitHub App) có quyền contents:write trên repo infra
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    name: bump
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validate digest
+        env:
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Digest không hợp lệ: $DIGEST"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.infra-repo }}
+          token: ${{ secrets.infra-token }}
+      - name: Update values
+        env:
+          DIGEST: ${{ inputs.digest }}
+          FILE: ${{ inputs.values-file }}
+          KEY: ${{ inputs.key }}
+        run: |
+          yq -i "${KEY} = strenv(DIGEST)" "$FILE"
+          git diff --stat
+      - name: Commit & push
+        env:
+          FILE: ${{ inputs.values-file }}
+          DIGEST: ${{ inputs.digest }}
+          SOURCE: ${{ github.repository }}@${{ github.sha }}
+        run: |
+          git diff --quiet && { echo "Không có thay đổi"; exit 0; }
+          git config user.name "vyforge-bot"
+          git config user.email "vyforge-bot@users.noreply.github.com"
+          git commit -am "chore(deploy): bump ${FILE} to ${DIGEST:7:12}" -m "Source: ${SOURCE}"
+          for i in 1 2 3; do git pull --rebase && git push && exit 0; sleep $((i * 5)); done
+          exit 1

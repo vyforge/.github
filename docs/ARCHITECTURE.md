@@ -91,7 +91,7 @@ src/
 ## Delivery
 
 - Mỗi dự án tách repo `<du-an>-backend`, `<du-an>-frontend` (và `<du-an>-infra` khi deploy Kubernetes).
-- CI gọi reusable workflow của org: `java-ci.yml@v1`, `node-ci.yml@v1`. Mọi action bên thứ ba ghim theo commit SHA.
+- CI gọi reusable workflow của org: `java-ci.yml@v1`, `node-ci.yml@v1`; CD dùng `container.yml@v1` (build → Trivy → push GHCR kèm SBOM + provenance) và `gitops-bump.yml@v1` (bump digest môi trường dev trong repo infra). Thư viện `platform-*` phát hành bằng `maven-publish`, `npm-publish`, `helm-publish`. Mọi action bên thứ ba ghim theo commit SHA.
 - Image multi-stage, chạy non-root; cấu hình qua biến môi trường runtime để một image dùng cho mọi môi trường.
 - Dependency cập nhật bằng Renovate theo preset `github>vyforge/.github:renovate-config`.
 
