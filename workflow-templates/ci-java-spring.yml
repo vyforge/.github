@@ -10,5 +10,8 @@ permissions:
 
 jobs:
   ci:
+    permissions:
+      contents: read
+      packages: read
     uses: vyforge/.github/.github/workflows/java-ci.yml@v1
     secrets: inherit

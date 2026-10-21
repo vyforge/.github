@@ -2,6 +2,7 @@
 #   jobs:
 #     ci:
 #       uses: vyforge/.github/.github/workflows/java-ci.yml@v1
+#       permissions: { contents: read, packages: read }   # packages: đọc platform-* từ GitHub Packages
 name: Java CI
 
 on:
@@ -29,8 +30,12 @@ jobs:
           distribution: temurin
           java-version: ${{ inputs.java-version }}
           cache: maven
+          # settings.xml có server "github" (GITHUB_ACTOR / GITHUB_TOKEN) để tải com.vyforge.platform:*
+          server-id: github
       # Spotless, test (Testcontainers), ArchUnit, Modulith verify, JaCoCo, CycloneDX SBOM
       - name: Verify
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./mvnw -B -ntp verify ${{ inputs.maven-args }}
       - name: Upload reports
         if: always()

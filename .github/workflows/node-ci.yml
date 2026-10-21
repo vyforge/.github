@@ -2,6 +2,10 @@
 #   jobs:
 #     ci:
 #       uses: vyforge/.github/.github/workflows/node-ci.yml@v1
+#       permissions: { contents: read, packages: read }   # packages: đọc @vyforge/* từ GitHub Packages
+# Dự án dùng @vyforge/* commit .npmrc:
+#   @vyforge:registry=https://npm.pkg.github.com
+#   //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
 name: Node CI
 
 on:
@@ -32,6 +36,8 @@ jobs:
           node-version: ${{ inputs.node-version }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck

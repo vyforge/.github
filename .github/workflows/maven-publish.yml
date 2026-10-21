@@ -4,8 +4,8 @@
 #     publish:
 #       uses: vyforge/.github/.github/workflows/maven-publish.yml@v1
 #       permissions: { contents: read, packages: write }
-# Version lấy từ tag (v1.2.3 → 1.2.3) qua `-Drevision` (POM dùng `${revision}` + flatten-maven-plugin);
-# pom.xml phải có <distributionManagement> trỏ tới GitHub Packages.
+# Version lấy từ tag (v1.2.3 → 1.2.3) qua `-Drevision` (POM dùng `${revision}` + flatten-maven-plugin).
+# Deploy tới GitHub Packages của chính repo, POM không cần <distributionManagement>.
 name: Maven publish
 
 on:
@@ -40,4 +40,5 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "Tag không phải semver: $GITHUB_REF_NAME"; exit 1; }
-          ./mvnw -B -ntp deploy -Drevision="$version"
+          ./mvnw -B -ntp deploy -Drevision="$version" \
+            -DaltDeploymentRepository="github::https://maven.pkg.github.com/${GITHUB_REPOSITORY}"

@@ -4,7 +4,7 @@
 #     publish:
 #       uses: vyforge/.github/.github/workflows/helm-publish.yml@v1
 #       permissions: { contents: read, packages: write }
-# Với pull_request chỉ lint + template, không push.
+# Với pull_request chỉ lint + template, không push. Chart có thư mục ci/ thì lint với từng file ci/*.yaml.
 name: Helm publish
 
 on:
@@ -38,8 +38,18 @@ jobs:
           DIR: ${{ inputs.charts-dir }}
         run: |
           for chart in "$DIR"/*/; do
-            helm lint --strict "$chart"
-            helm template ci "$chart" > /dev/null
+            shopt -s nullglob
+            values=("$chart"ci/*.yaml)
+            if [ ${#values[@]} -eq 0 ]; then
+              helm lint --strict "$chart"
+              helm template ci "$chart" > /dev/null
+            fi
+            for file in "${values[@]}"; do
+              echo "::group::$chart with $file"
+              helm lint --strict "$chart" -f "$file"
+              helm template ci "$chart" -f "$file" > /dev/null
+              echo "::endgroup::"
+            done
           done
       - name: Package & push
         if: startsWith(github.ref, 'refs/tags/v')
