@@ -1,0 +1,119 @@
+# Reusable build image cho mọi dự án (B16): build → quét Trivy → push GHCR kèm SBOM + provenance.
+# Gọi từ repo dự án:
+#   jobs:
+#     image:
+#       uses: vyforge/.github/.github/workflows/container.yml@v1
+#       permissions:
+#         contents: read
+#         packages: write
+#         id-token: write
+#         attestations: write
+# PR chỉ build + quét, không push. Output `digest` dùng cho gitops-bump.yml.
+name: Container
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: Tên image trong ghcr.io/<owner>/ (mặc định = tên repo)
+        type: string
+        default: ''
+      context:
+        type: string
+        default: '.'
+      file:
+        type: string
+        default: 'Dockerfile'
+      push:
+        description: Push lên GHCR (mặc định chỉ push khi không phải pull_request)
+        type: boolean
+        default: true
+      trivy-severity:
+        type: string
+        default: 'CRITICAL,HIGH'
+    outputs:
+      image:
+        value: ${{ jobs.build.outputs.image }}
+      digest:
+        value: ${{ jobs.build.outputs.digest }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
+    env:
+      PUSH: ${{ inputs.push && github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Image name
+        id: name
+        env:
+          NAME: ${{ inputs.image-name }}
+        run: |
+          name="${NAME:-${GITHUB_REPOSITORY#*/}}"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${name}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: meta
+        with:
+          images: ${{ steps.name.outputs.image }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+      # Build local trước để quét; image có lỗ hổng không được push.
+      - name: Build (local)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
+          load: true
+          tags: local/scan:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: local/scan:${{ github.sha }}
+          severity: ${{ inputs.trivy-severity }}
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Login GHCR
+        if: env.PUSH == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push
+        id: push
+        if: env.PUSH == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+      - name: Attest provenance
+        if: env.PUSH == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.name.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

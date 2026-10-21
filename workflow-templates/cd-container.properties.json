@@ -1,0 +1,10 @@
+{
+  "name": "Vyforge CD — Container image",
+  "description": "Build image, quét Trivy, push GHCR kèm SBOM + provenance; tuỳ chọn bump digest sang repo infra.",
+  "categories": [
+    "Dockerfile"
+  ],
+  "filePatterns": [
+    "Dockerfile$"
+  ]
+}

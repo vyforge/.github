@@ -1,0 +1,42 @@
+# Reusable phát hành package @vyforge/* (pnpm workspace) lên GitHub Packages. Gọi khi push tag v*:
+#   on: { push: { tags: ['v*'] } }
+#   jobs:
+#     publish:
+#       uses: vyforge/.github/.github/workflows/npm-publish.yml@v1
+#       permissions: { contents: read, packages: write, id-token: write }
+# Chỉ publish package có version chưa tồn tại trên registry; package `private: true` bị bỏ qua.
+name: npm publish
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: '24'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@vyforge'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm -r publish --no-git-checks --access restricted
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
