@@ -73,7 +73,21 @@ Tạo **Organization ruleset** (Settings → Repository → Rulesets) áp dụng
 - [x] Block force pushes
 - [x] Restrict deletions
 
-## 5. Khởi tạo dự án mới — checklist
+## 5. Chuẩn công nghệ (cập nhật 10/2026)
+
+Dự án mới bắt buộc dùng phiên bản dưới đây; dự án cũ lên kế hoạch nâng cấp.
+
+| Thành phần | Phiên bản | Ghi chú |
+|---|---|---|
+| Java | **25 (LTS)** | Không dùng Java 21 cho dự án mới |
+| Spring Boot | **4.1.x** (mới nhất) | 3.5 đã hết hỗ trợ OSS 30/06/2026; 4.0 hết hỗ trợ 31/12/2026 |
+| Node.js | **24 (LTS)** | Chuyển lên 26 sau khi 26 thành LTS (28/10/2026) |
+| Next.js | **16.4.x** (mới nhất) | Next.js 15 hết hỗ trợ 21/10/2026 |
+| React | **19.x** | Theo Next.js 16 |
+
+Rà soát bảng này mỗi quý và bật **Dependabot** cho mọi repo để nhận bản vá.
+
+## 6. Khởi tạo dự án mới — checklist
 
 1. [ ] Chọn mã dự án `<du-an>`.
 2. [ ] Tạo team `project-<du-an>`, `-leads`, `-devs` và thêm thành viên.
@@ -86,7 +100,7 @@ Tạo **Organization ruleset** (Settings → Repository → Rulesets) áp dụng
 9. [ ] Khai báo secrets / environments (`dev`, `staging`, `production`) — không commit vào code.
 10. [ ] Tạo GitHub Project (board) cho dự án nếu dùng GitHub để quản lý task.
 
-## 6. Kết thúc dự án
+## 7. Kết thúc dự án
 
 - Archive các repo của dự án, giữ topic `project-<du-an>`.
 - Thu hồi quyền của thành viên ngoài / khách hàng.

@@ -18,14 +18,14 @@ We work across the stack — backend services, frontend apps, developer tooling,
 
 ## What we build
 
-- **Backend services** — Spring Boot, hexagonal architecture, event-driven systems
-- **Frontend apps** — Next.js, React, TypeScript, modern UI systems
+- **Backend services** — Spring Boot 4, hexagonal architecture, event-driven systems
+- **Frontend apps** — Next.js 16, React 19, TypeScript, modern UI systems
 - **Developer tools** — CLIs, SDKs, libraries that make engineers faster
 - **Integrations** — APIs, data pipelines, and platform connectors
 
 ## Tech stack
 
-`Java 21` · `Spring Boot` · `Next.js` · `TypeScript` · `MongoDB` · `Kafka` · `Redis` · `Docker` · `Kubernetes`
+`Java 25` · `Spring Boot 4` · `Next.js 16` · `React 19` · `Node.js 24` · `TypeScript` · `MongoDB` · `Kafka` · `Redis` · `Docker` · `Kubernetes`
 
 ## Get in touch
 
