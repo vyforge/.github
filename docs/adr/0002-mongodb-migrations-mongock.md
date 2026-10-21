@@ -1,6 +1,6 @@
 # ADR-0002: Mongock cho migration MongoDB
 
-- **Trạng thái:** Chấp nhận — 21/10/2026
+- **Trạng thái:** *Superseded* bởi [ADR-0007](0007-postgresql-primary-database.md) cho dự án mới — chỉ còn áp dụng cho dự án đang chạy MongoDB
 
 ## Bối cảnh
 

@@ -12,7 +12,7 @@ Repo cấu hình chung cho toàn bộ tổ chức **Vyforge** trên GitHub. Các
 | Hỗ trợ | `SUPPORT.md` | Kênh hỏi đáp nội bộ |
 | Quy tắc ứng xử | `CODE_OF_CONDUCT.md` | Chuẩn mực làm việc |
 | Chuẩn kiến trúc | `docs/ARCHITECTURE.md` | Kiến trúc backend/frontend, tier, quy tắc bắt buộc/khuyến nghị |
-| Quyết định kiến trúc | `docs/adr/` | ADR cho các lựa chọn dùng chung (Maven, Mongock, Modulith, Renovate…) |
+| Quyết định kiến trúc | `docs/adr/` | ADR cho các lựa chọn dùng chung (Maven, Modulith, PostgreSQL, auth server, Renovate…) |
 | Reusable workflows | `.github/workflows/java-ci.yml`, `node-ci.yml` | CI dùng chung, gọi bằng `uses: vyforge/.github/.github/workflows/<file>@v1` |
 | Workflow templates | `workflow-templates/` | File CI mỏng gọi reusable workflow, chọn ở **Actions → New workflow** |
 | Renovate preset | `renovate-config.json` | `{"extends": ["github>vyforge/.github:renovate-config"]}` |

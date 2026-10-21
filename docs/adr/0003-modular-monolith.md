@@ -1,6 +1,6 @@
 # ADR-0003: Modular monolith với Spring Modulith; hexagonal chỉ cho module lõi
 
-- **Trạng thái:** Chấp nhận — 21/10/2026
+- **Trạng thái:** Chấp nhận — 21/10/2026. Phần MongoDB (outbox, replica set) được thay bởi [ADR-0007](0007-postgresql-primary-database.md)
 
 ## Bối cảnh
 

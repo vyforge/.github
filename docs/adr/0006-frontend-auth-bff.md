@@ -1,6 +1,6 @@
 # ADR-0006: Next.js làm BFF, Better Auth + Keycloak
 
-- **Trạng thái:** Chấp nhận — 21/10/2026
+- **Trạng thái:** Chấp nhận — 21/10/2026. Identity provider Keycloak được thay bởi `platform-auth-server` ([ADR-0008](0008-platform-auth-server.md)); Keycloak thành phương án dự phòng
 
 ## Bối cảnh
 

@@ -23,13 +23,13 @@ Package gốc `com.vyforge.<du-an>`. **Mỗi package con trực tiếp là một
 ```
 com.vyforge.crm
 ├── CrmApplication.java          @Modulithic(sharedModules = "shared")
-├── shared/                      shared kernel rất nhỏ: lỗi, bảo mật, migration
+├── shared/                      shared kernel rất nhỏ: lỗi, bảo mật, cấu hình
 ├── customer/                    ← gốc module = public API
 │   ├── package-info.java        @ApplicationModule @NullMarked
 │   ├── CustomerService.java     facade public
 │   ├── CustomerCreated.java     event public (có eventId)
 │   ├── web/                     internal: controller
-│   └── persistence/             internal: document, repository
+│   └── persistence/             internal: entity, repository
 └── notification/                lắng nghe CustomerCreated bằng @ApplicationModuleListener
 ```
 
@@ -39,7 +39,7 @@ com.vyforge.crm
 com.vyforge.acmeshop.order
 ├── package-info.java            @ApplicationModule(allowedDependencies = {"customer :: api", "shared"})
 ├── api/                         @NamedInterface("api"): OrderApi, OrderPlaced (@Externalized)
-├── domain/                      aggregate, value object — KHÔNG import Spring/Mongo
+├── domain/                      aggregate, value object — KHÔNG import Spring/JPA
 ├── application/
 │   ├── port/in/                 @PrimaryPort — use case
 │   ├── port/out/                @SecondaryPort — OrderStore, PaymentGateway
@@ -47,7 +47,7 @@ com.vyforge.acmeshop.order
 └── adapter/
     ├── web/                     @PrimaryAdapter — REST
     ├── messaging/               Kafka listener / publisher
-    ├── persistence/             @SecondaryAdapter — MongoDB
+    ├── persistence/             @SecondaryAdapter — PostgreSQL (JPA)
     └── cache/                   @SecondaryAdapter — Redis
 ```
 
@@ -56,7 +56,7 @@ com.vyforge.acmeshop.order
 | Tier | Dự án | Bên trong module | Giữa các module |
 |---|---|---|---|
 | 0 — PoC / CRUD nhỏ | 1–2 dev, < 3 tháng | Phẳng | Gọi facade |
-| 1 — Dự án khách hàng chuẩn | 2–6 dev | Profile A | Event qua Modulith (lưu trong MongoDB) |
+| 1 — Dự án khách hàng chuẩn | 2–6 dev | Profile A | Event qua Modulith (lưu trong PostgreSQL) |
 | 2 — Product / domain phức tạp | 5+ dev, nhiều năm | Profile B cho module lõi, A cho phần còn lại | Event + `@Externalized` ra Kafka |
 | 3 — Tách service | Module cần scale/release/team riêng | Giữ nguyên module | Kafka + `@HttpExchange` làm contract |
 
@@ -64,9 +64,10 @@ Ngưỡng số dev là ước lượng; điều chỉnh theo thực tế. Khung 
 
 ### Event và dữ liệu
 
-- Event giữa module được Spring Modulith ghi trong cùng transaction MongoDB (outbox) → **MongoDB phải chạy replica set ở mọi môi trường**.
-- Event ra Kafka: key = ID aggregate, có `eventId`, consumer idempotent (unique index `processed_messages` hoặc Redis `SETNX`).
-- Index/schema MongoDB chỉ thay đổi qua Mongock `@ChangeUnit` trong `shared/migration` (ADR-0002).
+- **PostgreSQL** là database chính (ADR-0007). Mỗi module sở hữu bảng của mình (tiền tố `<module>_`); không foreign key, không JOIN chéo module.
+- Event giữa module được Spring Modulith ghi vào bảng `event_publication` trong cùng transaction nghiệp vụ (outbox).
+- Event ra Kafka: key = ID aggregate, có `eventId`, consumer idempotent (bảng `processed_messages` hoặc Redis `SETNX`).
+- Schema chỉ thay đổi qua migration Flyway `db/migration/V<NNN>__*.sql`; `ddl-auto=validate`.
 
 ## Frontend — Next.js App Router, feature-based, Next.js làm BFF
 
@@ -83,7 +84,7 @@ src/
 
 - Hướng phụ thuộc `app → features → shared`; import feature qua `@/features/<ten>` (ESLint chặn import sâu).
 - **Đọc** dữ liệu trong Server Component qua client server-only; **ghi** bằng Server Action (validate Zod, kiểm tra quyền, map Problem Details về lỗi form).
-- **Auth**: Better Auth + Keycloak, không database — session và token nằm trong cookie HttpOnly mã hoá; trình duyệt không bao giờ thấy access token (ADR-0006).
+- **Auth**: Better Auth + `platform-auth-server` (OIDC), không database — session và token nằm trong cookie HttpOnly mã hoá; trình duyệt không bao giờ thấy access token (ADR-0006, ADR-0008).
 - TanStack Query chỉ khi cần dữ liệu tương tác (polling, infinite list); Zustand chỉ khi thật cần state toàn cục.
 - Dự án có ≥ 2 frontend hoặc product lớn: cân nhắc Turborepo + pnpm workspace và biến thể Feature-Sliced Design.
 
@@ -105,10 +106,10 @@ src/
 | B3 | Backend | Test `ApplicationModules.verify()` + `Documenter` chạy trong CI; không dùng `Type.OPEN` trừ khi di chuyển code legacy, và phải có ADR |
 | B4 | Backend | Module khác chỉ được dùng package gốc của module hoặc `@NamedInterface`; event dùng chéo module nằm trong API của module |
 | B5 | Backend | Jackson 3; `RestClient` + `@HttpExchange` (không dùng `RestTemplate`); `@NullMarked` trong mọi `package-info.java`; record cho DTO và `@ConfigurationProperties` |
-| B6 | Backend | Mongo chạy replica set ở mọi môi trường, kể cả local và Testcontainers; `@Document(collection=...)` tường minh; index chỉ tạo bằng migration Mongock, tắt auto-index ở mọi môi trường (ADR-0002) |
+| B6 | Backend | PostgreSQL là database chính, kể cả local và Testcontainers (không H2); schema chỉ đổi bằng Flyway, `ddl-auto=validate`, `open-in-view=false`; không FK/JOIN chéo module; entity có `@Version`; MongoDB chỉ khi có ADR (ADR-0007) |
 | B7 | Backend | Event có `eventId`; Kafka key = ID aggregate; consumer idempotent; DLT qua `DefaultErrorHandler`/`@RetryableTopic` |
 | B8 | Backend | JUnit (theo BOM) + AssertJ + `@MockitoBean` + Testcontainers 2 `@ServiceConnection`; JaCoCo có ngưỡng (mặc định 60% dòng); Spotless (palantir-java-format) `check` trong CI |
-| B9 | Backend | Resource server JWT Keycloak (`issuer-uri`, kiểm tra `aud`); Problem Details RFC 9457; springdoc 3.x; version API theo path `/api/v{n}` (ADR-0005) |
+| B9 | Backend | Resource server JWT chuẩn OIDC (`issuer-uri` của `platform-auth-server`, kiểm tra `aud`), không phụ thuộc API riêng của IdP; phân quyền nghiệp vụ nằm trong app (ADR-0008); Problem Details RFC 9457; springdoc 3.x; version API theo path `/api/v{n}` (ADR-0005) |
 | B10 | Backend | Actuator liveness/readiness, starter OpenTelemetry, log JSON có cấu trúc ngoài môi trường local |
 | B11 | Frontend | Next ≥ 16.4.1 (bản patch mới nhất), React 19, TypeScript 6 strict, ESLint 9, Node 24 LTS, pnpm 11 ghim qua `packageManager`, chỉ một lockfile, `--frozen-lockfile` |
 | B12 | Frontend | `app/` chỉ chứa routing; code nằm trong `features/*` (có `index.ts` public) và `shared/`; ranh giới import kiểm tra bằng ESLint |
@@ -132,19 +133,21 @@ src/
 | K5 | Backend | Lombok chỉ dùng cho `@Slf4j`/`@RequiredArgsConstructor`; Spring Cloud Contract hoặc Pact cho API dùng chéo team |
 | K6 | Frontend | TanStack Query v5 cho dữ liệu cần tương tác; nuqs cho filter; Zustand chỉ khi thật cần |
 | K7 | Frontend | RHF + Zod (form phức tạp), Server Action + `useActionState` + Conform (form đơn giản); helper ánh xạ Problem Details |
-| K8 | Frontend | Better Auth (dự án mới) + Keycloak; Tailwind v4 + shadcn/ui (Radix); next-intl `vi` mặc định |
+| K8 | Frontend | Better Auth (dự án mới) + `platform-auth-server`; Tailwind v4 + shadcn/ui (Radix); next-intl `vi` mặc định |
 | K9 | Frontend | `cacheComponents: true`; bật React Compiler sau khi lint sạch; oxlint pre-pass; TS 7 cho typecheck khi `typescript-eslint` hỗ trợ; MSW; Storybook cho dự án có design system |
 | K10 | Frontend | Turborepo + pnpm workspace khi một dự án có ≥ 2 frontend; biến thể FSD cho product lớn |
 | K11 | Delivery | Helm app chart chung (OCI) + Argo CD + repo `<du-an>-infra`; cân nhắc Kargo cho promotion |
-| K12 | DX | Lefthook + commitlint; devcontainer (Java 25 + Node 24); `compose.yaml` có Mongo replica set, Kafka, Redis, Keycloak |
+| K12 | DX | Lefthook + commitlint; devcontainer (Java 25 + Node 24); `compose.yaml` có PostgreSQL, Kafka, Redis, `platform-auth-server` (Keycloak cho tới khi có bản đầu tiên) |
 
 ## Quyết định đã duyệt
 
 | ADR | Quyết định |
 |---|---|
 | [0001](adr/0001-maven.md) | Maven 3.9 (wrapper) cho backend |
-| [0002](adr/0002-mongodb-migrations-mongock.md) | Mongock 5.5.1 (driver thuần) cho migration MongoDB |
+| [0002](adr/0002-mongodb-migrations-mongock.md) | *Superseded* bởi 0007 — Mongock chỉ còn cho dự án MongoDB cũ |
 | [0003](adr/0003-modular-monolith.md) | Modular monolith (Spring Modulith); hexagonal chỉ cho module lõi tier 2 |
 | [0004](adr/0004-renovate.md) | Renovate với preset của org thay cho Dependabot |
 | [0005](adr/0005-api-versioning.md) | Version API theo path `/api/v{n}` |
-| [0006](adr/0006-frontend-auth-bff.md) | Next.js làm BFF, Better Auth + Keycloak; phương án B là Spring Cloud Gateway |
+| [0006](adr/0006-frontend-auth-bff.md) | Next.js làm BFF với Better Auth; phương án B là Spring Cloud Gateway |
+| [0007](adr/0007-postgresql-primary-database.md) | PostgreSQL 18 + Flyway là database chính; MongoDB chỉ khi có ADR |
+| [0008](adr/0008-platform-auth-server.md) | Identity provider riêng `platform-auth-server` trên Spring Authorization Server; Keycloak là phương án dự phòng |
