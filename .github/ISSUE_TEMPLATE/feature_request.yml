@@ -1,0 +1,29 @@
+name: ✨ Yêu cầu tính năng
+description: Đề xuất tính năng hoặc cải tiến
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Vấn đề / nhu cầu
+      description: Người dùng hoặc khách hàng đang gặp vấn đề gì?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Giải pháp đề xuất
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Tiêu chí nghiệm thu
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+  - type: textarea
+    id: notes
+    attributes:
+      label: Ghi chú thêm

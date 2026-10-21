@@ -1,0 +1,6 @@
+{
+  "name": "Vyforge CI — Java / Spring Boot",
+  "description": "Build và test dự án Java 21 + Maven theo chuẩn Vyforge.",
+  "categories": ["Java", "Maven"],
+  "filePatterns": ["pom.xml$"]
+}

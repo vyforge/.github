@@ -1,0 +1,55 @@
+name: 🐞 Báo lỗi
+description: Báo cáo lỗi trong hệ thống
+title: "[Bug] "
+labels: ["bug", "triage"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Mô tả lỗi
+      description: Lỗi gì đang xảy ra?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Các bước tái hiện
+      placeholder: |
+        1. Vào trang ...
+        2. Bấm ...
+        3. Thấy lỗi ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Kết quả mong đợi
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Môi trường
+      options:
+        - Local
+        - Dev
+        - Staging
+        - Production
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Mức độ
+      options:
+        - Critical — hệ thống ngừng hoạt động
+        - High — tính năng chính bị lỗi
+        - Medium — có cách khắc phục tạm
+        - Low — lỗi nhỏ, giao diện
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log / ảnh chụp màn hình
+      render: shell

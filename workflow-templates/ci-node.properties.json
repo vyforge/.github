@@ -1,0 +1,6 @@
+{
+  "name": "Vyforge CI — Node.js / Next.js",
+  "description": "Lint, test và build dự án Node.js / Next.js theo chuẩn Vyforge.",
+  "categories": ["JavaScript", "TypeScript"],
+  "filePatterns": ["package.json$"]
+}
