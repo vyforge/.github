@@ -1,0 +1,51 @@
+# Reusable CI cho frontend Node (Next.js, pnpm). Gọi từ repo dự án:
+#   jobs:
+#     ci:
+#       uses: vyforge/.github/.github/workflows/node-ci.yml@v1
+name: Node CI
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: '24'
+      e2e:
+        description: Chạy Playwright smoke E2E
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Phiên bản pnpm lấy từ trường packageManager trong package.json
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - name: E2E smoke
+        if: inputs.e2e
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:e2e
+      - name: Upload Playwright report
+        if: failure() && inputs.e2e
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14

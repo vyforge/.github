@@ -1,6 +1,11 @@
 {
   "name": "Vyforge CI — Java / Spring Boot",
-  "description": "Build và test dự án Java 25 + Spring Boot 4 + Maven theo chuẩn Vyforge.",
-  "categories": ["Java", "Maven"],
-  "filePatterns": ["pom.xml$"]
+  "description": "CI cho backend Java 25 / Spring Boot 4 (Maven): gọi reusable workflow java-ci của Vyforge.",
+  "categories": [
+    "Java",
+    "Maven"
+  ],
+  "filePatterns": [
+    "pom.xml$"
+  ]
 }
