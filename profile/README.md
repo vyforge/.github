@@ -25,7 +25,7 @@ We work across the stack — backend services, frontend apps, developer tooling,
 
 ## Tech stack
 
-`Java 25` · `Spring Boot 4` · `Next.js 16` · `React 19` · `Node.js 24` · `TypeScript` · `MongoDB` · `Kafka` · `Redis` · `Docker` · `Kubernetes`
+`Java 25` · `Spring Boot 4` · `Next.js 16` · `React 19` · `Node.js 24` · `TypeScript` · `PostgreSQL` · `Kafka` · `Redis` · `Docker` · `Kubernetes`
 
 ## Get in touch
 
