@@ -1,20 +1,14 @@
-name: CI (Node.js / Next.js)
+name: CI
 
 on:
   push:
     branches: [ $default-branch, develop ]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - run: npm run lint --if-present
-      - run: npm test --if-present
-      - run: npm run build --if-present
+  ci:
+    uses: vyforge/.github/.github/workflows/node-ci.yml@v1
+    secrets: inherit

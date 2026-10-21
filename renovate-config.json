@@ -1,0 +1,51 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Preset Renovate chung của Vyforge. Dùng trong repo: { \"extends\": [\"github>vyforge/.github:renovate-config\"] }",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests", ":semanticCommits", ":timezone(Asia/Ho_Chi_Minh)"],
+  "schedule": ["before 9am on monday"],
+  "prConcurrentLimit": 10,
+  "minimumReleaseAge": "3 days",
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"],
+    "schedule": ["at any time"],
+    "minimumReleaseAge": null
+  },
+  "packageRules": [
+    {
+      "description": "Gom các bản minor/patch không phá vỡ thành một PR mỗi tuần",
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "matchCurrentVersion": "!/^0/",
+      "groupName": "non-major dependencies"
+    },
+    {
+      "description": "Fast-track bản vá cho thành phần nhạy cảm bảo mật (B19)",
+      "matchPackageNames": ["next", "react", "react-dom", "sharp", "better-auth", "org.springframework.boot:**", "org.springframework.security:**"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": null,
+      "schedule": ["at any time"],
+      "minimumReleaseAge": "1 day",
+      "labels": ["security-fast-track"]
+    },
+    {
+      "description": "Giữ ESLint 9 và TypeScript 6 cho tới khi eslint-config-next / typescript-eslint hỗ trợ bản mới",
+      "matchPackageNames": ["eslint", "@eslint/js"],
+      "allowedVersions": "<10"
+    },
+    {
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<6.1"
+    },
+    {
+      "description": "Chỉ dùng Node LTS (số chẵn)",
+      "matchPackageNames": ["node"],
+      "matchDatasources": ["docker", "node-version"],
+      "allowedVersions": "/^\\d*[02468](\\.|-|$)/"
+    },
+    {
+      "description": "Major update cần review riêng",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    }
+  ]
+}

@@ -1,6 +1,11 @@
 {
-  "name": "Vyforge CI — Node.js / Next.js",
-  "description": "Lint, test và build dự án Node.js / Next.js theo chuẩn Vyforge.",
-  "categories": ["JavaScript", "TypeScript"],
-  "filePatterns": ["package.json$"]
+  "name": "Vyforge CI — Next.js (pnpm)",
+  "description": "CI cho frontend Next.js 16 (pnpm): gọi reusable workflow node-ci của Vyforge.",
+  "categories": [
+    "JavaScript",
+    "TypeScript"
+  ],
+  "filePatterns": [
+    "package.json$"
+  ]
 }

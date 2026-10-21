@@ -11,7 +11,21 @@ Repo cấu hình chung cho toàn bộ tổ chức **Vyforge** trên GitHub. Các
 | Bảo mật | `SECURITY.md` | Cách báo cáo lỗ hổng |
 | Hỗ trợ | `SUPPORT.md` | Kênh hỏi đáp nội bộ |
 | Quy tắc ứng xử | `CODE_OF_CONDUCT.md` | Chuẩn mực làm việc |
-| Workflow templates | `workflow-templates/` | CI mẫu chọn được ở tab **Actions → New workflow** |
+| Chuẩn kiến trúc | `docs/ARCHITECTURE.md` | Kiến trúc backend/frontend, tier, quy tắc bắt buộc/khuyến nghị |
+| Quyết định kiến trúc | `docs/adr/` | ADR cho các lựa chọn dùng chung (Maven, Mongock, Modulith, Renovate…) |
+| Reusable workflows | `.github/workflows/java-ci.yml`, `node-ci.yml` | CI dùng chung, gọi bằng `uses: vyforge/.github/.github/workflows/<file>@v1` |
+| Workflow templates | `workflow-templates/` | File CI mỏng gọi reusable workflow, chọn ở **Actions → New workflow** |
+| Renovate preset | `renovate-config.json` | `{"extends": ["github>vyforge/.github:renovate-config"]}` |
 | Quy chuẩn quản lý repo | `docs/REPOSITORY_GUIDELINES.md` | Đặt tên repo, team, phân quyền, branch protection, khởi tạo dự án mới |
+
+## Tạo dự án mới
+
+```bash
+pipx install copier
+copier copy --trust gh:vyforge/template-spring-boot <du-an>-backend
+copier copy --trust gh:vyforge/template-nextjs <du-an>-frontend
+```
+
+Chi tiết: [`template-spring-boot`](https://github.com/vyforge/template-spring-boot), [`template-nextjs`](https://github.com/vyforge/template-nextjs).
 
 > Lưu ý: `CODEOWNERS`, `LICENSE`, branch protection và secrets **không** được kế thừa — phải cấu hình ở từng repo (xem `docs/REPOSITORY_GUIDELINES.md`).

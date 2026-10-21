@@ -75,28 +75,35 @@ Tạo **Organization ruleset** (Settings → Repository → Rulesets) áp dụng
 
 ## 5. Chuẩn công nghệ (cập nhật 10/2026)
 
-Dự án mới bắt buộc dùng phiên bản dưới đây; dự án cũ lên kế hoạch nâng cấp.
+Dự án mới bắt buộc dùng phiên bản dưới đây (template đã cấu hình sẵn); dự án cũ lên kế hoạch nâng cấp. Kiến trúc chi tiết: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Thành phần | Phiên bản | Ghi chú |
 |---|---|---|
 | Java | **25 (LTS)** | Không dùng Java 21 cho dự án mới |
-| Spring Boot | **4.1.x** (mới nhất) | 3.5 đã hết hỗ trợ OSS 30/06/2026; 4.0 hết hỗ trợ 31/12/2026 |
+| Spring Boot | **4.1.x** | 3.5 đã hết hỗ trợ OSS 30/06/2026; 4.0 hết hỗ trợ 31/12/2026 |
+| Spring Modulith | **2.1.x** | Modular monolith, xem ADR-0003 |
+| Maven | **3.9.x** (qua `mvnw`) | Maven 4 chưa GA (ADR-0001) |
 | Node.js | **24 (LTS)** | Chuyển lên 26 sau khi 26 thành LTS (28/10/2026) |
-| Next.js | **16.4.x** (mới nhất) | Next.js 15 hết hỗ trợ 21/10/2026 |
+| pnpm | **11.x** | Ghim qua `packageManager`; chặn package phát hành < 24 giờ |
+| Next.js | **≥ 16.4.1** | 16.0–16.4.0 có lỗ hổng RCE; Next.js 15 hết hỗ trợ 21/10/2026 |
 | React | **19.x** | Theo Next.js 16 |
+| TypeScript | **6.0.x** | Chưa lên 7: `typescript-eslint` chỉ hỗ trợ < 6.1 |
+| ESLint | **9.x** | Chưa lên 10: plugin của `eslint-config-next` chưa hỗ trợ |
 
-Rà soát bảng này mỗi quý và bật **Dependabot** cho mọi repo để nhận bản vá.
+Rà soát bảng này mỗi quý. Mọi repo bật **Renovate** với preset của org (`github>vyforge/.github:renovate-config`, ADR-0004).
 
 ## 6. Khởi tạo dự án mới — checklist
 
-1. [ ] Chọn mã dự án `<du-an>`.
+1. [ ] Chọn mã dự án `<du-an>` và tier (0/1/2 — xem ARCHITECTURE.md).
 2. [ ] Tạo team `project-<du-an>`, `-leads`, `-devs` và thêm thành viên.
-3. [ ] Tạo repo từ `template-*` phù hợp (Private) theo quy tắc đặt tên.
-4. [ ] Gắn topics `project-<du-an>` + loại + công nghệ.
-5. [ ] Cấp quyền repo cho các team.
-6. [ ] Thêm `CODEOWNERS` (vd. `* @vyforge/project-<du-an>-leads`).
-7. [ ] Thêm `README.md` (giới thiệu, cách chạy local, môi trường, người phụ trách) và `.gitignore`.
-8. [ ] Thêm CI từ **Actions → New workflow → By Vyforge**.
+3. [ ] Sinh code bằng Copier, rồi tạo repo Private theo quy tắc đặt tên và push lên:
+   - Backend: `copier copy --trust gh:vyforge/template-spring-boot <du-an>-backend`
+   - Frontend: `copier copy --trust gh:vyforge/template-nextjs <du-an>-frontend`
+4. [ ] Giữ file `.copier-answers.yml` để sau này `copier update`.
+5. [ ] Gắn topics `project-<du-an>` + loại + công nghệ.
+6. [ ] Cấp quyền repo cho các team (`CODEOWNERS` đã sinh sẵn, trỏ tới `@vyforge/project-<du-an>-leads`).
+7. [ ] Cài Renovate app cho repo (template đã có `renovate.json`).
+8. [ ] CI đã có sẵn (`.github/workflows/ci.yml` gọi reusable workflow của org) — kiểm tra chạy xanh ở PR đầu tiên.
 9. [ ] Khai báo secrets / environments (`dev`, `staging`, `production`) — không commit vào code.
 10. [ ] Tạo GitHub Project (board) cho dự án nếu dùng GitHub để quản lý task.
 
