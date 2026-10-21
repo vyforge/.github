@@ -88,6 +88,18 @@ src/
 - TanStack Query chỉ khi cần dữ liệu tương tác (polling, infinite list); Zustand chỉ khi thật cần state toàn cục.
 - Dự án có ≥ 2 frontend hoặc product lớn: cân nhắc Turborepo + pnpm workspace và biến thể Feature-Sliced Design.
 
+## Thư viện platform
+
+Phần dùng chung nằm trong artifact có version (Renovate tự cập nhật), không copy vào từng dự án:
+
+| Repo | Artifact | Nội dung |
+|---|---|---|
+| [`platform-java`](https://github.com/vyforge/platform-java) | `com.vyforge.platform:*` (GitHub Packages) | `platform-parent`, `platform-bom`, `platform-starter-web` (Problem Details có `code`, request id), `-security` (resource server OIDC, `CurrentUser`), `-jpa` (PostgreSQL/Flyway, `BaseEntity`, audit), `-messaging` (consumer idempotent, Kafka DLT), `-observability`, `platform-test` |
+| [`platform-web`](https://github.com/vyforge/platform-web) | `@vyforge/*` (GitHub Packages) | `tsconfig`, `eslint-config` (ranh giới B12), `prettier-config`, `ui`, `api-client` (token ở server, Problem Details → lỗi form), `auth` (Better Auth BFF) |
+| [`platform-helm-charts`](https://github.com/vyforge/platform-helm-charts) | `oci://ghcr.io/vyforge/charts/app` | App chart: digest, non-root, probe, HPA, PDB, HTTPRoute/Ingress, ExternalSecret, NetworkPolicy |
+
+Caller workflow của dự án cấp `permissions: packages: read` để CI tải được các artifact này.
+
 ## Delivery
 
 - Mỗi dự án tách repo `<du-an>-backend`, `<du-an>-frontend` (và `<du-an>-infra` khi deploy Kubernetes).
@@ -101,7 +113,7 @@ src/
 
 | # | Phạm vi | Quy tắc |
 |---|---|---|
-| B1 | Backend | Java 25, Spring Boot 4.1.x qua parent/BOM (sau này là `platform-parent`); không hard-code version trong module; wrapper (`mvnw`) được commit |
+| B1 | Backend | Java 25, Spring Boot 4.1.x qua `com.vyforge.platform:platform-parent`; không hard-code version trong module; wrapper (`mvnw`) được commit |
 | B2 | Backend | Package gốc `com.vyforge.<du-an>`; mỗi package con trực tiếp là một module nghiệp vụ; không có `common`/`util` ở top-level, chỉ `shared` khai báo qua `sharedModules` |
 | B3 | Backend | Test `ApplicationModules.verify()` + `Documenter` chạy trong CI; không dùng `Type.OPEN` trừ khi di chuyển code legacy, và phải có ADR |
 | B4 | Backend | Module khác chỉ được dùng package gốc của module hoặc `@NamedInterface`; event dùng chéo module nằm trong API của module |

@@ -16,6 +16,7 @@ Repo cấu hình chung cho toàn bộ tổ chức **Vyforge** trên GitHub. Các
 | Reusable workflows | `.github/workflows/` | CI/CD dùng chung, gọi bằng `uses: vyforge/.github/.github/workflows/<file>@v1`: `java-ci`, `node-ci`, `container` (image + Trivy + SBOM/provenance), `gitops-bump`, `maven-publish`, `npm-publish`, `helm-publish` |
 | Workflow templates | `workflow-templates/` | File CI mỏng gọi reusable workflow, chọn ở **Actions → New workflow** |
 | Renovate preset | `renovate-config.json` | `{"extends": ["github>vyforge/.github:renovate-config"]}` |
+| Thư viện platform | `platform-java`, `platform-web`, `platform-helm-charts` | Parent POM + Spring Boot starter, package `@vyforge/*`, Helm chart chung (xem `docs/ARCHITECTURE.md`) |
 | Quy chuẩn quản lý repo | `docs/REPOSITORY_GUIDELINES.md` | Đặt tên repo, team, phân quyền, branch protection, khởi tạo dự án mới |
 
 ## Tạo dự án mới
