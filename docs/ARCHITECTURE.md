@@ -37,19 +37,28 @@ com.vyforge.crm
 
 ```
 com.vyforge.acmeshop.order
-├── package-info.java            @ApplicationModule(allowedDependencies = {"customer :: api", "shared"})
-├── api/                         @NamedInterface("api"): OrderApi, OrderPlaced (@Externalized)
-├── domain/                      aggregate, value object — KHÔNG import Spring/JPA
+├── package-info.java            @ApplicationModule(allowedDependencies = {"customer", "shared", "shared :: persistence"})
+├── api/                         @NamedInterface("api"): OrderApi (@PrimaryPort, truy vấn), OrderView, OrderPlaced (@Externalized)
+├── domain/                      @AggregateRoot Order, @ValueObject OrderLine/OrderId — KHÔNG import Spring/JPA
 ├── application/
-│   ├── port/in/                 @PrimaryPort — use case
-│   ├── port/out/                @SecondaryPort — OrderStore, PaymentGateway
-│   └── service/                 triển khai use case
+│   ├── port/in/                 @PrimaryPort — use case (PlaceOrderUseCase)
+│   ├── port/out/                @SecondaryPort — OrderStore, CustomerDirectory, PaymentGateway
+│   └── service/                 triển khai use case: kiểm tra dữ liệu ngoài aggregate → domain → lưu → phát event
 └── adapter/
     ├── web/                     @PrimaryAdapter — REST
     ├── messaging/               Kafka listener / publisher
-    ├── persistence/             @SecondaryAdapter — PostgreSQL (JPA)
+    ├── persistence/             @SecondaryAdapter — PostgreSQL (JPA), ánh xạ entity ↔ aggregate
+    ├── customer/                @SecondaryAdapter — gọi API của module khác
     └── cache/                   @SecondaryAdapter — Redis
 ```
+
+- Lệnh đi qua `port/in`; module khác chỉ thấy `api/` (truy vấn + event). Tách module khác thành service (tier 3) chỉ cần thay
+  adapter tương ứng.
+- Luật hexagonal (port không phụ thuộc adapter, ...) do `jmolecules-archunit` kiểm tra, cả trong `ApplicationModules.verify()`;
+  "domain không import Spring/JPA" là luật ArchUnit riêng.
+- Test: domain test JUnit thuần; `@ApplicationModuleTest` thay secondary port của module khác bằng mock; adapter web test bằng
+  `@WebMvcTest(<Controller>.class)` với mock primary port.
+- Mẫu đầy đủ: module `order` của `template-spring-boot` (sinh khi tier = 2).
 
 ### Tier
 
@@ -67,7 +76,7 @@ Ngưỡng số dev là ước lượng; điều chỉnh theo thực tế. Khung 
 - **PostgreSQL** là database chính (ADR-0007). Mỗi module sở hữu bảng của mình (tiền tố `<module>_`); không foreign key, không JOIN chéo module.
 - Event giữa module được Spring Modulith ghi vào bảng `event_publication` trong cùng transaction nghiệp vụ (outbox).
 - Event ra Kafka: key = ID aggregate, có `eventId`, consumer idempotent (bảng `processed_messages` hoặc Redis `SETNX`).
-- Schema chỉ thay đổi qua migration Flyway `db/migration/V<NNN>__*.sql`; `ddl-auto=validate`.
+- Schema chỉ thay đổi qua migration Flyway, đặt cạnh module sở hữu bảng: `db/migration/<module>/V<NNN>__*.sql` (version duy nhất trên toàn ứng dụng); `ddl-auto=validate`.
 
 ## Frontend — Next.js App Router, feature-based, Next.js làm BFF
 

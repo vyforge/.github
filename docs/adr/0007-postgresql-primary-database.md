@@ -10,7 +10,7 @@ Dự án của Vyforge phần lớn là nghiệp vụ có quan hệ chặt (đơ
 
 - **PostgreSQL 18** là database mặc định cho mọi dự án mới. Dữ liệu dạng document dùng cột `JSONB`.
 - Truy cập dữ liệu: **Spring Data JPA** (Hibernate) mặc định; Spring Data JDBC hoặc jOOQ cho module cần SQL tường minh. `spring.jpa.hibernate.ddl-auto=validate`, `spring.jpa.open-in-view=false`.
-- Schema chỉ thay đổi bằng **Flyway**: file `src/main/resources/db/migration/V<NNN>__<mo_ta>.sql`; không sửa migration đã chạy.
+- Schema chỉ thay đổi bằng **Flyway**: file `src/main/resources/db/migration/<module>/V<NNN>__<mo_ta>.sql` (thư mục con theo module sở hữu bảng; version duy nhất toàn ứng dụng — Flyway fail ngay nếu trùng); không sửa migration đã chạy.
 - **Ranh giới module trong database:** mỗi module sở hữu bảng của mình (tiền tố `<module>_`), không foreign key và không JOIN chéo module — module khác lấy dữ liệu qua API hoặc event của module. Nhờ vậy vẫn tách được service theo tier 3.
 - Event Publication Registry của Spring Modulith chạy trên JPA (`spring-modulith-starter-jpa`); bảng `event_publication` tạo bằng Flyway, không bật tự khởi tạo schema.
 - Consumer idempotent: bảng `processed_messages` (khoá chính `event_id`), ghi trong cùng transaction với xử lý nghiệp vụ.
