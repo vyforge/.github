@@ -3,9 +3,8 @@
 #     ci:
 #       uses: vyforge/.github/.github/workflows/node-ci.yml@v1
 #       permissions: { contents: read, packages: read }   # packages: đọc @vyforge/* từ GitHub Packages
-# Dự án dùng @vyforge/* commit .npmrc:
-#   @vyforge:registry=https://npm.pkg.github.com
-#   //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+# Dự án dùng @vyforge/* commit .npmrc chỉ với `@vyforge:registry=https://npm.pkg.github.com`; token được ghi vào
+# ~/.npmrc ở đây (pnpm 11 không thay biến môi trường trong credential của .npmrc project).
 name: Node CI
 
 on:
@@ -35,9 +34,11 @@ jobs:
         with:
           node-version: ${{ inputs.node-version }}
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - name: GitHub Packages auth
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" >> ~/.npmrc
+      - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
