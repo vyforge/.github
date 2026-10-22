@@ -3,6 +3,9 @@
 #     ci:
 #       uses: vyforge/.github/.github/workflows/java-ci.yml@v1
 #       permissions: { contents: read, packages: read }   # packages: đọc platform-* từ GitHub Packages
+#       secrets: inherit                                    # truyền PACKAGES_TOKEN của repo
+# Maven trên GitHub Packages chỉ cấp quyền theo repo nguồn: GITHUB_TOKEN của repo khác không tải được
+# com.vyforge.platform:*. Repo dự án cần secret PACKAGES_TOKEN (PAT classic, chỉ scope read:packages).
 name: Java CI
 
 on:
@@ -14,6 +17,10 @@ on:
       maven-args:
         type: string
         default: ''
+    secrets:
+      PACKAGES_TOKEN:
+        description: PAT classic scope read:packages để tải com.vyforge.platform:* (thiếu thì dùng GITHUB_TOKEN)
+        required: false
 
 permissions:
   contents: read
@@ -31,11 +38,12 @@ jobs:
           java-version: ${{ inputs.java-version }}
           cache: maven
           # settings.xml có server "github" (GITHUB_ACTOR / GITHUB_TOKEN) để tải com.vyforge.platform:*
+          # GITHUB_TOKEN ở bước Verify lấy PACKAGES_TOKEN nếu có.
           server-id: github
       # Spotless, test (Testcontainers), ArchUnit, Modulith verify, JaCoCo, CycloneDX SBOM
       - name: Verify
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
         run: ./mvnw -B -ntp verify ${{ inputs.maven-args }}
       - name: Upload reports
         if: always()

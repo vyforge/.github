@@ -98,7 +98,7 @@ Phần dùng chung nằm trong artifact có version (Renovate tự cập nhật)
 | [`platform-web`](https://github.com/vyforge/platform-web) | `@vyforge/*` (GitHub Packages) | `tsconfig`, `eslint-config` (ranh giới B12), `prettier-config`, `ui`, `api-client` (token ở server, Problem Details → lỗi form), `auth` (Better Auth BFF) |
 | [`platform-helm-charts`](https://github.com/vyforge/platform-helm-charts) | `oci://ghcr.io/vyforge/charts/app` | App chart: digest, non-root, probe, HPA, PDB, HTTPRoute/Ingress, ExternalSecret, NetworkPolicy |
 
-Caller workflow của dự án cấp `permissions: packages: read` để CI tải được các artifact này.
+Caller workflow của dự án cấp `permissions: packages: read` để CI tải được các artifact này. Package npm và chart: thêm repo dự án vào *Manage Actions access* (Read) của từng package. Package Maven chỉ cấp quyền theo repo nguồn, nên repo backend cần secret `PACKAGES_TOKEN` (PAT classic, scope `read:packages`); `java-ci.yml` dùng secret này khi có (`secrets: inherit`).
 
 ## Delivery
 
