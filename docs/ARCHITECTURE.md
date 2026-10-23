@@ -103,8 +103,8 @@ Phần dùng chung nằm trong artifact có version (Renovate tự cập nhật)
 
 | Repo | Artifact | Nội dung |
 |---|---|---|
-| [`platform-java`](https://github.com/vyforge/platform-java) | `com.vyforge.platform:*` (GitHub Packages) | `platform-parent`, `platform-bom`, `platform-starter-web` (Problem Details có `code`, request id), `-security` (resource server OIDC, `CurrentUser`), `-jpa` (PostgreSQL/Flyway, `BaseEntity`, audit), `-messaging` (consumer idempotent, Kafka DLT), `-observability`, `platform-test` |
-| [`platform-web`](https://github.com/vyforge/platform-web) | `@vyforge/*` (GitHub Packages) | `tsconfig`, `eslint-config` (ranh giới B12), `prettier-config`, `ui`, `api-client` (token ở server, Problem Details → lỗi form), `auth` (Better Auth BFF) |
+| [`platform-java`](https://github.com/vyforge/platform-java) | `com.vyforge.platform:*` (GitHub Packages) | `platform-parent`, `platform-bom`, `platform-starter-web` (Problem Details có `code`, request id), `-security` (resource server OIDC, `CurrentUser`), `-authz` (IAM: policy JSON, group, Policy Simulator — ADR-0009), `-jpa` (PostgreSQL/Flyway, `BaseEntity`, audit), `-messaging` (consumer idempotent, Kafka DLT), `-observability`, `platform-test` |
+| [`platform-web`](https://github.com/vyforge/platform-web) | `@vyforge/*` (GitHub Packages) | `tsconfig`, `eslint-config` (ranh giới B12), `prettier-config`, `ui`, `api-client` (token ở server, Problem Details → lỗi form, `createFormAction`), `auth` (Better Auth BFF, `requireRole`, `can`/`requirePermission`), `i18n` (next-intl vi/en), `test-config` (Vitest, Playwright), `iam` (giao diện quản trị IAM) |
 | [`platform-helm-charts`](https://github.com/vyforge/platform-helm-charts) | `oci://ghcr.io/vyforge/charts/app` | App chart: digest, non-root, probe, HPA, PDB, HTTPRoute/Ingress, ExternalSecret, NetworkPolicy |
 
 Caller workflow của dự án cấp `permissions: packages: read` để CI tải được các artifact này. Package npm và chart: thêm repo dự án vào *Manage Actions access* (Read) của từng package. Package Maven chỉ cấp quyền theo repo nguồn, nên repo backend cần secret `PACKAGES_TOKEN` (PAT classic, scope `read:packages`); `java-ci.yml` dùng secret này khi có (`secrets: inherit`).
@@ -130,7 +130,7 @@ Caller workflow của dự án cấp `permissions: packages: read` để CI tả
 | B6 | Backend | PostgreSQL là database chính, kể cả local và Testcontainers (không H2); schema chỉ đổi bằng Flyway, `ddl-auto=validate`, `open-in-view=false`; không FK/JOIN chéo module; entity có `@Version`; MongoDB chỉ khi có ADR (ADR-0007) |
 | B7 | Backend | Event có `eventId`; Kafka key = ID aggregate; consumer idempotent; DLT qua `DefaultErrorHandler`/`@RetryableTopic` |
 | B8 | Backend | JUnit (theo BOM) + AssertJ + `@MockitoBean` + Testcontainers 2 `@ServiceConnection`; JaCoCo có ngưỡng (mặc định 60% dòng); Spotless (palantir-java-format) `check` trong CI |
-| B9 | Backend | Resource server JWT chuẩn OIDC (`issuer-uri` của `platform-auth-server`, kiểm tra `aud`), không phụ thuộc API riêng của IdP; phân quyền nghiệp vụ nằm trong app (ADR-0008); Problem Details RFC 9457; springdoc 3.x; version API theo path `/api/v{n}` (ADR-0005) |
+| B9 | Backend | Resource server JWT chuẩn OIDC (`issuer-uri` của `platform-auth-server`, kiểm tra `aud`), không phụ thuộc API riêng của IdP; phân quyền nghiệp vụ nằm trong app theo mô hình IAM của `platform-starter-authz` (ADR-0008, ADR-0009); Problem Details RFC 9457; springdoc 3.x; version API theo path `/api/v{n}` (ADR-0005) |
 | B10 | Backend | Actuator liveness/readiness, starter OpenTelemetry, log JSON có cấu trúc ngoài môi trường local |
 | B11 | Frontend | Next ≥ 16.4.1 (bản patch mới nhất), React 19, TypeScript 6 strict, ESLint 9, Node 24 LTS, pnpm 11 ghim qua `packageManager`, chỉ một lockfile, `--frozen-lockfile` |
 | B12 | Frontend | `app/` chỉ chứa routing; code nằm trong `features/*` (có `index.ts` public) và `shared/`; ranh giới import kiểm tra bằng ESLint |
@@ -172,3 +172,4 @@ Caller workflow của dự án cấp `permissions: packages: read` để CI tả
 | [0006](adr/0006-frontend-auth-bff.md) | Next.js làm BFF với Better Auth; phương án B là Spring Cloud Gateway |
 | [0007](adr/0007-postgresql-primary-database.md) | PostgreSQL 18 + Flyway là database chính; MongoDB chỉ khi có ADR |
 | [0008](adr/0008-platform-auth-server.md) | Identity provider riêng `platform-auth-server` trên Spring Authorization Server; Keycloak là phương án dự phòng |
+| [0009](adr/0009-iam-authorization.md) | Phân quyền nghiệp vụ theo mô hình IAM (policy JSON, Deny thắng Allow, multi-tenant) trong `platform-starter-authz` |
