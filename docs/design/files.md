@@ -17,6 +17,7 @@ Mục lục:
 8. [Bảo mật và tuân thủ](#8-bảo-mật-và-tuân-thủ)
 9. [Kế hoạch triển khai](#9-kế-hoạch-triển-khai)
 10. [Lệch quy ước và quyết định cần người dùng chọn](#10-lệch-quy-ước-và-quyết-định-cần-người-dùng-chọn)
+11. [Đóng gói và triển khai độc lập](#11-đóng-gói-và-triển-khai-độc-lập)
 
 ---
 
@@ -1399,3 +1400,70 @@ Không còn lệch quy ước. Ba điểm ở bản thiết kế đầu (Flyway 
 | Q4 | Azure, GCS trong bản đầu | Có, là optional dependency trong cùng starter | Tách thành module `platform-files-azure`/`-gcs` nếu muốn starter gọn |
 | Q5 | Một app "files" dùng chung cho nhiều backend | Không làm ở bản đầu; starter nhúng vào từng app | Dựng `platform-files-server` như iam-server khi có dự án nhiều backend cần chung kho file |
 | Q6 | ClamAV bắt buộc ở production | Bucket mặc định `scan: required` khi có cấu hình clamd; không có clamd thì app khởi động với cảnh báo và bucket `required` từ chối upload (`files.scan_unavailable`) | Mặc định `optional` cho dễ chạy, kém an toàn hơn |
+
+## 11. Đóng gói và triển khai độc lập
+
+Theo mục 6 của quy ước module (yêu cầu ngày 26/10/2026): files là một đơn vị triển khai độc lập, gồm ba phần, mỗi phần
+cài hoặc bỏ riêng được.
+
+### 11.1 Backend
+
+| Cách chạy | Khi nào | Ghi chú |
+|---|---|---|
+| Starter `platform-starter-files` nhúng vào app nghiệp vụ | Mặc định; một backend có file | Bảng `file_*` nằm trong database của app (starter schema `files`) |
+| Trong server dùng chung `platform-services` | Nhiều backend nhỏ dùng chung một kho file | Server đó thêm starter như mọi app; REST `/api/v1/files/**` qua gateway |
+| Server riêng của module (`platform-files-server`) | Khách hàng cần cô lập hoặc scale riêng phần file | Cùng starter, chỉ là app riêng; không thêm code (Q5 ở §10.2) |
+
+Phụ thuộc của starter chỉ là các starter nền của platform (`-web`, `-security`, `-jpa`, `-authz`, `-audit`, `-privacy`,
+`-scheduling`, `-messaging`). **Không phụ thuộc module P1 nào khác.** Mọi điểm nối ở §9.4 đi một chiều và là tuỳ chọn:
+
+- Module khác dùng files qua Java API (`FileService`, `FileContentReader`, `ShareLinks`) với `@ConditionalOnBean`, hoặc
+  qua REST khi chạy ở service khác.
+- files phát event công khai (§5.3); realtime, notification, webhooks tự nghe nếu được cài. Không cài thì không sao.
+- files nhận bean tuỳ chọn từ module khác: `QuotaProvider` (features), `MalwareScanner`, `ImageTransformer`. Không có
+  bean thì dùng mặc định.
+
+### 11.2 Package frontend `@vyforge/files`
+
+Cho app nghiệp vụ: client server-only, route handler BFF, engine upload, React hook, component `Dropzone`,
+`UploadQueue`, `FileList`, `FilePreview`, `FilePicker`, `AttachmentPanel`, `ShareLinkDialog` (§5.5). Phụ thuộc
+`@vyforge/ui`, `@vyforge/api-client`, `@vyforge/i18n`; không phụ thuộc package của module khác.
+
+### 11.3 Admin microfrontend `@vyforge/files-admin`
+
+Kỹ thuật microfrontend do forge-37 chốt trong `docs/design/platform-services.md`. Trong lúc chờ, component quản trị nằm
+ở `@vyforge/files` subpath `/admin`, sau chỉ bọc lại thành MFE.
+
+Màn hình:
+
+| Màn hình | Người vận hành (toàn platform) | Tenant admin | Quyền | API |
+|---|---|---|---|---|
+| Tổng quan dung lượng | Theo tenant (qua chọn tenant của shell) | Của tenant mình | `files:settings:Get` | `GET /admin/usage` |
+| Cấu hình tenant (quota, storage mặc định, data residency, TTL) | Có | Có, trong trần của gói | `files:settings:Update` | `GET/PUT /admin/settings` |
+| Chính sách bucket (xem hiệu lực, thu hẹp) | Có | Có | `files:settings:Get`/`Update` | `GET /admin/buckets`, `GET/PUT/DELETE /admin/buckets/{b}/policy` |
+| Storage riêng của tenant (BYO) | Có | Có | `files:storage:Manage` | `GET/POST/PUT/DELETE /admin/storages`, `POST /admin/storages/{id}/test` |
+| Trình duyệt file (lọc bucket/trạng thái, thùng rác, khôi phục, xoá vĩnh viễn, legal hold) | Có | Có | `files:file:*` | `GET /files`, `POST /files/{id}/restore`, `/purge`, `PUT/DELETE /files/{id}/legal-hold` |
+| Việc nền lỗi (retry, cancel) | Có | Có | `files:settings:Update` | `GET /admin/tasks`, `POST /admin/tasks/{id}/retry`, `/cancel` |
+| Yêu cầu của chủ thể dữ liệu (tra cứu, xoá thử, xoá) | Có | Có | `files:subject:Get`, `files:file:Purge` | `GET /admin/subjects/{ref}/files`, `POST /admin/subjects/{ref}/erasure` |
+
+Mọi API có tiền tố `/api/v1/files`. Bản cho tenant admin chỉ thấy tenant của token (tenant lấy từ claim, không có tham
+số chọn tenant). Bản cho người vận hành dùng cùng API với token của tenant được chọn (cơ chế chọn tenant do shell lo).
+i18n vi/en, giao diện dùng `@vyforge/ui`.
+
+Manifest (hợp đồng với shell `platform-admin`, định dạng cuối cùng theo forge-37):
+
+```json
+{
+  "module": "files",
+  "version": "0.13.0",
+  "route": "/files",
+  "apiBase": "/api/v1/files",
+  "menu": [
+    { "id": "files-browser", "label": { "vi": "Tệp", "en": "Files" }, "path": "/files", "permission": "files:file:List" },
+    { "id": "files-settings", "label": { "vi": "Cấu hình lưu trữ", "en": "Storage settings" }, "path": "/files/settings", "permission": "files:settings:Get" },
+    { "id": "files-privacy", "label": { "vi": "Yêu cầu dữ liệu cá nhân", "en": "Data subject requests" }, "path": "/files/subjects", "permission": "files:subject:Get" }
+  ],
+  "minPermission": "files:settings:Get"
+}
+```
+
