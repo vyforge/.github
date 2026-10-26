@@ -26,8 +26,10 @@
 
 ## 0. Tóm tắt quyết định
 
-**Quyết định về module:** không tạo starter mới. Bốn tính năng vào **`platform-starter-jpa`** (thêm 4 package), kèm phần
-nhỏ ở `platform-test` (luật ArchUnit, test hợp đồng), `platform-starter-scheduling` (hai job), `@vyforge/i18n` và
+**Quyết định về module:** không tạo starter mới. Bốn tính năng vào **`platform-starter-jpa`** (thêm 4 package). Hai khối
+dùng chung không cần JPA vào **`platform-core`**: `VietnameseText` (chuẩn hoá, bỏ dấu, ký tự thay chữ) và `EntityRef`
+(tham chiếu bản ghi nghiệp vụ), vì search, collaboration, files, workflow, esign, cms, master-data đều cần mà không phải
+module nào cũng có `-jpa` ở đường gọi (mục 5.6, 5.7). Kèm phần nhỏ ở `platform-test` (luật ArchUnit, test hợp đồng), `platform-starter-scheduling` (hai job), `@vyforge/i18n` và
 `@vyforge/ui` (kiểu và component đa ngôn ngữ). Thêm **một** đơn vị triển khai mới cho phần quản trị: thùng rác dùng chung
 (`@vyforge/trash`, admin MFE `trash-admin`), vì đây là màn hình duy nhất mà người vận hành và tenant admin cần thao tác.
 Không bỏ và không gộp module nào.
@@ -41,10 +43,12 @@ Không bỏ và không gộp module nào.
 | D5 | `EntityManager.remove()` trên entity xoá mềm **bị chặn** (`HardDeleteNotAllowedException`), trừ trong phạm vi `SoftDeletes.purge…` | Không ai xoá cứng nhầm qua `repository.deleteById` |
 | D6 | Purge theo retention là **service thuần** `SoftDeletePurger` trong `-jpa`. Job định kỳ nằm ở `platform-starter-scheduling` (`@ClusterScheduled(perTenant = true)`), bật khi có cả hai | `-scheduling` đã phụ thuộc `-jpa`, nên `-jpa` không thể phụ thuộc ngược (vòng Maven) |
 | D7 | Tìm tiếng Việt: hàm SQL trong **schema riêng `vyforge`**: `vyforge.immutable_unaccent(text)`, `vyforge.fold(text)`, `vyforge.localized(jsonb, variadic text[])`, `vyforge.localized_fold(jsonb)`, cấu hình FTS `vyforge.vi`. Extension `unaccent`, `pg_trgm` (và `btree_gin` tuỳ chọn). Tạo bằng **"SQL nền" chạy trước Flyway của app** | Migration của app (cột sinh sẵn, index) cần hàm có sẵn trước. Đặt ở schema riêng thì Flyway của app vẫn thấy schema của nó rỗng ở database mới (lý do `StarterSchemaMigrator` phải chạy sau Flyway của app) |
-| D8 | Quy tắc bỏ dấu ở Java (`VietnameseText.fold`) **đọc chính file `unaccent.rules` của PostgreSQL 18** (nhúng vào jar, PostgreSQL License), có test hợp đồng Java ↔ SQL trên PostgreSQL thật, và kiểm nhanh lúc khởi động | Search (forge-41) cần cùng kết quả ở Java và SQL. Chép quy tắc tay sẽ lệch (file có 2.661 quy tắc, gồm `½` → ` 1/2`, `ß` → `ss`, xoá dấu kết hợp U+0300…) |
+| D8 | `VietnameseText` nằm ở **`platform-core`** (`com.vyforge.platform.core.text`). Quy tắc bỏ dấu ở Java (`VietnameseText.fold`) **đọc chính file `unaccent.rules` của PostgreSQL 18** (nhúng vào jar, PostgreSQL License), có test hợp đồng Java ↔ SQL trên PostgreSQL thật, và kiểm nhanh lúc khởi động | Search (forge-41) cần cùng kết quả ở Java và SQL. Chép quy tắc tay sẽ lệch (file có 2.661 quy tắc, gồm `½` → ` 1/2`, `ß` → `ss`, xoá dấu kết hợp U+0300…) |
 | D9 | `searchVietnamese` = `Specification` dùng cột sinh sẵn `*_fold` + GIN trigram + `LIKE`; từ khoá dưới 3 ký tự chuyển sang so tiền tố hoặc bị từ chối | Đã kiểm: `LIKE '%da nang%'` dùng GIN trigram (≈9 ms trên 200.000 dòng); từ khoá 2 ký tự thì quét cả bảng |
 | D10 | `@Encrypted("<purpose>")` là annotation mang `@Type(EncryptedStringType.class)` (Hibernate `AnnotationBasedUserType`), mã hoá bằng `SecretCipher` của platform-core. AAD = `jpa:<purpose>:<tenant>` với tenant **lấy từ session Hibernate** | `UserType` nhận `WrapperOptions.getSession().getTenantIdentifierValue()` (đã spike). Bản mã chép sang tenant khác hay cột khác thì không giải mã được. `purpose` bắt buộc ghi tay để đổi tên class/field không làm hỏng dữ liệu |
 | D11 | Tra cứu bằng giá trị đã mã hoá (CCCD, số điện thoại) qua **blind index** HMAC-SHA256 trong cột riêng (`@BlindIndex`), khoá HMAC tách khỏi khoá mã hoá. **Không** làm mã hoá deterministic | Rails khuyên deterministic chỉ khi cần truy vấn và không xoay khoá được; blind index (CipherSweet, `blind_index` của ankane) giữ bản mã ngẫu nhiên và vẫn tìm được |
+| D13 | `VietnameseText` có ba tầng tách bạch: `normalize` (NFC, đặt dấu thanh kiểu truyền thống `hòa`, `thủy`, chữ thường `vi`, **giữ dấu**), `unaccent`/`fold` (**khớp từng ký tự** với `vyforge.immutable_unaccent`/`vyforge.fold`), và `matchForm` (dạng để so khớp bộ lọc: thêm ký tự thay chữ `0→o`, `3→e`, `@→a`…, bỏ ký tự chèn, gộp chữ lặp; **có bảng vị trí** về chuỗi gốc). Chỉ `unaccent`/`fold` có bản SQL | Search cần `normalize`+`fold`; bộ lọc của collaboration cần `matchForm` có vị trí để che đúng đoạn. Ký tự thay chữ **không** đưa vào `fold` vì sẽ phá mã và số ("DH-2026" thành "dh-zoze") và lệch SQL |
+| D14 | `EntityRef(type, id)` là record trong **`platform-core`** (`com.vyforge.platform.core.ref`). `type` = `<service>:<resource>` (cùng dạng action catalog và `vrn` của authz), `id` chuỗi an toàn URL ≤ 200 ký tự. Chuỗi chuẩn `crm:order/01J9…` (= `vrn` bỏ tiền tố `vrn:`). Lưu hai cột `<prefix>_type varchar(100)` + `<prefix>_id varchar(200)`; `-jpa` có `EntityRefType` (`CompositeUserType`, tự đăng ký) | files đã có `EntityRef`, collaboration và workflow có `SubjectRef` cùng ý, esign và cms dùng `EntityRef` của files: gom về một kiểu thì event, quyền (`vrn`), topic realtime, index search nối được với nhau mà không chuyển đổi |
 | D12 | Optimistic lock, cột audit, `@TenantId`, RLS **giữ nguyên**. `TENANT_ISOLATION` vẫn chạy đúng; thêm 4 luật ArchUnit tuỳ chọn và một bộ kiểm schema | Mục 8.4 |
 
 ---
@@ -58,7 +62,10 @@ Bốn việc đã hứa trong MODULE_PLAN cho `-jpa` nhưng chưa có trong code
 
 - cms-content (forge-43) đã ghi "nếu `-jpa` chưa có thì CMS tạo hàm cùng tên" (`immutable_unaccent`);
 - ai (forge-48) đã viết hàm riêng `vyforge_unaccent`;
-- search (forge-41) cần `VietnameseText` ở Java cho cùng kết quả với SQL;
+- search (forge-41) cần `VietnameseText` ở Java cho cùng kết quả với SQL; collaboration cần bộ chuẩn hoá có ký tự thay chữ
+  cho bộ lọc, ai có `VietnameseTextNormalizer` riêng: ba bản chuẩn hoá tiếng Việt nếu không gom;
+- files có `EntityRef`, collaboration và workflow mỗi module một `SubjectRef`, cùng là "loại + id bản ghi" nhưng khác
+  kiểu và khác giới hạn độ dài cột (100/255, 150/200);
 - webhooks dùng `LocalizedText` trong `EventTypeDefinition`;
 - files, api-access tự thêm `deleted_at` và thùng rác.
 
@@ -68,7 +75,9 @@ Bốn việc đã hứa trong MODULE_PLAN cho `-jpa` nhưng chưa có trong code
 |---|---|
 | `LocalizedText`: kiểu, map JPA/jsonb, Jackson, Bean Validation, hàm HQL, sắp xếp theo collation, index | Quy trình dịch (thuộc `translations`, P2), dịch máy |
 | `@SoftDeletable`: filter tự động, xoá mềm có người xoá và lý do, khôi phục, thùng rác, purge theo retention, chặn xoá cứng, event | Xoá mềm theo cây quan hệ tự động (chỉ có hook) |
-| Tìm tiếng Việt: extension, hàm SQL, cấu hình FTS, `VietnameseText` ở Java, `searchVietnamese`, sinh cột và index | Xếp hạng, typo, synonym, facet (thuộc search, forge-41) |
+| Tìm tiếng Việt: extension, hàm SQL, cấu hình FTS, `searchVietnamese`, sinh cột và index | Xếp hạng, typo, synonym, facet, Telex/VNI (thuộc search, forge-41) |
+| `platform-core`: `VietnameseText` (`normalize`, `unaccent`, `fold`, `tokens`, `matchForm` có ký tự thay chữ và bảng vị trí) | Chuyển font cũ TCVN3/VNI sang Unicode (giữ ở ai, chuyển vào core khi có module thứ hai cần); danh sách từ cấm (thuộc collaboration) |
+| `platform-core`: `EntityRef` (định dạng, kiểm tra, parse, `vrn`, topic path, Jackson); `-jpa`: map hai cột | Kiểm bản ghi có tồn tại (thuộc SPI của từng module: `AttachmentAccessPolicy`, `SubjectAdapter`) |
 | `@Encrypted`, `@BlindIndex`, xoay khoá (job mã hoá lại), che trong log | Mã hoá kiểu số/ngày (bản đầu chỉ `String`, `byte[]`); crypto-shredding theo chủ thể |
 | Admin: thùng rác dùng chung (`@vyforge/trash`, MFE `trash-admin`) | Màn quản lý ngôn ngữ của tenant |
 
@@ -91,6 +100,9 @@ Bốn việc đã hứa trong MODULE_PLAN cho `-jpa` nhưng chưa có trong code
 | K13 | **Bản on-prem cho cơ quan nhà nước**: DBA không cấp quyền `CREATE` cho user app, tự chạy file SQL | SQL nền | `vyforge.jpa.text.install=false`, file gộp cho DBA, kiểm lúc khởi động và báo lỗi rõ |
 | K14 | **SaaS nhiều tenant**: tenant A không thấy thùng rác, kết quả tìm, giá trị giải mã của tenant B, kể cả khi DBA chép bản mã giữa hai tenant | Tất cả | Filter tenant + filter xoá mềm cùng lúc; AAD có tenant |
 | K15 | **Thêm ngôn ngữ thứ ba** (`zh` cho đối tác Trung Quốc, `ko` cho khách Hàn) mà không sửa schema | `LocalizedText` | `vyforge.jpa.localized-text.locales` cấu hình, không migration |
+| K16 | **Một hoá đơn có file đính kèm, bình luận, quy trình duyệt, hợp đồng ký số và nằm trong kết quả tìm kiếm**: năm module chỉ tới cùng một bản ghi | `EntityRef` | Một kiểu, một chuỗi chuẩn `billing:invoice/01J9…`; event `EntitySoftDeleted`/`EntityPurged` mang `EntityRef` nên files, collaboration, search, workflow nghe chung một cách |
+| K17 | **Bộ lọc bình luận** chặn "ch0 ch3t", "đ.m", "nguuuu" mà không chặn "admin", "DH-2026-0001", và che đúng đoạn trong câu gốc có dấu | `VietnameseText.matchForm` | Ký tự thay chữ chỉ trong từ có chữ cái; bảng vị trí về chuỗi gốc |
+| K18 | **Dữ liệu nhập từ nhiều nguồn** (Excel gõ Windows, iPhone gửi NFD, kiểu dấu `hoà`/`hòa`) phải trùng khi so trùng tên khách, tên tag | `VietnameseText.normalize` | Một dạng chuẩn có dấu để lưu khoá `name_norm`, so bằng nhau |
 
 ---
 
@@ -114,6 +126,18 @@ Kiểm ngày 27/10/2026. Version lấy qua GitHub Releases/Tags API và file LIC
 | **CipherSweet** / **ankane lockbox + blind_index** | v4.10.0 (05/03/2026), ISC / 2.2.0 (04/04/2026) + 2.8.1 (29/06/2026), MIT | Bản mã ngẫu nhiên + cột **blind index** (hash có khoá) | `BlindIndex` có transformation (lowercase…), độ dài bit cấu hình; slow mode Argon2id/PBKDF2 ([internals](https://ciphersweet.paragonie.com/internals/blind-index)) | Tra cứu bằng bằng-nhau mà bản mã vẫn ngẫu nhiên; độ dài bit để cân rủi ro lộ | Thêm cột; giá trị ít entropy (số điện thoại) phụ thuộc hoàn toàn vào bí mật của khoá |
 | **PostgreSQL** `unaccent`, `pg_trgm`, ICU | 18.6 (bản "Current" của tài liệu), PostgreSQL License | `unaccent` là dictionary + hàm; `pg_trgm` có opclass GIN/GiST cho `LIKE/ILIKE/~`, `%`, `<%`, `similarity()` ([unaccent](https://www.postgresql.org/docs/current/unaccent.html), [pg_trgm](https://www.postgresql.org/docs/current/pgtrgm.html)) | SQL | Cả hai là extension **trusted**: chủ database có quyền `CREATE` tự cài được, không cần superuser | Hàm `unaccent()` là `STABLE` nên không dùng thẳng trong index hay cột sinh sẵn; mẫu không có trigram (dưới 3 ký tự) thì quét cả index |
 
+Cho hai khối của `platform-core` (kiểm 27/10/2026):
+
+| Tham khảo | Version, license | Điểm liên quan | Rút ra |
+|---|---|---|---|
+| **Rails** polymorphic association | Rails 8.1.4, MIT ([guide](https://guides.rubyonrails.org/association_basics.html)) | Tham chiếu đa hình lưu **hai cột** `imageable_type` (tên class) + `imageable_id`, index ghép `[type, id]` | Học hai cột và index ghép. **Không** lưu tên class Java (đổi tên class làm hỏng dữ liệu): `type` là tên nghiệp vụ ổn định |
+| **Odoo** `res_model` + `res_id` (`ir.attachment`, `mail.message`, `mail.activity`) | 19, LGPL-3.0 | Cùng mô hình hai cột, `res_model` là tên model (`sale.order`) | Collaboration đã học theo (C1). Tên model ổn định, không phải tên class |
+| **Google AIP-122** resource names | AIP, CC-BY-4.0 ([aip.dev/122](https://google.aip.dev/122)) | Tên dạng đường dẫn không có `/` đầu; đoạn cuối không chứa `/`; ký tự an toàn DNS (RFC 1123), không dùng chữ hoa cho ID người dùng đặt; Unicode thì phải NFC; "full name" chỉ dùng khi tham chiếu vượt API | Chuỗi chuẩn `crm:order/<id>` (tương đương tên tương đối), `vrn:` là bản đầy đủ. `id` không chứa `/`. ID hệ thống (UUID, ULID) giữ nguyên hoa/thường |
+| **authz `Resources`** (platform-java, đang có) | 0.12.1 | `vrn:<service>:<resource>/<id>`, `Resources.parse` → `Ref(type, id)` | `EntityRef` thay `Resources.Ref` (giữ `Ref` làm alias deprecated một bản), chung định dạng `type` |
+| **Unicode UAX #15** (NFC) và `java.text.Normalizer` | Unicode 17; JDK 25 | NFC là dạng hợp chuẩn; chuỗi gõ trên macOS thường là NFD | `normalize` luôn NFC trước |
+| **Unicode UTS #39** (confusables, `skeleton`) | 18.0.0, rev. 34, 27/08/2026 ([tr39](https://www.unicode.org/reports/tr39/)) | `skeleton` là dạng **chỉ để so khớp nội bộ**, không để hiển thị; hai chuỗi giống nhau khi skeleton bằng nhau | `matchForm` theo đúng tinh thần đó: dạng chỉ để so, không lưu, không hiển thị. Bản đầu **không** gộp ký tự giả dạng Cyrillic/Hy Lạp (để bản sau, dùng bảng `confusables.txt`) |
+| Kiểu đặt dấu thanh cũ/mới | [Wikipedia: Vietnamese alphabet](https://en.wikipedia.org/wiki/Vietnamese_alphabet) | Kiểu cũ đặt dấu gần giữa từ (`hóa`, `hủy`); kiểu mới đặt trên nguyên âm chính (`hoá`, `huỷ`). Cả hai đều gặp trong dữ liệu thật | `normalize` đưa về **kiểu cũ** (`hòa`, `thủy`, `khỏe`), như bảng của search §3.4; sau `fold` thì hai kiểu như nhau |
+
 ### 2.2 Học theo và không làm
 
 | Học theo | Từ |
@@ -133,6 +157,8 @@ Kiểm ngày 27/10/2026. Version lấy qua GitHub Releases/Tags API và file LIC
 | `pgcrypto` / `@ColumnTransformer(read = "pgp_sym_decrypt(...)")` | Khoá phải gửi xuống DB trong câu SQL, lộ qua log câu lệnh và `pg_stat_statements` |
 | Collation ICU không tất định (`deterministic = false`) để so không dấu | Đã kiểm: với locale `vi-VN-u-ks-level1`, `'Nguyễn' = 'nguyen'` và `'Đức' = 'duc'` đều **false** (tiếng Việt coi `ê`, `đ` là chữ riêng ở mức primary). Locale `und-u-ks-level1` thì true, nhưng `LIKE` không chạy trên collation không tất định ở nhiều phiên bản và không dùng được GIN trigram |
 | Tự viết bảng bỏ dấu ở Java | Dễ lệch với PostgreSQL; đọc chính `unaccent.rules` (D8) |
+| Ký tự thay chữ (`0→o`) trong `fold` hoặc trong hàm SQL | Phá mã, số điện thoại, số tiền; chỉ dùng cho bộ lọc (`matchForm`) |
+| Lưu tên class Java làm `type` của `EntityRef` (Rails) | Đổi tên hay chuyển package làm hỏng dữ liệu và event đã phát |
 
 ### 2.3 Kiểm thật (PostgreSQL 18.6 trong Docker `postgres:18`, Hibernate 7.4.5)
 
@@ -187,13 +213,16 @@ flowchart TB
     direction TB
     i18n["i18n: LocalizedText, LocalizedTextType, LocalizedSpecs, @LocalizedRequired"]
     sd["softdelete: SoftDeletableEntity/…TenantEntity, SoftDeletes, SoftDeletePurger, guard remove(), TrashRegistry"]
-    text["text: VietnameseText, VietnameseSearch (searchVietnamese), SqlFoundation (SQL nền)"]
+    text["text: VietnameseSearch (searchVietnamese), SqlFoundation (SQL nền), VietnameseTextContract"]
+    refType["ref: EntityRefType (2 cột)"]
     crypt["crypto: @Encrypted, @BlindIndex, EncryptedStringType, BlindIndexer, EncryptionRotation"]
     fn["VyforgeFunctionContributor: localized(), fold(), localized_fold(), has_locale()"]
     trashApi["trash.web: REST /api/v1/trash (tuỳ chọn: có -web + -authz)"]
   end
 
-  core["platform-core: TenantContext, SecretCipher"]
+  core["platform-core: TenantContext, SecretCipher, VietnameseText (text), EntityRef (ref)"]
+  users["search, collaboration, files, workflow, esign, cms, master-data, ai"]
+  users --> core
   sched["platform-starter-scheduling: SoftDeletePurgeJob, EncryptionRotationJob"]
   test["platform-test: luật ArchUnit, JpaExtrasSchemaChecks, VietnameseTextContract"]
   pg[("PostgreSQL 18: schema vyforge (unaccent, pg_trgm, hàm, FTS vyforge.vi), bảng của app")]
@@ -207,6 +236,8 @@ flowchart TB
   svc --> sd
   i18n --> fn
   text --> fn
+  text --> core
+  refType --> core
   crypt --> core
   sd --> ev --> files
   sched --> sd & crypt
@@ -216,7 +247,9 @@ flowchart TB
   mfe --> web --> trashApi
 ```
 
-Bốn package mới trong `com.vyforge.platform.jpa`: `i18n`, `softdelete`, `text`, `crypto`, cộng `trash.web`. Không phụ
+Năm package mới trong `com.vyforge.platform.jpa`: `i18n`, `softdelete`, `text`, `crypto`, `ref`, cộng `trash.web`. Hai
+package mới trong `com.vyforge.platform.core`: `text` (`VietnameseText`), `ref` (`EntityRef`), không thêm phụ thuộc Maven
+cho core (file quy tắc là resource; `EntityRef` là record nên Jackson ghi/đọc `{"type","id"}` không cần annotation). Không phụ
 thuộc mới bắt buộc. `platform-starter-authz`, `spring-webmvc` là `optional` (như `spring-security-core` đang làm), dùng
 cho REST thùng rác; `-authz` không phụ thuộc `-jpa` nên không có vòng.
 
@@ -290,7 +323,7 @@ sequenceDiagram
   S->>SD: delete(customer, "trùng")
   SD->>L: beforeSoftDelete(customer) (có thể ném SoftDeleteVetoException)
   SD->>H: set deletedAt=now, deletedBy=sub, deleteReason → flush: UPDATE … where id=? and version=?
-  SD->>E: EntitySoftDeleted(tenant, "crm.customer", id, actor, purgeAfter)
+  SD->>E: EntitySoftDeleted(tenant, "crm:customer", id, actor, purgeAfter)
   Note over H: Từ đây: find(42)=null, mọi query bỏ qua dòng 42
   U->>S: khôi phục (trong 30 ngày)
   S->>SD: restore(Customer.class, 42)
@@ -421,6 +454,7 @@ erDiagram
 | `@Encrypted` | `<field>` | `text` | Bản mã `v1:<kid>:<base64url>`: dài ≈ `ceil((n + 28) · 4/3) + 4 + len(kid)` byte với `n` là byte UTF-8 của bản rõ |
 | `@BlindIndex` | `<field>_bidx` | `varchar(40)` | `<kid>:<base64url 16 byte>` |
 | Tìm theo cột text thường | `<field>_fold` | `text generated always as (vyforge.fold(<field>)) stored` | |
+| `EntityRef` | `<prefix>_type`, `<prefix>_id` | `varchar(100)`, `varchar(200)` | Mục 5.7. files (`entity_*`, đang 255), workflow (`subject_*`, đang 150/200) chỉnh về cùng độ dài |
 
 ### 4.3 DDL dự kiến
 
@@ -603,7 +637,7 @@ package com.vyforge.platform.jpa.softdelete;
 /** Đánh dấu entity xoá mềm. Entity phải kế thừa SoftDeletableEntity hoặc SoftDeletableTenantEntity (kiểm lúc khởi động). */
 @Target(TYPE) @Retention(RUNTIME)
 public @interface SoftDeletable {
-    /** Tên loại ổn định cho event, thùng rác, metric: "crm.customer". Mặc định: tên bảng. */
+    /** Tên loại ổn định, dạng EntityRef.type: "crm:customer". Dùng cho event, thùng rác, metric. Mặc định: "<app>:<tên bảng>". */
     String type() default "";
     /** Hạn thùng rác ISO-8601 ("P30D"); "" = vyforge.jpa.soft-delete.retention; "P0D" = không tự purge. */
     String retention() default "";
@@ -652,15 +686,7 @@ public interface SoftDeletePurger {
 ```java
 package com.vyforge.platform.jpa.text;
 
-public final class VietnameseText {
-    /** NFC, đổi dấu thanh về kiểu chuẩn (hoà→hòa, thuỷ→thủy), chữ thường theo locale vi. Không bỏ dấu. */
-    public static String normalize(String s);
-    /** Bỏ dấu theo đúng unaccent.rules của PostgreSQL 18 (nhúng trong jar), rồi chữ thường: "Đà Nẵng" → "da nang". */
-    public static String fold(String s);
-    /** Âm tiết theo khoảng trắng và dấu câu, đã fold. */
-    public static List<String> foldedTokens(String s);
-}
-
+// VietnameseText nằm ở platform-core (mục 5.6); package này chỉ có phần cần JPA/SQL.
 public final class VietnameseSearch {
     /** fold_col LIKE '%' || vyforge.fold(:q) || '%' cho từng cụm; câu < min-length → prefix hoặc SearchTooShortException. */
     public static <T> Specification<T> searchVietnamese(String foldedProperty, @Nullable String query);
@@ -723,7 +749,7 @@ paths:
     get:
       summary: Bản ghi đã xoá (phân trang, lọc theo người xoá, khoảng ngày, từ khoá không dấu)
       parameters:
-        - { name: type, in: path, required: true, schema: { type: string, example: crm.customer } }
+        - { name: type, in: path, required: true, schema: { type: string, example: crm:customer } }
         - { name: q, in: query, schema: { type: string } }
         - { name: deletedBy, in: query, schema: { type: string } }
         - { name: page, in: query, schema: { type: integer } }
@@ -782,7 +808,116 @@ Quyền (catalog action của module `trash`, khai báo bằng `ActionCatalog` c
 `TrashResource` có thể khai báo action riêng của module sở hữu (vd. `crm:customer:Restore`); khi đó REST kiểm action đó
 thay cho action chung. Mỗi thao tác ghi `AuditLog` nếu có `-audit`.
 
-### 5.6 Event công khai
+### 5.6 Java: `VietnameseText` (platform-core)
+
+```java
+package com.vyforge.platform.core.text;
+
+/** Chuẩn hoá tiếng Việt dùng chung. Thuần Java, không I/O ngoài đọc resource lúc nạp class, thread-safe. */
+public final class VietnameseText {
+
+    /** Version bộ quy tắc ("vi-1"). Đổi kết quả của bất kỳ hàm nào thì tăng (search, tags lưu dạng đã chuẩn hoá). */
+    public static final String VERSION = "vi-1";
+
+    /** NFC → đặt dấu thanh kiểu truyền thống (hoà→hòa, thuỷ→thủy, khoẻ→khỏe) → chữ thường Locale vi → gộp khoảng trắng.
+     *  GIỮ dấu. Dùng làm khoá so trùng có dấu (tags.name_norm, master-data). */
+    public static String normalize(String s);
+
+    /** Bỏ dấu theo unaccent.rules của PostgreSQL 18 (nhúng trong jar), KHÔNG đổi hoa/thường.
+     *  Bằng đúng vyforge.immutable_unaccent(s) (test hợp đồng). */
+    public static String unaccent(String s);
+
+    /** unaccent rồi chữ thường: "Đà Nẵng" → "da nang". Bằng đúng vyforge.fold(s). */
+    public static String fold(String s);
+
+    /** Âm tiết theo ranh giới từ Unicode (giữ email, URL, mã có gạch nối nguyên khối), đã normalize. */
+    public static List<String> tokens(String s);
+
+    /** Như tokens rồi fold từng âm tiết. */
+    public static List<String> foldedTokens(String s);
+
+    /** Dạng để so khớp bộ lọc (kiểu skeleton của UTS #39): không lưu, không hiển thị. */
+    public static MatchForm matchForm(String s, MatchOptions options);
+}
+
+public record MatchOptions(boolean substitutions, boolean stripInfix, int collapseRepeatsAt,
+                           Map<Character, Character> extraSubstitutions) {
+    /** substitutions=true, stripInfix=true, collapseRepeatsAt=3. */
+    public static MatchOptions moderation();
+}
+
+/** text() là dạng so khớp; sourceRange(start, end) trả đoạn tương ứng trong chuỗi gốc (để MASK đúng chỗ). */
+public interface MatchForm {
+    String text();
+    Range sourceRange(int start, int end);
+}
+```
+
+Quy tắc `matchForm` (thứ tự cố định, áp cho cả pattern và nội dung):
+
+| Bước | Quy tắc | Ví dụ |
+|---|---|---|
+| 1 | `normalize` rồi `fold` | "ĐM" → "dm"; "địt" → "dit" |
+| 2 | Ký tự thay chữ, **chỉ trong token có ít nhất một chữ cái**: `0→o`, `1→i`, `!→i`, `3→e`, `4→a`, `@→a`, `5→s`, `$→s`, `7→t` (+ `extraSubstitutions` của tenant) | "ch0 ch3t" → "cho chet"; "2026", "0912345678" giữ nguyên; email `a@b.vn` là token email nên giữ nguyên |
+| 3 | Bỏ ký tự chèn trong một từ: `.`, `*`, `-`, `_` giữa hai chữ cái; chuỗi chữ cái đơn cách nhau một khoảng trắng gộp lại | "đ.m", "d m" → "dm"; "DH-2026" giữ (có số) |
+| 4 | Gộp chữ lặp ≥ `collapseRepeatsAt` lần thành một | "nguuuuu" → "ngu"; "xoong" giữ (lặp 2) |
+
+Mọi bước giữ bảng vị trí (mỗi ký tự của `text()` trỏ về khoảng trong chuỗi gốc), nên collaboration che đúng "ch3t" trong
+câu gốc. Danh sách từ cấm và cách khớp `WORD`/`PHRASE` vẫn thuộc collaboration (§6.4 của thiết kế đó).
+
+Phần nào có bản SQL: chỉ `unaccent` (`vyforge.immutable_unaccent`) và `fold` (`vyforge.fold`). `normalize`, `tokens`,
+`matchForm` chỉ ở Java (search và collaboration xử lý ở Java trước khi ghi). `-jpa` giữ `VietnameseTextContract`
+(test hợp đồng cần PostgreSQL) và `SqlFoundation` kiểm nhanh lúc khởi động (mục 3.3).
+
+Giới hạn hợp đồng Java ↔ SQL: database phải có `LC_CTYPE` UTF-8 (hoặc locale provider ICU) để `lower()` của PostgreSQL
+đổi được chữ ngoài ASCII; với `LC_CTYPE=C`, `lower('Ж')` giữ nguyên còn Java đổi. `SqlFoundation` kiểm và WARN như mục
+3.3. Bộ mẫu hợp đồng phủ đủ 134 chữ Việt có dấu, NFD, `Ð` (U+00D0), Latin mở rộng trong `unaccent.rules`; chữ ngoài phạm
+vi đó (Cyrillic, CJK) chỉ cam kết bằng nhau khi `LC_CTYPE` UTF-8.
+
+### 5.7 Java: `EntityRef` (platform-core)
+
+```java
+package com.vyforge.platform.core.ref;
+
+/**
+ * Tham chiếu tới một bản ghi nghiệp vụ, dùng chung cho files (attachment), collaboration (subject), workflow (subject),
+ * search (document nguồn), esign, cms, event xoá mềm. Chuỗi chuẩn "crm:order/01J9ZK…" (= vrn bỏ tiền tố "vrn:").
+ *
+ * type: "<service>:<resource>", service [a-z][a-z0-9-]{0,39}, resource [a-z][a-z0-9-]{0,58}, tổng ≤ 100.
+ * id:   [A-Za-z0-9._~%-]{1,200}, không có "/" hay ":" (UUID, ULID, số, mã như "DH-2026-0001").
+ */
+public record EntityRef(String type, String id) implements Comparable<EntityRef> {
+
+    public EntityRef { /* kiểm định dạng, ném InvalidEntityRefException (code PLATFORM_INVALID_ENTITY_REF) */ }
+
+    public static EntityRef of(String service, String resource, Object id);
+    /** Khoá nghiệp vụ có ký tự ngoài tập cho phép ("HD/2026/001", "Mã ĐH 1"): percent-encode UTF-8 theo RFC 3986. */
+    public static EntityRef ofKey(String type, String rawKey);
+    /** Nhận "crm:order/01J9" hoặc "vrn:crm:order/01J9". */
+    public static EntityRef parse(String value);
+    public static Optional<EntityRef> tryParse(@Nullable String value);
+    public static boolean isValidType(String type);
+
+    public String service();             // "crm"
+    public String resource();            // "order"
+    public String rawKey();              // giải percent-encode của id
+    public String vrn();                 // "vrn:crm:order/01J9" — resource của Authz.check
+    public String topicPath();           // "crm/order/01J9" — topic realtime (không cho ":")
+    @Override public String toString();  // chuỗi chuẩn
+}
+```
+
+| Quy ước | Nội dung |
+|---|---|
+| Cột DB | Hai cột `<prefix>_type varchar(100) not null`, `<prefix>_id varchar(200) not null`, index ghép `(tenant_id, <prefix>_type, <prefix>_id)`. Khi chỉ cần một cột (bảng log, khoá idempotency): `<prefix>_ref varchar(301)` chứa chuỗi chuẩn |
+| JPA | `-jpa` đăng ký `EntityRefType implements CompositeUserType<EntityRef>` bằng `@CompositeTypeRegistration` (có trong Hibernate 7.4.5), nên field chỉ cần `@AttributeOverride` tên cột: `@AttributeOverride(name = "type", column = @Column(name = "entity_type"))`. HQL `where a.entity.type = :t` chạy được |
+| JSON | `{"type": "crm:order", "id": "01J9…"}` (record mặc định của Jackson 3). Query param REST dùng chuỗi chuẩn (`?entity=crm:order/01J9`) |
+| `type` | Là tên nghiệp vụ ổn định, **không** phải tên class. Trùng `<service>:<resource>` của action catalog authz khi có, để `Authz.check("crm:order:Read", ref.vrn())` |
+| Kiểm tồn tại | `EntityRef` không biết bản ghi có tồn tại: đó là việc của SPI ở module dùng (`AttachmentAccessPolicy`, `SubjectAdapter`) |
+| Phiên bản bản ghi | Không thuộc `EntityRef`. Workflow giữ `SubjectRef(EntityRef entity, @Nullable String revision)` |
+| authz | `Resources.Ref` thành `@Deprecated` alias, `Resources.parse` trả `EntityRef` ở bản sau (tránh đổi API giữa chừng) |
+
+### 5.8 Event công khai
 
 Record trong `com.vyforge.platform.jpa.softdelete.event`, implement `TenantAwareEvent`. Publish bằng
 `ApplicationEventPublisher` trong transaction (có Spring Modulith thì đi qua `event_publication`, `@Externalized` do app
@@ -790,18 +925,19 @@ quyết định).
 
 | Event | Trường | Ai nghe |
 |---|---|---|
-| `EntitySoftDeleted` | `tenantId, type, id, deletedBy, reason, purgeAfter, occurredAt` | files (đưa attachment vào thùng rác), search (gỡ khỏi index), collaboration, webhooks |
-| `EntityRestored` | `tenantId, type, id, restoredBy, occurredAt` | files, search (index lại) |
-| `EntityPurged` | `tenantId, type, ids, mode (HARD/ANONYMIZE), reason, occurredAt` | files (purge file), search, privacy-dsr (bằng chứng xoá), audit |
+| `EntitySoftDeleted` | `tenantId, ref` (`EntityRef`, `type` = `@SoftDeletable.type`), `deletedBy, reason, purgeAfter, occurredAt` | files (đưa attachment vào thùng rác), search (gỡ khỏi index), collaboration, webhooks |
+| `EntityRestored` | `tenantId, ref, restoredBy, occurredAt` | files, search (index lại) |
+| `EntityPurged` | `tenantId, type, ids` (+ `refs()` tiện dụng), `mode (HARD/ANONYMIZE), reason, occurredAt` | files (purge file), search, privacy-dsr (bằng chứng xoá), audit |
 
 Không có event cho `LocalizedText` và mã hoá (không phải thay đổi nghiệp vụ). `EncryptionRotation` chỉ có metric.
 
-### 5.7 Frontend
+### 5.9 Frontend
 
 | Package | Thêm | Ghi chú |
 |---|---|---|
 | `@vyforge/i18n` | `type LocalizedText = Partial<Record<string, string>>`, `pickLocalized(text, locale, fallback = routing.locales)` (cùng quy tắc D2), `localizedTextSchema({ required: ['vi'], max })` (zod) | Không phụ thuộc React |
 | `@vyforge/ui` | `<LocalizedTextField>` (tab theo locale, đánh dấu tab còn trống, đếm ký tự), `<LocalizedText value>` (hiển thị theo locale hiện tại) | Dùng trong form của `admin-kit` |
+| `@vyforge/api-client` | `type EntityRef = { type: string; id: string }`, `formatEntityRef`, `parseEntityRef`, `isEntityRef` (cùng regex với Java, test bằng file JSON mẫu chung) | files, collaboration, workflow, search dùng chung ở frontend |
 | `@vyforge/trash` | Client server-only (`createTrashClient({ baseUrl, getAccessToken })` qua `@vyforge/api-client`); `/admin`: `<TrashTypeList>`, `<TrashTable>` (lọc, khôi phục, xoá vĩnh viễn có xác nhận, cột "tự xoá sau"), nhận `can` qua props | Theo D5 của platform-services |
 
 ---
@@ -813,7 +949,7 @@ Không có event cho `LocalizedText` và mã hoá (không phải thay đổi ngh
 | `SoftDeleteListener<T>` | Bean generic theo entity; `beforeSoftDelete` (ném `SoftDeleteVetoException` để chặn), `afterSoftDelete`, `afterRestore`, `beforePurge`, `anonymize` (cho `PurgeMode.ANONYMIZE`) | Xoá mềm khách hàng thì xoá mềm luôn địa chỉ của khách |
 | `PurgeVeto` | `boolean allowPurge(PurgeCandidate c)`; mọi bean được hỏi, một bean cấm là không purge | files: bản ghi có attachment đang legal hold; kế toán: hoá đơn chưa hết hạn lưu |
 | `RetentionPolicyResolver` | `Duration retentionFor(String type, String tenantId)` | Module `settings`: tenant chọn hạn thùng rác 90 ngày |
-| `TrashResource` | `type()`, `entity()`, `title()` (`LocalizedText`), `label(entity)`, `actions()` | Đăng ký `crm.customer` để hiện trong thùng rác chung |
+| `TrashResource` | `type()`, `entity()`, `title()` (`LocalizedText`), `label(entity)`, `actions()` | Đăng ký `crm:customer` để hiện trong thùng rác chung |
 | `BlindIndexNormalizer` | Bean có tên, `String normalize(String)` | Chuẩn hoá mã khách hàng cũ `KH-000123` → `kh123` |
 | `LocaleChain` | Chuỗi locale cho request | Tenant ở Nhật đặt mặc định `ja, en` |
 | Hàm HQL thêm | App tự thêm `FunctionContributor` (Hibernate SPI) | Không cần sửa starter |
@@ -824,7 +960,7 @@ Ví dụ: entity dùng đủ bốn tính năng.
 ```java
 @Entity
 @Table(name = "crm_customer")
-@SoftDeletable(type = "crm.customer", retention = "P90D")
+@SoftDeletable(type = "crm:customer", retention = "P90D")
 public class Customer extends SoftDeletableTenantEntity {
 
     @LocalizedRequired("vi")
@@ -1023,7 +1159,8 @@ và dùng hàm `vyforge.*`; cột `@Encrypted` không có index thường.
 | # | Phần | Nội dung | Test |
 |---|---|---|---|
 | 1 | `text`: SQL nền | `SqlFoundation` (database initializer order -100), `jpa-text.sql`, kiểm version, `install=false`, `@TenantExempt` | Testcontainers `postgres:18`: database mới + Flyway của app dùng `vyforge.fold` trong cột sinh sẵn; user không có quyền `CREATE` + `install=false`; chạy lại idempotent |
-| 2 | `text`: `VietnameseText` | Nạp `unaccent.rules` (nhúng từ PG 18.6), `normalize`, `fold`, `foldedTokens` | Unit; **test hợp đồng** `VietnameseTextContract` (bộ chữ Việt đủ 134 ký tự có dấu, NFD, chữ hoa, Latin mở rộng) so với `vyforge.fold` trên DB thật; xuất ra `platform-test` để search chạy lại |
+| 2 | `platform-core`: `VietnameseText`, `EntityRef` | `core.text`: nạp `unaccent.rules` (nhúng từ PG 18.6, trie khớp dài nhất như `unaccent.c`), `normalize`, `unaccent`, `fold`, `tokens`, `matchForm`. `core.ref`: `EntityRef`, `InvalidEntityRefException`; `Resources.Ref` deprecated | Unit: bảng dấu thanh, NFD, leet chỉ trong token có chữ ("2026", SĐT, email giữ nguyên), bảng vị trí của `matchForm` (property-based: mọi đoạn trả về nằm trong chuỗi gốc), `EntityRef` hợp lệ/không hợp lệ, `ofKey` round-trip, `vrn()` khớp `Resources.of`. File mẫu JSON dùng chung với TS |
+| 2b | `-jpa`: `VietnameseTextContract`, `EntityRefType` | **Test hợp đồng** (134 chữ Việt có dấu, NFD, chữ hoa, Latin mở rộng) so `VietnameseText.unaccent/fold` với `vyforge.immutable_unaccent/fold` trên `postgres:18`; xuất ra `platform-test` để search, master-data chạy lại. `EntityRefType` + `@CompositeTypeRegistration` | Testcontainers; HQL lọc theo `entity.type` |
 | 3 | `FunctionContributor` + `searchVietnamese` | Hàm HQL `fold`, `localized`, `localized_fold`, `has_locale`; `VietnameseSearch` | Integration: explain dùng GIN; escape `%_\`; câu ngắn PREFIX/REJECT |
 | 4 | `i18n`: `LocalizedText` | Value object, `LocalizedTextType` + `TypeContributor`, Jackson 3 module, Bean Validation, `LocalizedSpecs` | Unit fallback (D2) đối chiếu với `vyforge.localized` trên DB (cùng bộ dữ liệu); integration: lưu/đọc, dirty checking, sort có index |
 | 5 | `softdelete` | Superclass, `FilterDef`, `SoftDeletes`, `SoftDeleteGuard`, `SoftDeleteIntegrator` (kiểm EAGER), event, listener, veto, `SoftDeletePurger` | Integration: find/list/join ẩn dòng đã xoá; restore có version; `RestoreConflictException`; `remove()` bị chặn; purge theo lô với FK; **hai tenant** (A không thấy/khôi phục/purge dòng của B), có và không có RLS |
@@ -1043,9 +1180,16 @@ platform-services), theo mục 6 của module-conventions.
 - Kiểu đặt dấu cũ/mới: "hoà"/"hòa", "thuỷ"/"thủy", "khoẻ"/"khỏe".
 - Chuỗi NFD (gõ trên macOS), chữ hoa có dấu ("ĐÀ NẴNG"), `Ð` (U+00D0, chữ Eth hay bị nhầm với `Đ` U+0110).
 - Sắp xếp: "Anh, Ảnh, Ánh, Bình, Dũng, Đức, Ô, Ông, Ơn, Út, Ưng".
+- `matchForm`: "ch0 ch3t" → "cho chet"; "đ.m", "d m" → "dm"; "nguuuuu" → "ngu"; giữ "admin", "xoong", "2026",
+  "0912 345 678", "DH-2026-0001", "an.nguyen@acme.vn".
+- `EntityRef`: hợp lệ `crm:order/01J9ZK3Q…`, `billing:invoice/123`, `finance:payment-request/DH-2026-0001`; không hợp lệ
+  `Crm:order/1`, `crm/order/1`, `crm:order/`, `crm:order/a/b`, id 201 ký tự; `ofKey("billing:invoice", "HD/2026/001")`
+  → `billing:invoice/HD%2F2026%2F001` và `rawKey()` trả lại chuỗi gốc.
 
 ### 9.4 Để bản sau
 
+- Gộp ký tự giả dạng (Cyrillic `а`, Hy Lạp `ο`) theo `confusables.txt` của UTS #39 trong `matchForm`.
+- Chuyển font cũ TCVN3/VNI sang Unicode trong `VietnameseText` (hiện ở ai).
 - Mã hoá kiểu khác `String` (`LocalDate`, `BigDecimal`) qua converter về chuỗi.
 - Crypto-shredding: khoá dữ liệu riêng theo chủ thể dữ liệu, xoá khoá = xoá dữ liệu kể cả trong backup.
 - AAD gắn id dòng (cần Hibernate event listener thay vì `UserType`).
@@ -1126,6 +1270,10 @@ i18n vi/en cho mọi nhãn; component dùng `@vyforge/ui` (`DataTable` của adm
 5. **Blind index 128 bit**, khoá riêng; không có mã hoá deterministic.
 6. **Thùng rác là opt-in** theo `TrashResource`; REST trong `-jpa` với phụ thuộc optional `-web`/`-authz`.
 7. Job purge và xoay khoá đặt ở `-scheduling` (tránh vòng phụ thuộc).
+8. **`VietnameseText` và `EntityRef` vào `platform-core`** (trả lời Q2, Q6 của collaboration và Q5 của master-data):
+   có ngay ở 0.13, không chờ 0.14. Tên `SubjectRef` của collaboration bỏ, dùng `EntityRef`; workflow giữ `SubjectRef` nhưng
+   bọc `EntityRef` + `revision`.
+9. **Ký tự thay chữ chỉ ở `matchForm`**, không ở `fold`/SQL. Dấu thanh chuẩn hoá về kiểu truyền thống (`hòa`).
 
 Không còn quyết định nào cần người dùng chọn.
 
@@ -1133,9 +1281,15 @@ Không còn quyết định nào cần người dùng chọn.
 
 | Tab | Việc | Gấp |
 |---|---|---|
-| search (forge-41) | Đổi tên theo §3.11 của search: `vyforge.immutable_unaccent`, `vyforge.vi` (thay `vyforge_vi`), `VietnameseText.normalize/fold` giữ đúng tên đã đề xuất; migration kiểm `to_regprocedure('vyforge.immutable_unaccent(text)')`; cờ bật là `vyforge.jpa.text.install` (không phải `vyforge.jpa.vietnamese-search`). Chạy lại `VietnameseTextContract` | Trước khi search triển khai |
+| search (forge-41) | `VietnameseText` import từ `com.vyforge.platform.core.text` (không phải `-jpa`); `VietnameseAnalyzer.VERSION` gắn với `VietnameseText.VERSION`; document nguồn mang `EntityRef`. Đổi tên theo §3.11 của search: `vyforge.immutable_unaccent`, `vyforge.vi` (thay `vyforge_vi`), `VietnameseText.normalize/fold` giữ đúng tên đã đề xuất; migration kiểm `to_regprocedure('vyforge.immutable_unaccent(text)')`; cờ bật là `vyforge.jpa.text.install` (không phải `vyforge.jpa.vietnamese-search`). Chạy lại `VietnameseTextContract` | Trước khi search triển khai |
 | cms-content (forge-43) | Bỏ phương án "tạo hàm cùng tên trong migration của CMS"; dùng `vyforge.immutable_unaccent`/`vyforge.fold`; index trigram dùng `vyforge.gin_trgm_ops` (và `btree_gin` nếu đặt `tenant_id` đầu) | Trước khi CMS triển khai |
 | ai (forge-48) | Đổi `vyforge_unaccent` thành `vyforge.immutable_unaccent`; `tsv` dùng `to_tsvector('vyforge.vi', content)` | Trước khi ai triển khai |
+| collaboration | Thay `SubjectRef` bằng `com.vyforge.platform.core.ref.EntityRef` (giữ `vrn()`, `topicPath()`); bộ lọc dùng `VietnameseText.matchForm(s, MatchOptions.moderation())`, giữ danh sách từ và `WORD`/`PHRASE`; tags `name_norm` = `VietnameseText.normalize` | Trước khi collaboration triển khai |
+| workflow | `SubjectRef(EntityRef entity, @Nullable String revision)`; cột `subject_type varchar(100)` (đang 150) | Trước khi workflow triển khai |
+| files | `EntityRef` import từ core (bỏ record riêng); cột `entity_id varchar(200)` (đang 255); map bằng `EntityRefType` |  Trước khi files triển khai |
+| esign, cms-content | Dùng `EntityRef` của core (thiết kế đang trỏ tới files) | |
+| master-data (forge-38) | Q5 đã có câu trả lời: `LocalizedText` ở `-jpa`, `VietnameseText.fold` ở core, `vyforge.immutable_unaccent` trong SQL nền; không làm bản nội bộ | |
+| ai (forge-48) | `VietnameseTextNormalizer` giữ phần chuyển TCVN3/VNI, gọi `VietnameseText.normalize` cho phần NFC và dấu thanh | |
 | files | Nghe `EntitySoftDeleted`/`EntityRestored`/`EntityPurged` cho `onEntityDeleted` của bucket; cài `PurgeVeto` cho legal hold | Khi files triển khai |
 | privacy-dsr (forge-44) | Handler ERASE gọi `SoftDeletes.purgeNow` hoặc `PurgeMode.ANONYMIZE`; cài `PurgeVeto` cho retention theo luật | |
 | webhooks, master-data (forge-38) | Dùng `com.vyforge.platform.jpa.i18n.LocalizedText` | |
