@@ -103,7 +103,7 @@ Storage S3-compatible tự host và adapter khác:
 | RustFS | 1.0.4, Apache-2.0 | Thay thế MinIO, mới; chỉ test khi khách hàng chọn |
 | MinIO bản cộng đồng | archive | Không dùng (đã chốt trong báo cáo module thông dụng) |
 | Azure Blob (`com.azure:azure-storage-blob`) | 12.36.0, MIT | Upload theo block: `Put Block` + `Put Block List`; ≤ 50.000 block, block ≤ 4.000 MiB; block chưa commit tự xoá sau 7 ngày; SAS (user delegation, service, account) cấp quyền cho từng thao tác; có legal hold và immutability policy ở mức blob ([Put Block List](https://learn.microsoft.com/en-us/rest/api/storageservices/put-block-list)) |
-| Google Cloud Storage (`com.google.cloud:google-cloud-storage`) | 2.75.0, Apache-2.0 (repo `googleapis/java-storage` đã archive, thư viện vẫn phát hành) | XML API multipart **tương thích S3 multipart**, part ≥ 5 MiB ([multipart](https://docs.cloud.google.com/storage/docs/multipart-uploads)); V4 signed URL |
+| Google Cloud Storage (`com.google.cloud:google-cloud-storage`) | 2.75.0, Apache-2.0 (repo `googleapis/java-storage` đã archive, thư viện vẫn phát hành) | XML API multipart **tương thích S3 multipart**, part ≥ 5 MiB ([multipart](https://docs.cloud.google.com/storage/docs/multipart-uploads)); V4 signed URL. Lúc triển khai chọn đi qua XML API tương thích S3 bằng adapter S3 (HMAC key), không kéo thư viện này |
 | VNG Cloud vStorage | dịch vụ | Tương thích S3, dùng SDK S3 của AWS ([vStorage](https://docs.vngcloud.vn/vng-cloud-document/vn/vstorage/object-storage/vstorage-hcm03/vstorage-la-gi)). Viettel IDC, FPT Cloud: chưa kiểm chứng được tài liệu API S3 công khai, phải test trước khi cam kết |
 
 Thư viện xử lý:
@@ -226,7 +226,7 @@ com.vyforge.platform.files.internal        Entity JPA, repository, chính sách,
 com.vyforge.platform.files.web             Controller REST, DTO
 com.vyforge.platform.files.adapter.s3      AWS SDK v2 (S3, SeaweedFS, RustFS, R2, Ceph, vStorage…)
 com.vyforge.platform.files.adapter.azure   azure-storage-blob (optional dependency, @ConditionalOnClass)
-com.vyforge.platform.files.adapter.gcs     google-cloud-storage (optional dependency, @ConditionalOnClass)
+com.vyforge.platform.files.adapter.gcs     GCS qua XML API tương thích S3 (dùng lại adapter S3, không cần google-cloud-storage)
 com.vyforge.platform.files.adapter.local   Filesystem + URL ký HMAC tới endpoint của app
 com.vyforge.platform.files.adapter.clamav  Client INSTREAM tự viết
 com.vyforge.platform.files.adapter.imgproxy, .jvmimage, .pdfbox, .tika, .cloudfront, .hmaccdn
@@ -1346,7 +1346,7 @@ văn** trước khi cam kết với khách):
 | 7 | Download (presign, `Content-Disposition` RFC 6266), public publish, proxy, share link, legal hold, retention, thùng rác, purge, `FileErasure` | Integration + `TenantIsolationTests` |
 | 8 | Attachment + `AttachmentAccessPolicy` (cấu hình và bean) + authz | `TestAuthz` với policy theo bản ghi cha |
 | 9 | Ảnh: imgproxy URL signer, JVM transformer, PDFBox preview, strip EXIF | Unit (chữ ký imgproxy khớp vector của tài liệu); integration với container imgproxy v4.0.19 |
-| 10 | Adapter Azure (Azurite) và GCS (fake-gcs-server) | Contract test |
+| 10 | Adapter Azure (Azurite); GCS dùng adapter S3 với endpoint `storage.googleapis.com` + HMAC key | Contract test trên Azurite; GCS chưa test với GCS thật |
 | 11 | Job `@ClusterScheduled`: purge, retention, hết hạn upload, đối soát quota, quét mồ côi | Integration |
 | 12 | Metric, health, README module, mục ADR | |
 | 13 | `@vyforge/files`: client server-only, route handlers, engine upload, React hooks, UI, i18n | Vitest + MSW (route handler, client), test engine với XHR giả (part lỗi, resume, huỷ), test component (Testing Library); `examples/next-app` có trang upload |
@@ -1358,8 +1358,7 @@ Toàn repo: `./mvnw -s $MVN_SETTINGS clean install` xanh; web: lint, typecheck, 
 `platform-starter-web`, `-security`, `-jpa`, `-messaging` (outbox, `TenantAwareEvent`), `-authz`, `-audit`, `-privacy`,
 `-scheduling`, `-ratelimit` (optional). Ngoài: `software.amazon.awssdk:s3` 2.57.3 (bắt buộc), `org.apache.tika:tika-core`
 4.1.0, `org.apache.pdfbox:pdfbox` 3.0.8 (optional), `net.coobird:thumbnailator` 0.4.21 + `com.twelvemonkeys.imageio:imageio-webp`
-3.15.3 (optional), `com.azure:azure-storage-blob` 12.36.0 (optional), `com.google.cloud:google-cloud-storage` 2.75.0
-(optional), `software.amazon.awssdk:cloudfront` 2.57.3 (optional). Version quản lý trong `platform-bom`.
+3.15.3 (optional), `com.azure:azure-storage-blob` 12.36.0 (optional), `software.amazon.awssdk:cloudfront` 2.57.3 (optional). Version quản lý trong `platform-bom`.
 
 ### 9.3 Để bản sau
 
