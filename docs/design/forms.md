@@ -1,6 +1,6 @@
 # Thiết kế module forms: `platform-forms-core` + `platform-starter-forms` + `@vyforge/forms` + zone `forms-admin`
 
-> **Trạng thái:** đề xuất, chờ duyệt (27/10/2026), phiên forge-56.
+> **Trạng thái:** đề xuất, chờ duyệt (27/10/2026), phiên forge-56. Đã đối chiếu với các thiết kế đã merge: workflow, collaboration, master-data, search, api-access, cms-content, privacy-dsr, billing, ekyc, esign (§6.7, §9.4).
 > **Phạm vi:** form builder, form động và khảo sát dùng chung cho mọi dự án Vyforge. Định nghĩa form có version, mô tả
 > bằng JSON Schema 2020-12 + UI schema, logic hiện/ẩn, nhiều trang, i18n vi/en; kiểm phía server bằng networknt
 > json-schema-validator; renderer web dùng chung với `admin-kit` và `custom-fields`; builder kéo thả mức vừa phải; form
@@ -965,7 +965,8 @@ create table form_tenant_settings (
   "confirmation": { "type": "MESSAGE", "message": { "vi": "Cảm ơn bạn", "en": "Thank you" } },
   "referenceNo": { "generator": "sequence", "pattern": "SK-{seq:6}" },
   "anonymous": false,                  // khảo sát ẩn danh: không lưu sub, không lưu hash định danh, ip_hash bỏ
-  "receipt": { "lookup": "REFERENCE_AND_OTP" }   // tra cứu trạng thái công khai (K8); NONE mặc định
+  "receipt": { "lookup": "REFERENCE_AND_OTP" },  // tra cứu trạng thái công khai (K8); NONE mặc định
+  "startsWorkflow": null                 // { "definitionKey": "leave-request" }: workflow nghe FormSubmitted và mở hồ sơ (§6.7)
 }
 ```
 
@@ -1106,6 +1107,11 @@ public interface SurveyReports {
 public record SubmitCommand(FormRef form, JsonNode data, @Nullable Map<String, String> hidden,
         @Nullable String contextType, @Nullable String contextId, @Nullable SubjectRef subject,
         SubmissionChannel channel, @Nullable Locale locale, @Nullable String idempotencyKey) {}
+public record FormView(UUID id, String key, String publicId, LocalizedString title, FormStatus status, AccessMode accessMode,
+        int publishedVersion, @Nullable CompiledForm compiled, ResponsePolicy policy, Set<String> tags, long version) {}
+public record FieldInfo(String key, String type, String pointer, int pageIndex, boolean required,
+        @Nullable PersonalDataLevel personalData /* null | BASIC | SENSITIVE */, @Nullable String dataType,
+        @Nullable String identifier /* email | phone | nationalId */) {}
 public record SubmissionReceipt(UUID submissionId, @Nullable String referenceNo, SubmissionStatus status,
         @Nullable Confirmation confirmation) {}
 public record InviteCommand(String formKey, Recipient recipient, @Nullable String contextType, @Nullable String contextId,
@@ -1511,21 +1517,24 @@ Mỗi điểm nối nằm trong `…forms.integration.<module>`, bật bằng `@
 | export | `ExportDefinition` `forms.submissions` với **cột động theo filter** (form + khoảng version, §11.1 cần export hỗ trợ `columnsFor(filter)`); quyền cột PII theo `GetSensitive` | CSV streaming tích hợp (UTF-8 BOM, chống CSV injection), không có XLSX |
 | notification | Type `forms.invitation`, `forms.submission.internal`, `forms.submission.confirmation`, `forms.receipt.otp` khai báo trong `META-INF/vyforge/notification/types/forms.yml`; action `email.*` | Action email ẩn; lời mời chỉ trả link |
 | webhooks | `WebhookEventCatalog` §5.4; action `webhook` gọi `WebhookPublisher.publish` trong transaction nộp | Action ẩn |
-| privacy-dsr | `PersonalDataContributor` + `RetentionCapable` (§6.8); field `consent` → `Consents.record` với `collectionPoint = forms:<formKey>`, notice version hiện hành, evidence `{submissionId, formVersion, ipHash}`; `PrivacyGuard` không cần | Đồng ý lưu trong `meta.consent` của bài nộp (kèm nội dung thông báo đã hiển thị, hash); contributor vẫn có vì nằm trong `-privacy` |
+| privacy-dsr | `PersonalDataContributor` + `RetentionCapable` (§6.8); field `consent` → `Consents.record(RecordConsent{subject, actorType=SUBJECT, collectionPoint="forms:<formKey>", noticeVersionId, method=CHECKBOX, locale, decisions theo purpose của field, evidence {submissionId, formVersion, ipHash}, idempotencyKey="forms:<submissionId>"})`; builder lấy nội dung thông báo bằng `Consents.experience(collectionPoint, locale, subject)`; người nộp ẩn danh rồi đăng nhập → `Consents.link`; captcha của luồng DSR công khai dùng chung port với forms (§9.4); `PrivacyGuard` không cần | Đồng ý lưu trong `meta.consent` của bài nộp (kèm nội dung thông báo đã hiển thị, hash); contributor vẫn có vì nằm trong `-privacy` |
 | features | `Entitlements.consume("forms.submissions", 1, submissionId)` cho bài nộp hợp lệ (không đếm SPAM); `checkLimit("forms.active", n)` khi xuất bản; entitlement `module.forms`, `admin.forms` | Không giới hạn theo gói |
 | sequence | `ReferenceNumberGenerator` = `SequenceGenerator` theo mẫu của form | `short-code` |
-| master-data | `ChoiceSource` tỉnh/thành, xã/phường, ngân hàng, quốc gia; kiểu `vn-address` | Không có kiểu `vn-address`; lựa chọn tĩnh |
+| master-data | Theo hợp đồng ở master-data §6 (K21): `ChoiceSource` `lookup:<listCode>` cài trên `Lookups.find` (tìm bỏ dấu, `asOf`); compiler sinh `"x-vyforge-lookup": {"list": "bank", "asOf": "submittedAt"}` trong JSON Schema; server kiểm bằng `Lookups.validate(list, code, asOf)` (`EXPIRED` → lỗi kèm mã kế thừa khi soạn mới, chấp nhận khi sửa bài cũ); kiểu `vn-address` dùng `AdministrativeUnits` (tỉnh → xã); renderer dùng `LookupSelect`, `AdminUnitSelect`, `AddressInput` của `@vyforge/master-data` qua widget registry | Không có kiểu `vn-address`; lựa chọn tĩnh |
 | organization | `ChoiceSource` `organization:unit` (chọn chi nhánh/phòng ban) | — |
 | calendar | `SubmissionInterceptor` mẫu cho kiểm "ngày làm việc"; lịch đóng theo ngày làm việc (bản sau) | — |
-| workflow | Bước có `form: {key, version?}`: workflow gọi `Forms.render` để hiện, `Forms.validate` (không lưu) hoặc `Submissions.submit(contextType="workflow:task")` để lưu bài nộp; `forms:submission:Review` có thể giao cho workflow qua `transition` | — |
+| workflow | Theo hợp đồng ở workflow §6.2 (W11): **port `FormRegistry` do workflow định nghĩa**, adapter `FormsFormRegistry` nằm trong `integration/forms` của workflow và chỉ gọi `Forms.find`/`Forms.validate` (forms không phụ thuộc workflow). `describe(formKey, version)` trả JSON Schema + UI schema + danh sách field PII (từ `CompiledForm.dataSchema`, `uiSchema` và các field có `personalData` trong `fieldIndex`); `validate` gọi `Forms.validate` (không lưu). **Dữ liệu form của bước do workflow lưu** (`wf_instance.form_ref = key@version`, `form_data`), không tạo bài nộp. Chiều ngược: form khai báo `startsWorkflow: {definitionKey}` thì workflow nghe `FormSubmitted` (có `formKey`, `submissionId`) để khởi động hồ sơ; duyệt bài nộp (`forms:submission:Review`) giao cho workflow qua `Submissions.transition` | Đề nghị chung của workflow không có; bước có `form` không publish được (phía workflow) |
 | custom-fields | Dùng `platform-forms-core`: `FieldType`, `FormValidator`, `FormCompiler` (một "form" ảo theo entity type); renderer `SchemaForm` | — |
 | admin-kit | `ResourceForm` bọc `SchemaForm`; builder dùng `DataTable`, `ConfirmDangerDialog`, `AuditTimeline` khi admin-kit có | Component riêng trên `@vyforge/ui` |
 | cms-content | Block `form` (`{formId}`) và field `reference` tới form; delivery trả `publicId` + URL submit; site gửi thẳng tới `/api/v1/forms/public/**` (CORS theo `allowedEmbedOrigins`) | Không có block `form` |
 | helpdesk, engagement | `Invitations.invite` (CSAT, NPS) + listener `FormSubmitted` theo `contextType` | — |
 | automation | Trigger `FormSubmitted`, `SubmissionStatusChanged` (catalog event công khai); action "nộp form thay người dùng" không có | — |
 | analytics | View `rpt_forms_submission` (tenant_id, form_key, version_no, status, submitted_at, dimension) và `rpt_forms_field_stat`; không có PII | — |
-| search | (bản sau) đẩy bài nộp đã duyệt vào search khi form bật `searchable` | Tìm theo `referenceNo` |
-| esign, export renderer | (bản sau) xuất bài nộp thành PDF theo template | — |
+| search | (bản sau) `SearchDocumentSource` index `forms-submissions` (chỉ field BASIC không PII mà form đánh dấu `searchable`, `subjectRefs` để DSR xoá được, ACL theo quyền bài nộp); ghi nhận thay đổi bằng `SearchIndexer.index/delete` trong transaction nộp/duyệt/xoá | Tìm theo `referenceNo` và lọc SQL |
+| esign | (bản sau) `SubmissionAction` `pdf`: `DocumentGeneration.generate(templateKey, version, data, locale)` của esign sinh PDF bài nộp (đơn đăng ký, tờ khai) và đính kèm qua files; action `esign.envelope` tạo phong bì ký từ bài nộp đã duyệt | Action ẩn |
+| collaboration | Trao đổi nội bộ trên bài nộp: `SubjectRef("forms:submission", id)`, panel comment/activity của `@vyforge/collaboration` trong màn hình chi tiết bài nộp; forms ghi activity khi đổi trạng thái | Chỉ có ghi chú duyệt (`review_note`) |
+| api-access | `ScopeCatalogContributor` khai scope `forms.read` (→ `forms:form:Get`, `forms:submission:List/Get`), `forms.submit` (→ `forms:submission:Create`, channel `api`); đối tác gọi bằng API key qua gateway, quota theo ứng dụng | Chỉ client credentials nội bộ |
+| ekyc | (bản sau) kiểu field `ekyc-check` gắn `verificationId` của ekyc vào bài nộp (mở tài khoản, đăng ký dịch vụ) | — |
 
 ### 6.8 Dữ liệu cá nhân: contributor cho privacy-dsr
 
@@ -1799,10 +1808,12 @@ Thứ tự phụ thuộc: 1 → 2 → 3 (lõi xong là custom-fields/admin-kit d
 | admin-kit (forge-49) | Engine form dùng chung | `ResourceForm` của admin-kit **bọc** `SchemaForm` của `@vyforge/forms/renderer`; admin-kit không chọn renderer khác. Nếu forge-49 đã chọn khác thì phiên điều phối quyết |
 | antibot (chưa mở session) | Port `HumanVerification` | Interface ở §6.2 (`challenge`, `verify`); antibot cài adapter. privacy-dsr dùng tên `HumanVerifier` cho cùng việc: **gộp một interface** trong `-ratelimit` khi antibot thiết kế |
 | files (forge-29) | Upload thay mặt người nộp ẩn danh | forms gọi `FileService.initiateUpload` bằng danh tính hệ thống của module, gắn `attributes{formId, sessionId}`; cần files cho phép **principal hệ thống** upload vào bucket khai báo `uploader: system` |
-| workflow (forge-39) | Form của bước | `FormRef` (key + version tuỳ chọn) trong định nghĩa bước; validate bằng `Forms.validate`; lưu bằng `Submissions.submit(contextType = "workflow:task")` |
+| workflow (forge-39, **đã merge**) | Form của bước | Đã khớp: port `FormRegistry` của workflow (`describe`, `validate`), adapter ở phía workflow; dữ liệu bước lưu ở workflow; `FormSubmitted` có `formKey`, `submissionId`; cấu hình `startsWorkflow` trên form. forms chỉ cần để `Forms.find` trả `CompiledForm` của version (`dataSchema`, `uiSchema`, `fieldIndex` có cờ `personalData`) |
+| master-data (**đã merge**) | Lựa chọn từ danh mục | Đã khớp: `x-vyforge-lookup`, `Lookups.validate`, `AdministrativeUnits`, component `LookupSelect`/`AdminUnitSelect`/`AddressInput` |
+| search, esign, api-access, collaboration (**đã merge**) | Tích hợp tuỳ chọn | Theo bảng §6.7; search và esign để bản sau, api-access và collaboration làm cùng 0.13.0 nếu module kia đã có |
 | custom-fields (đợt C) | Bộ field dùng chung | Dùng `platform-forms-core` + `FieldType`; định nghĩa field tuỳ biến là `FieldSpec` |
-| privacy-dsr (forge-44) | Collection point, notice cho field `consent` | `collectionPoint = forms:<formKey>`; notice tra theo `noticeKey`; forms gọi `Consents.record` sau commit (việc nền `consent`) |
-| cms-content (forge-43) | Block `form` | Delivery trả `{publicId, submitUrl}`; site gọi `/api/v1/forms/public/**` |
+| privacy-dsr (forge-44, **đã merge**) | Collection point, notice cho field `consent` | Đã khớp với `Consents.record(RecordConsent)` và `Consents.experience`; `collectionPoint = forms:<formKey>`; forms gọi sau commit (việc nền `consent`), idempotency `forms:<submissionId>` |
+| cms-content (forge-43, **đã merge**) | Block `form` | cms-content §6.7 ghi delivery trả `formId` + URL submit. Đề nghị: block lưu `formId` (tham chiếu nội bộ), delivery **đổi thành `publicId` + `submitUrl`** khi trả cho site (không lộ id nội bộ, §11.2 Q5); adapter gọi `Forms.find(FormRef.id(formId))` lấy `publicId`. Cần cms-content sửa một dòng lúc triển khai |
 | jpa-extras (forge-57) | `LocalizedText` | `title`/`description` của `form` dùng `LocalizedText` khi có; trong `FormSpec` vẫn là `LocalizedString` của core (không phụ thuộc JPA) |
 
 ---
@@ -1988,7 +1999,9 @@ tĩnh hoặc site CMS ở domain khác gọi thẳng `/api/v1/forms/public/**` q
    kế export (forge-30) và files (forge-29) trước khi triển khai phần 9.
 3. **Interface captcha chung**: gộp `HumanVerification` (forms) và `HumanVerifier` (privacy-dsr) thành một interface trong
    `-ratelimit` khi mở session antibot.
-4. Pháp chế xác nhận: danh sách `legalBasis` cho form không xin đồng ý (Luật 91 Điều 19), retention mặc định `P2Y`, và
+4. **cms-content trả `publicId` thay cho `formId`** khi delivery block `form` cho site (§9.4): sửa một dòng ở cms-content lúc
+   triển khai, để id nội bộ của form không ra ngoài.
+5. Pháp chế xác nhận: danh sách `legalBasis` cho form không xin đồng ý (Luật 91 Điều 19), retention mặc định `P2Y`, và
    cách xử lý form cho trẻ em (Điều 24).
 
 ---
