@@ -20,8 +20,8 @@ theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo 
 | **Đổi tên** | `platform-auth-admin` thành `platform-admin`: một console chung cho tài khoản, tenant, IdP và phân quyền. |
 | **Giữ** | Mọi starter Java và package web hiện có. `TokenExchangeClient` vẫn ở trong `-security`; `-audit` không gộp vào `-authz`. |
 | **Tách** | Repo `.github` tách thành `platform-ci` (CLI `vyforge-ci`, image `ci-toolbox`, adapter CI cho GitHub, Forgejo/Gitea, GitLab, preset Renovate) và `platform-docs` (ADR, kiến trúc, quy hoạch). Trên GitHub chỉ còn một `.github` chứa profile org. |
-| **Thêm** | 12 starter Java, 4 package web, 2 chart, 3 repo/template hạ tầng và mobile, 3 lệnh CI mới (`copier-update`, `openapi-sdk`, `load-test`). Mục 4 có danh sách đầy đủ. |
-| **Phạm vi** | Không làm hết danh sách. Một người chỉ đủ sức cho khoảng một nửa trong 5 quý (mục "Năng lực và phạm vi"). P0 chỉ còn những gì bắt buộc trước pilot: `platform-ci`, `-scheduling`, `-ratelimit`, `-privacy` bản tối thiểu, quy ước tenant ở tầng dữ liệu, `template-infra`. Mọi module khác chỉ bắt đầu khi có dự án pilot cụ thể cần đến. |
+| **Thêm** | Thư viện nền `platform-core` (ngữ cảnh tenant và request dùng chung, P0), 12 starter Java, 4 package web, 2 chart, 3 repo/template hạ tầng và mobile, 3 lệnh CI mới (`copier-update`, `openapi-sdk`, `load-test`). Mục 4 có danh sách đầy đủ. |
+| **Phạm vi** | Không làm hết danh sách. Một người chỉ đủ sức cho khoảng một nửa trong 5 quý (mục "Năng lực và phạm vi"). P0 chỉ còn những gì bắt buộc trước pilot: `platform-ci`, `platform-core`, `-scheduling`, `-ratelimit`, `-privacy` bản tối thiểu, quy ước tenant ở tầng dữ liệu, `template-infra`. Mọi module khác chỉ bắt đầu khi có dự án pilot cụ thể cần đến. |
 | **Hai nhóm quản trị** | `platform-admin` dành cho người vận hành platform. Quản trị viên của khách hàng quản lý phân quyền trong chính app nghiệp vụ, chỉ trong tenant của mình. |
 | **CI/CD trung lập** | Git server chỉ chứa code. Logic CI nằm trong `vyforge-ci`; mọi registry, token và khoá ký là tham số. Bộ on-prem tham chiếu: Forgejo + Forgejo Runner + registry của Forgejo (Maven, npm) + Harbor (image, chart) + cosign với OpenBao + Renovate self-host + Argo CD. Phải sửa 70 file trong 10 repo. |
 | **Không tự xây** | Máy chủ thông báo, search engine, workflow engine, feature-flag server, secret store, CMS, Backstage, service mesh. Mục 5 có lý do. |
@@ -59,7 +59,7 @@ Org hiện chỉ có một người làm, tức khoảng 40 tuần làm việc h
 
 1. **P0 rút gọn** chỉ còn những gì phải có trước pilot đầu tiên:
    - `platform-ci` 0.1;
-   - quy ước tenant ở tầng dữ liệu (trong `-jpa`);
+   - `platform-core` và quy ước tenant ở tầng dữ liệu (trong `-jpa`);
    - `-scheduling` (nhỏ);
    - `-ratelimit` (thay hai bộ lọc đang có);
    - `-privacy` bản tối thiểu: `@PersonalData`, che PII trong log và audit. Phần consent và yêu cầu xuất/xoá dữ liệu làm khi pilot có dữ liệu người dùng thật;
@@ -92,7 +92,8 @@ Hệ quả:
 
 ## Tenant ở tầng dữ liệu
 
-ADR-0011 mới giải quyết tenant ở tầng xác thực, tức claim `tenant_id`. Các starter mới đều lưu dữ liệu theo tenant,
+ADR-0011 mới giải quyết tenant ở tầng xác thực, tức claim `tenant_id`. Hiện khái niệm tenant (`TenantResolver`) chỉ nằm
+trong `platform-starter-authz`, nên module nào cần tenant cũng phải phụ thuộc IAM. Các starter mới đều lưu dữ liệu theo tenant,
 gồm files, notification, export, features và realtime. Nếu mỗi module tự cách ly theo một kiểu riêng, sớm muộn sẽ có lỗ
 rò dữ liệu giữa các tenant. Cần một ADR riêng (ADR-0015) trước module mới đầu tiên. ADR này chốt các điểm sau:
 
@@ -104,6 +105,7 @@ rò dữ liệu giữa các tenant. Cần một ADR riêng (ADR-0015) trước m
 | Kafka | Header `tenant_id` trên mọi event; consumer đặt lại tenant hiện tại từ header |
 | Job nền | Job chạy theo từng tenant, mang tenant trong context; không có job nào đọc chéo tenant ngầm định |
 | Feature flag | `tenant_id` là thuộc tính mặc định của evaluation context |
+| Ngữ cảnh tenant | `TenantContext` nằm trong `platform-core` (mục 2). `-security` điền từ claim `tenant_id`; `-jpa`, `-messaging`, `-authz`, `-scheduling` và các module mới chỉ đọc từ đây. Không module nào tự đọc claim |
 | Kiểm tra | Luật ArchUnit trong `platform-test`: entity thuộc tenant phải có `tenant_id`. Test mẫu "user tenant A không đọc được dữ liệu tenant B" có sẵn cho mọi starter |
 
 ## Redis
@@ -293,6 +295,7 @@ flowchart TB
 
   subgraph JAVA["platform-java (monorepo Maven)"]
     jcore["web · security · jpa · messaging<br/>observability · authz · audit · test"]:::have
+    jbase["platform-core<br/>TenantContext · RequestContext · cache"]:::new
     iamsrv["platform-iam-server<br/>(chuyển từ repo riêng)"]:::moved
     jp0["P0: scheduling · ratelimit<br/>privacy (tối thiểu) · tenant trong jpa"]:::new
     jp1["P1, theo pilot: notification · files<br/>export · webhooks · features · payment · realtime"]:::new
@@ -335,6 +338,8 @@ flowchart TB
   auth --> jcore & jp0
   gw --> jp0
   iamsrv --> jcore
+  jcore --> jbase
+  jp0 --> jbase
   jp1 --> jp0
   jp2 --> jp0
   tinfra --> chart & obs & pol
@@ -379,7 +384,8 @@ flowchart TB
 | Module | Quyết định | Việc cần làm |
 |---|---|---|
 | `platform-bom`, `platform-parent` | Giữ | BOM quản lý thêm các starter mới |
-| `-web` | Giữ | — |
+| *(mới)* `platform-core` | **Thêm**, thư viện nền nhỏ, không phụ thuộc Spring Security hay JPA | `TenantContext` và `RequestContext` (tenant, request id, `sub`). Truyền ngữ cảnh qua HTTP vào và ra (`RestClient`), header Kafka, `@Async`, virtual thread, job nền. `TenantResolver` chuyển từ `-authz` về đây, request id chuyển từ `-web` về đây. Quy ước cache tuỳ chọn: key có tiền tố `t:<tenant>:`, Caffeine cho cache cục bộ, Valkey cho cache dùng chung, bắt buộc khai báo TTL. Q4/2026, cùng ADR-0015 |
+| `-web` | Giữ, **thêm mặc định cho lời gọi ra ngoài** | `RestClient` hiện không đặt timeout; chỉ `-authz` tự đặt. Thêm mặc định connect timeout 2 giây, read timeout 10 giây, ghi đè được theo từng client; retry bằng `@Retryable` của Spring Framework 7 (K4); circuit breaker Resilience4j là tuỳ chọn. `Idempotency-Key` đã có, giữ nguyên. Q4/2026 – Q1/2027 |
 | `-security` | Giữ, không tách `TokenExchangeClient` (141 dòng, đã là phần tuỳ chọn) | Sửa tên trong ADR-0010 cho khớp code |
 | `-jpa` | Giữ, mở rộng | Quy ước tenant (cột `tenant_id`, lọc tự động, RLS tuỳ chọn; mục "Tenant ở tầng dữ liệu") trong Q4/2026. Sau đó: `LocalizedText`, `@SoftDeletable`, tìm kiếm `unaccent` + trigram, mã hoá cột (chuyển `AesGcmKeyCipher` từ auth-server lên) |
 | `-messaging` | Giữ | Nền cho notification, webhooks, payment |
@@ -397,7 +403,7 @@ flowchart TB
 | `ui` | Giữ, mở rộng | `DataTable`, `ResourceForm`, `PermissionGate` (Q2/2027) |
 | `api-client` | Giữ | Client chỉ chạy phía server (B13) |
 | `auth` | Giữ | Tách entry `@vyforge/auth/core` cho mobile, vẫn trong cùng package (Q3/2027) |
-| `i18n`, `server` | Giữ | `server`: thêm logger JSON và OTel cho Next (Q1/2027) |
+| `i18n`, `server` | Giữ | `server`: thêm logger JSON và OTel cho Next; endpoint nhận lỗi phía trình duyệt và Web Vitals, đẩy về OTel Collector (không dùng SaaS, để chạy được on-prem) (Q1/2027) |
 | `iam` | Giữ, không tách thành app riêng | Dùng chung cho `platform-admin` và template (`use_iam`) |
 | `query` | Giữ riêng | Nơi đặt code phía client (TanStack, `useEventStream`). Gộp vào `api-client` sẽ trộn bundle server và client |
 
@@ -411,6 +417,7 @@ Thứ tự ưu tiên (đã rút gọn theo mục "Năng lực và phạm vi"):
 | Module | Loại | Bài toán | Nền OSS | Ưu tiên · quý |
 |---|---|---|---|---|
 | `platform-ci`: `vyforge-ci` + image `ci-toolbox` | CLI + image | Logic build, test, publish, ký, bump GitOps dùng chung cho mọi nền tảng git | `just`, cosign, Syft, Trivy, Helm, crane | P0 · Q4/2026 |
+| `platform-core` | thư viện nền | Ngữ cảnh tenant và request dùng chung cho mọi starter; quy ước cache theo tenant | Spring Framework (context propagation), Caffeine | P0 · Q4/2026 |
 | Quy ước tenant trong `-jpa` + luật trong `platform-test` | phần mở rộng | Cách ly dữ liệu giữa các tenant theo một kiểu chung cho mọi module | Hibernate filter, PostgreSQL RLS | P0 · Q4/2026 |
 | `platform-starter-scheduling` | starter | Job định kỳ chỉ chạy một lần dù có nhiều replica | ShedLock (Apache-2.0) | P0 · Q4/2026 – Q1/2027 |
 | `platform-starter-ratelimit` | starter | Rate limit dùng chung giữa các replica; thay hai bộ lọc tự viết | Bucket4j + Valkey/Redis | P0 · Q1/2027 |
@@ -518,7 +525,7 @@ chung.
 | 0012 | IdP mở rộng: passkey, SAML, LDAP, Zalo | Đang viết |
 | 0013 | Danh mục repo và module (ghi chính thức tài liệu này); version, release, deprecation, ma trận tương thích; nâng cấp hàng loạt cho dự án con (Renovate, `copier update`) | Ngay sau khi duyệt |
 | 0014 | CI/CD và registry trung lập với nền tảng git: `vyforge-ci`, adapter, registry theo tham số, bộ on-prem tham chiếu, tách `.github` | Q4/2026 |
-| 0015 | Tenant ở tầng dữ liệu: cột `tenant_id`, lọc tự động, RLS, key cache, prefix file, header Kafka | Q4/2026, trước module mới đầu tiên |
+| 0015 | Tenant ở tầng dữ liệu: `platform-core` (`TenantContext`), cột `tenant_id`, lọc tự động, RLS, key cache, prefix file, header Kafka | Q4/2026, trước module mới đầu tiên |
 | 0016 | Runtime và vận hành: K8s, GitOps (Argo CD, Kargo), môi trường và preview, PostgreSQL (CloudNativePG), Valkey HA, secrets (ESO + OpenBao) | Q1/2027 |
 | 0017 | Chuỗi cung ứng và quan sát: ký image, provenance, Kyverno, observability, SLO và on-call | Q1/2027 |
 | 0018 | Bảo mật vận hành: pentest (ASVS), DR/BCP, điều kiện để auth-server ra 1.0, so sánh định kỳ với Keycloak | Q1/2027 |
@@ -551,3 +558,15 @@ ADR, để đội nhỏ viết và duy trì nổi. Khi lệch nhau, số ADR ở
 12. Dự án pilot tier 1 là dự án nào, và khi nào có người thứ hai.
 13. Điều kiện cho auth-server: IdP mở rộng mặc định tắt, pentest trước production, template luôn chạy được với Keycloak.
 14. Dùng Valkey thay Redis cho mọi môi trường.
+
+## Phụ lục: vì sao không tách thêm starter
+
+Ngoài `platform-core`, các nhu cầu sau không tách thành starter riêng:
+
+| Nhu cầu | Đặt ở đâu | Lý do |
+|---|---|---|
+| Cache | Quy ước trong `platform-core` | Chỉ là key generator theo tenant và cấu hình TTL; không có phụ thuộc ngoài đáng kể |
+| Timeout, retry, circuit breaker | `-web` | Gắn liền với `RestClient` mà `-web` đã cấp |
+| Tenancy | `platform-core` + điểm nối trong từng starter | Một starter riêng sẽ phải phụ thuộc ngược vào jpa, messaging, scheduling |
+| i18n cho backend | `-web` (MessageSource, Problem Details vi/en đã có) | Không có phụ thuộc mới |
+| Batch | `-export` (khi có pilot cần) | Chưa có nhu cầu Spring Batch riêng |
