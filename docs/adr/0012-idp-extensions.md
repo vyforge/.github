@@ -1,7 +1,7 @@
 # ADR-0012: IdP mở rộng — passkey, SAML 2.0, LDAP/AD, Zalo — cấu hình trong database
 
-- **Trạng thái:** Chấp nhận — 26/10/2026. Mở rộng [ADR-0008](0008-platform-auth-server.md) (auth server). Cột
-  `tenant_id` để ghép với tenant của ADR-0011.
+- **Trạng thái:** Chấp nhận — 26/10/2026. Mở rộng [ADR-0008](0008-platform-auth-server.md) (auth server). Dùng
+  chung bước chọn tenant của [ADR-0011](0011-tenant-and-user-directory.md) (mục 8).
 
 ## Bối cảnh
 
@@ -119,13 +119,35 @@ Quy tắc chung cho mọi IdP ngoài (OIDC, Zalo, SAML, LDAP):
 Audit log đăng nhập ghi nguồn: `password`, `mfa`, `passkey`, `<registration id>` (IdP trong file), `saml:<alias>`,
 `ldap:<alias>`, `zalo:<alias>`, `oidc:<alias>` (cột `method` nới lên 100 ký tự).
 
+### 8. Tenant (ADR-0011)
+
+- Đăng nhập qua IdP mở rộng **đi qua cùng bước chọn tenant như mật khẩu**. IdP chỉ xác thực người dùng; sau đó
+  Authentication là của tài khoản Vyforge (`sub` = ID tài khoản). `/oauth2/authorize` chọn tenant theo client gắn tenant
+  → tham số `tenant` → `default`, kiểm tenant tồn tại, chưa khoá và có membership (403 nếu không đạt). Token mang
+  `tenant_id` và role của membership.
+- Role đồng bộ từ group SAML/LDAP (mục 4) là role của tài khoản, tức role ở `default`; role ở tenant khác không đổi.
+- Authentication tạo sau khi IdP xác thực có `FactorGrantedAuthority` như các provider của Spring Security:
+  `FACTOR_PASSWORD` (LDAP), `FACTOR_WEBAUTHN` (passkey), `FACTOR_AUTHORIZATION_CODE` (OIDC, Zalo, SAML). Spring
+  Authorization Server lấy `auth_time` của ID token từ đó; thiếu thì không cấp được ID token.
+- JIT: tài khoản mới tạo qua IdP chỉ thuộc `default`. Muốn vào tenant khác thì admin thêm membership.
+- **Cột `tenant_id` của `account_identity_providers` là cột dành sẵn, chưa dùng.** API không đọc/ghi cột này, mọi IdP
+  đều `NULL` = dùng chung. Không thêm FK sang `tenant_tenants`, vì:
+  - module tenant phụ thuộc account (`account :: api`). FK từ bảng account sang bảng tenant đảo chiều phụ thuộc đó, và
+    module account chạy độc lập (`AccountModuleTests`) sẽ cần bảng của tenant;
+  - V030–V032 phải chạy được khi database chưa có V020–V024 (deploy lệch thứ tự, README của auth server mục Migration,
+    `MigrationOrderTests`).
+- Khi làm IdP theo tenant, kiểm ở tầng ứng dụng thay cho FK:
+  - API nhận `tenantId`; module account hỏi "tenant có tồn tại" qua một interface trong `account :: api` do module tenant
+    triển khai;
+  - không xoá được tenant còn IdP gắn vào;
+  - trang đăng nhập chỉ hiện IdP dùng chung và IdP của tenant đang chọn; LDAP chỉ thử thư mục của tenant đó.
+
 ## Hệ quả
 
 - Thêm IdP không cần triển khai lại; secret không còn rải trong biến môi trường. Mất
   `vyforge.auth.keys.encryption-key` thì mất cả secret IdP (như khoá ký và TOTP).
 - Build cần thêm repo Maven của Shibboleth (`build.shibboleth.net/maven/releases`) cho OpenSAML; mirror nội bộ phải
   proxy cả repo này.
-- `tenant_id` chưa được dùng khi chọn IdP; khi có tenant (ADR-0011) thì IdP gắn tenant chỉ hiện cho tenant đó, `NULL`
-  dùng chung.
+- Mọi IdP dùng chung cho mọi tenant; tenant được chọn và kiểm ở `/oauth2/authorize` như đăng nhập mật khẩu (mục 8).
 - Chưa làm: SAML Single Logout, ký AuthnRequest/giải mã assertion, SCIM, đồng bộ LDAP định kỳ (chỉ đồng bộ khi đăng
-  nhập), OIDC role mapping theo claim group.
+  nhập), OIDC role mapping theo claim group, IdP theo tenant và JIT vào tenant của IdP (mục 8).

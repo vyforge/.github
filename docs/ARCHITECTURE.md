@@ -187,4 +187,6 @@ Kế hoạch thêm, gộp, đổi tên và bỏ module đến cuối 2027 nằm 
 | [0008](adr/0008-platform-auth-server.md) | Identity provider riêng `platform-auth-server` trên Spring Authorization Server; Keycloak là phương án dự phòng |
 | [0009](adr/0009-iam-authorization.md) | Phân quyền nghiệp vụ theo mô hình IAM (policy JSON, Deny thắng Allow, multi-tenant) trong `platform-starter-authz` |
 | [0010](adr/0010-api-gateway-central-iam.md) | Nhiều service: `platform-gateway` (xác thực JWT, định tuyến, rate limit — không phân quyền), `platform-iam-server` (policy tập trung, đánh giá tại từng service), xoá cache qua Redis, token exchange RFC 8693 |
+| [0011](adr/0011-tenant-and-user-directory.md) | Tenant ở `platform-auth-server`: chọn tenant khi đăng nhập, claim `tenant_id` trong token, role theo tenant, danh bạ người dùng `/api/v1/directory` |
+| [0012](adr/0012-idp-extensions.md) | IdP mở rộng cấu hình trong database (passkey, SAML 2.0, LDAP/AD, Zalo, OIDC), mặc định tắt; đăng nhập qua IdP cũng chọn tenant và phát `tenant_id` |
 | [0015](adr/0015-tenant-data-isolation-platform-core.md) | Tenant ở tầng dữ liệu: `platform-core` (`TenantContext`, truyền ngữ cảnh, quy ước cache), tenant chỉ lấy từ token, `@TenantId` của Hibernate + RLS cho tier 2, header Kafka; mặc định timeout/retry cho `RestClient` |
