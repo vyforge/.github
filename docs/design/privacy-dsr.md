@@ -54,6 +54,8 @@ consent có bằng chứng, hàng đợi yêu cầu có SLA, điều phối qua 
 | Retention | Chính sách lưu giữ theo loại dữ liệu/mục đích; mốc bắt đầu theo sự kiện; thực thi theo lô qua contributor; legal hold; báo cáo | Lưu trữ lạnh, archive (module files/hạ tầng) |
 | Hồ sơ | Sổ hoạt động xử lý (RoPA) sinh một phần tự động từ code; danh sách bên xử lý/bên thứ ba; DPIA (Mẫu 10) và hồ sơ chuyển ra nước ngoài (Mẫu 09) có version, nhắc cập nhật 6 tháng; sổ sự cố vi phạm có đồng hồ 72 giờ, Mẫu 08 | Nộp hồ sơ điện tử lên cổng A05 (chưa có API công khai; xuất file để nộp tay) |
 | Giao diện | Portal chủ thể (trang "Quyền riêng tư của tôi"), form yêu cầu công khai, khu quản trị cho tenant admin/DPO, khu vận hành cho operator | — |
+| Residency | Quy tắc nơi lưu và nơi gửi theo loại dữ liệu; `DataResidency.checkTransfer/checkStorage` cho ai, files, telemetry, notification; chế độ MONITOR/ENFORCE | Chặn egress ở tầng mạng (`platform-policies`, hạ tầng) |
+| Telemetry, offboarding | Purpose chuẩn `analytics.*` và tín hiệu consent cho `telemetry`; `TenantDataOperations` cho `tenant-lifecycle` | Thu thập event (module telemetry); quy trình hợp đồng khi tenant rời (tenant-lifecycle) |
 | Kiểm soát lúc chạy | `PrivacyGuard` kiểm "được phép xử lý cho mục đích X không" (consent + hạn chế + phản đối); annotation `@RequiresPurpose` | Chặn ở tầng SQL/RLS theo consent |
 
 ### 1.3 Kịch bản nghiệp vụ phải đáp ứng
@@ -77,6 +79,9 @@ consent có bằng chứng, hàng đợi yêu cầu có SLA, điều phối qua 
 | K15 | **SaaS B2B đa tenant:** mỗi khách hàng doanh nghiệp là bên kiểm soát dữ liệu của người dùng họ; Vyforge/ISV là bên xử lý | Dữ liệu, quy trình, DPO riêng theo tenant; operator không đọc nội dung yêu cầu | Mọi bảng có `tenant_id`; cấu hình theo tenant; operator chỉ thấy số liệu tổng hợp trừ khi được uỷ quyền |
 | K16 | **Khách vãng lai đồng ý cookie phân tích** trên web, sau đó đăng ký tài khoản | Chủ thể ẩn danh; ghép lịch sử | Subject `anon:<deviceId>`; `ConsentLinker` khi đăng nhập ghép sang `user:<sub>` có ghi sự kiện `LINKED` |
 | K17 | **Phản đối xử lý cho tiếp thị trực tiếp** qua từ khoá "TC" trong SMS | Đầu vào từ module khác | notification `InboundMessageHandler` gọi `Consents.withdraw(...)` với `channel=SMS_KEYWORD` |
+| K19 | **Product analytics:** đo phễu thanh toán mới; chỉ người đã đồng ý mới gắn định danh | Telemetry phụ thuộc consent; khách vãng lai; rút lại phải dừng ngay | Purpose `analytics.product`; `PrivacyGuard` ở server, `getConsentSnapshot()` ở client; `ConsentChanged` (mục 3.13) |
+| K20 | **Gửi dữ liệu ra nước ngoài:** dự án muốn dùng LLM nước ngoài để tóm tắt hồ sơ khách và PostHog Cloud (EU) | Luật An ninh mạng 2025 (lưu tại VN), NĐ 356 Điều 18 (hồ sơ chuyển ra nước ngoài) | `DataResidency.checkTransfer` ở ai và telemetry; quy tắc `transfer: withAssessment`; chưa có assessment TRANSFER `APPROVED` thì `Denied` (mục 3.12) |
+| K21 | **Tenant chấm dứt hợp đồng SaaS:** xuất toàn bộ dữ liệu cho khách, sau 30 ngày xoá | Phạm vi tenant, không phải chủ thể | `TenantDataOperations` dùng chung orchestrator và contributor (`scope=TENANT`, mục 3.14) |
 | K18 | **Chỉnh sửa dữ liệu:** khách báo sai ngày sinh; nhiều module có bản sao | Rectify lan truyền; có bước duyệt | `RECTIFY` với `corrections` theo `dataType` (`basic.birth_date`); contributor có `rectify()`; thao tác có duyệt 4 mắt tuỳ cấu hình |
 
 ### 1.4 Ngoài phạm vi
@@ -98,6 +103,8 @@ consent có bằng chứng, hàng đợi yêu cầu có SLA, điều phối qua 
 | Luật Bảo vệ dữ liệu cá nhân 91/2025/QH15 | Thông qua 26/06/2025, hiệu lực 01/01/2026. 39 điều | Điều 4 (quyền), 9 (đồng ý: tự nguyện, từng mục đích, im lặng không là đồng ý), 10 (rút đồng ý, hạn chế; không hồi tố), 13 (chỉnh sửa), 14 (xoá, huỷ, khử nhận dạng; không tái nhận dạng), 19 (không cần đồng ý), 20 (xuyên biên giới), 21–22 (DPIA), 23 (thông báo vi phạm 72 giờ), 24 (trẻ em), 26/27/31 (sức khoẻ, tài chính, vị trí/sinh trắc), 38 (ưu đãi DN nhỏ) | [TVPL](https://thuvienphapluat.vn/van-ban/Bo-may-hanh-chinh/Luat-Bao-ve-du-lieu-ca-nhan-2025-so91-2025-QH15-625628.aspx), [mục lục nhansu.vn](https://nhansu.vn/van-ban-phap-luat/Luat-Bao-ve-du-lieu-ca-nhan-2025-so-91-2025-QH15-625628.html), [tóm tắt LexData](https://lexdata.vn/van-ban-phap-luat/luat-bao-ve-du-lieu-ca-nhan-2025/) |
 | NĐ 356/2025/NĐ-CP | Ban hành 31/12/2025, hiệu lực 01/01/2026 (Điều 42), thay NĐ 13/2023 | Điều 3 (dữ liệu cơ bản), 4 (nhạy cảm, khoản 1 điểm a–m), 5 (thời hạn thực hiện quyền), 6 (cách thể hiện đồng ý), 8 khoản 3 (tài chính: 72 giờ), 13–16 (nhân sự/tổ chức bảo vệ dữ liệu), 18 (hồ sơ chuyển ra nước ngoài, Mẫu 09), 19 (DPIA, Mẫu 10, nộp trong 60 ngày), 20 (cập nhật 6 tháng/10 ngày), 28 (Mẫu 08), 29 (vị trí, sinh trắc: báo chủ thể 72 giờ, lưu hồ sơ 5 năm) | [hethongphapluat.com (toàn văn)](https://hethongphapluat.com/nghi-dinh-356-2025-nd-cp-huong-dan-luat-bao-ve-du-lieu-ca-nhan.html), [TVPL](https://thuvienphapluat.vn/van-ban/Quyen-dan-su/Nghi-dinh-356-2025-ND-CP-huong-dan-Luat-Bao-ve-du-lieu-ca-nhan-687428.aspx), [EY](https://www.ey.com/vi_vn/technical/tax/tax-and-law-updates/nghi-dinh-so-356-2025-nd-cp-quy-dinh-chi-tiet-mot-so-dieu-va-bien-phap-thi-hanh-luat-bao-ve-du-lieu-ca-nhan) |
 | NĐ 330/2026/NĐ-CP (xử phạt an ninh mạng và bảo vệ dữ liệu cá nhân) | Ký và hiệu lực 19/08/2026. **Mới so với báo cáo nghiên cứu 10/2026**, báo cáo đó ghi "chưa kiểm chứng" | Mục 6 (Điều 39–71): phạt theo từng nghĩa vụ. Mức trong NĐ áp cho tổ chức, cá nhân bằng một nửa. Trần: 3 tỷ đồng; 5% doanh thu (xuyên biên giới); 10 lần khoản thu (mua bán dữ liệu). Biện pháp khắc phục gồm "bảo đảm quyền của chủ thể" và "xoá dữ liệu xử lý trái pháp luật" | [vanban.chinhphu.vn](https://vanban.chinhphu.vn/?pageid=27160&docid=219266), [LuatVietnam](https://luatvietnam.vn/linh-vuc-khac/nghi-dinh-330-2026-nd-cp-quy-dinh-xu-phat-vi-pham-hanh-chinh-trong-linh-vuc-an-ninh-mang-va-bao-ve-du-lieu-ca-nhan-nhu-the-nao-883-113427-article.html) |
+| Luật An ninh mạng 116/2025/QH15 | Ban hành 10/12/2025, hiệu lực 01/07/2026, thay Luật ANM 2018 và Luật ATTT mạng 2015. Hướng dẫn: NĐ 327–333/2026 (hiệu lực 19/08/2026), trong đó NĐ 333/2026 quy định chi tiết | Yêu cầu lưu dữ liệu người dùng tại VN với doanh nghiệp cung cấp dịch vụ trên mạng (theo bản tóm tắt; **chưa kiểm chứng số điều, đối tượng, thời hạn**) → data residency cấu hình được (mục 3.12) | [vanban.chinhphu.vn](https://vanban.chinhphu.vn/?classid=1&docid=216499&orggroupid=1&pageid=27160), [LuatVietnam](https://luatvietnam.vn/thong-tin/luat-an-ninh-mang-cua-quoc-hoi-2025-so-116-2025-qh15-422396-d1.html), [EY](https://www.ey.com/vi_vn/technical/tax/tax-and-law-updates/luat-an-ninh-mang-2025-cua-viet-nam-cac-diem-chinh-va-yeu-cau-tuan-thu), [MVA (danh sách NĐ hướng dẫn)](https://mva.vn/van-ban-huong-dan-luat-an-ninh-mang/) |
+| Luật Dữ liệu 60/2024/QH15 | Đang hiệu lực | Dữ liệu quan trọng/cốt lõi theo danh mục của Thủ tướng: residency có thể khai báo thêm quy tắc theo `dataTypes` riêng của dự án | [TVPL](https://thuvienphapluat.vn/van-ban/Bo-may-hanh-chinh/Luat-Du-lieu-621343.aspx) (theo gap analysis) |
 | Cổng quốc gia về bảo vệ dữ liệu cá nhân (A05) | Đang hoạt động; thủ tục thông báo vi phạm | Nộp tay; module xuất file | [baovedlcn.gov.vn](https://baovedlcn.gov.vn/thu-tuc-hanh-chinh/thong-bao-vi-pham-quy-dinh-ve-bao-ve-du-lieu-ca-nhan) |
 
 **Thời hạn thực hiện quyền, NĐ 356 Điều 5** (theo toàn văn trên hethongphapluat.com; thuvienphapluat.vn chặn truy cập tự
@@ -211,7 +218,7 @@ flowchart LR
       ret["RetentionService<br/>policy · legal hold · sweep"]
       rec["RecordsService<br/>RoPA · processors · DPIA"]
       brc["BreachService<br/>đồng hồ 72h"]
-      cal["BusinessCalendar (VN)"]
+      cal["WorkingDays (port)<br/>→ module calendar"]
       api["REST /api/v1/privacy/**"]
       gimpl["PrivacyGuard impl<br/>(consent + restriction, cache)"]
     end
@@ -257,7 +264,7 @@ com.vyforge.platform.privacy.dsr
 ├── retention/    RetentionPolicyService, RetentionSweeper, LegalHoldService
 ├── records/      ProcessingActivityService (RoPA), ProcessorRegistry, DataAssetSync, AssessmentService
 ├── breach/       BreachService, BreachClock
-├── calendar/     BusinessCalendar, VnBusinessCalendar
+├── calendar/     WorkingDays (port), CalendarWorkingDays (adapter tới -calendar), WeekendOnlyWorkingDays
 ├── settings/     TenantPrivacySettings (JSONB có schema_version)
 ├── web/          *Controller (me, public, admin), ProblemCodes
 └── autoconfigure/ PrivacyDsrAutoConfiguration, PrivacyDsrProperties
@@ -355,7 +362,7 @@ stateDiagram-v2
   CANCELLED --> [*]
 ```
 
-Mốc SLA trên request (tính bởi `SlaCalculator` + `BusinessCalendar`):
+Mốc SLA trên request (tính bởi `SlaCalculator` + port `WorkingDays`):
 
 - `ack_due_at` = `received_at` + N ngày làm việc (mặc định 2). Ghi `acknowledged_at` khi gửi phản hồi đầu tiên (thư "đã nhận").
 - `due_at` = `received_at` + số ngày theo type (mục 2.1), dùng mức "có bên thứ ba" nếu có contributor khai báo
@@ -364,6 +371,32 @@ Mốc SLA trên request (tính bởi `SlaCalculator` + `BusinessCalendar`):
 - Mốc bắt đầu đếm cấu hình được (`clock-start: RECEIVED | VERIFIED`), mặc định `RECEIVED` (an toàn hơn). Thời gian chờ
   chủ thể bổ sung thông tin xác minh **không** dừng đồng hồ trừ khi tenant bật `pause-while-awaiting-subject` (pháp chế
   quyết, mục 10.2).
+
+**Ngày làm việc lấy từ module `calendar` (forge-55, theo gap analysis mục 3).** Privacy không tự giữ lịch nghỉ lễ. Lý do:
+ngày lễ VN đổi theo văn bản (vd. NQ 28/2026/QH16 thêm 24/11 từ 01/07/2026), Tết và Giỗ Tổ theo âm lịch, ngày làm bù do
+Chính phủ công bố hằng năm. Lịch phải là dữ liệu có version, dùng chung với workflow, helpdesk và booking. Privacy chỉ
+định nghĩa một port nhỏ:
+
+```java
+/** Port nội bộ của privacy-dsr; adapter mặc định gọi BusinessCalendar của platform-starter-calendar. */
+public interface WorkingDays {
+    Instant addWorkingDays(Instant from, int days, ZoneId zone);      // tenant lấy từ TenantContext
+    Instant addCalendarDays(Instant from, int days, ZoneId zone);     // "ngày" (Q1): cuối ngày thứ n theo giờ VN
+    CalendarSource source();                                          // CALENDAR_MODULE | WEEKEND_ONLY (để hiện cảnh báo)
+}
+```
+
+- `CalendarWorkingDays` bật khi có bean `BusinessCalendar` của `platform-starter-calendar` (`@ConditionalOnBean`), gọi
+  `addBusinessDays(t, n)` theo **lịch của tenant** (kế thừa lịch quốc gia + ngày riêng của tenant + ngày làm bù). Tên
+  method chốt theo thiết kế calendar; nếu forge-55 đặt khác thì chỉ sửa adapter.
+- Không có calendar: `WeekendOnlyWorkingDays` (chỉ trừ T7, CN), log cảnh báo lúc khởi động, `/admin/info` thiếu capability
+  `calendar` và dashboard hiện cảnh báo "hạn phản hồi có thể sớm hơn thực tế". Sai số luôn nghiêng về **an toàn** (hạn sớm
+  hơn hạn luật), không bao giờ muộn hơn.
+- Mốc hạn được **tính một lần và lưu** (`ack_due_at`, `due_at`) lúc nhận yêu cầu, có ghi `calendar_version` vào
+  `privacy_request.attributes`. Lịch sửa sau đó không làm đổi hạn của yêu cầu đang mở, trừ khi admin bấm "tính lại" (ghi
+  timeline).
+- Nhắc hạn dùng `@ClusterScheduled` của privacy (mục 3.6). Khi calendar có `Reminder` theo ngày làm việc thì privacy có thể
+  chuyển sang dùng, không đổi hợp đồng.
 
 ```mermaid
 sequenceDiagram
@@ -547,6 +580,95 @@ sensitive), còn lại cấu hình được.
 Khi không có `-privacy-dsr`, bean mặc định của `-privacy` là `PermitAllPrivacyGuard` (log cảnh báo một lần lúc khởi động
 nếu có `@RequiresPurpose`), để module khác gọi được mà không phụ thuộc cứng.
 
+### 3.12 Nơi lưu và nơi gửi dữ liệu (data residency)
+
+**Bối cảnh pháp lý.** Luật An ninh mạng 116/2025/QH15 (ban hành 10/12/2025, hiệu lực 01/07/2026, thay Luật An ninh mạng
+2018 và Luật An toàn thông tin mạng 2015). Theo các bản tóm tắt, doanh nghiệp cung cấp dịch vụ trên mạng viễn thông,
+Internet, dịch vụ gia tăng ở VN phải lưu dữ liệu người dùng tại Việt Nam. **Chưa kiểm chứng số điều, đối tượng và thời hạn
+lưu**: toàn văn chưa đọc được, bài thứ cấp ghi "tối thiểu 24 tháng" mà không dẫn điều khoản. Quy định chi tiết là
+NĐ 333/2026/NĐ-CP (hiệu lực 19/08/2026), chưa đọc toàn văn. Thêm vào đó: NĐ 356 Điều 18 (hồ sơ chuyển dữ liệu cá nhân ra
+nước ngoài) và Luật Dữ liệu 60/2024/QH15 (dữ liệu quan trọng, dữ liệu cốt lõi). Vì vậy module **không viết cứng luật nào**.
+Module cho bên kiểm soát khai báo quy tắc và kiểm quy tắc lúc chạy; pháp chế của dự án quyết định nội dung quy tắc
+(mục 10.2 Q8).
+
+**Mô hình.**
+
+- **Vị trí** của mỗi nơi chứa/nhận dữ liệu: `privacy_data_asset.location` (`country`, `region`, `provider`) và
+  `privacy_processor.country`. Contributor khai báo qua `ContributorDescriptor.thirdParties()`. Module khác khai báo đích
+  của mình lúc chạy, vd. files: bucket và region; notification: provider SMS/email; ai: endpoint LLM; telemetry: sink.
+- **Quy tắc residency** theo tenant (`privacy_residency_rule`), mỗi quy tắc có phạm vi `dataTypes` (taxonomy, vd.
+  `basic.*`, `sensitive.health`), `purposes` và `subjectTypes`:
+  - `storage`: nơi được **lưu bản gốc**, vd. `VN`. Kiểm khi khởi động và khi đổi cấu hình (bucket, DB region).
+  - `transfer`: nơi được **gửi bản sao/xử lý**, vd. `VN`, `ALLOW_WITH_ASSESSMENT:*`, `DENY:*`. Kiểm lúc chạy.
+  - `legalReference` và `mode` (`ENFORCE` | `MONITOR`). `MONITOR` chỉ ghi nhận, không chặn; dùng để triển khai dần.
+- **Mặc định platform**: một quy tắc mẫu `basic.*, sensitive.* → storage VN; transfer ALLOW_WITH_ASSESSMENT`, chế độ
+  `MONITOR`. Tenant hoặc dự án chuyển sang `ENFORCE` khi pháp chế chốt.
+
+**Kiểm lúc chạy, SPI trong `-privacy`** (module gọi được mà không phụ thuộc `-privacy-dsr`):
+
+```java
+public interface DataResidency {
+    /** Có được gửi các loại dữ liệu này tới đích này không. Gọi trước khi gửi ra ngoài process. */
+    ResidencyDecision checkTransfer(TransferIntent intent);
+    /** Nơi lưu này có hợp lệ cho các loại dữ liệu này không (files kiểm khi tạo bucket, khi khởi động). */
+    ResidencyDecision checkStorage(Set<String> dataTypes, Location location);
+}
+public record TransferIntent(String caller,              // "ai", "notification", "telemetry", "files"
+        Set<String> dataTypes, @Nullable String purpose,
+        Location destination,                              // country ISO-3166, region, provider
+        @Nullable String processorKey) {}
+public sealed interface ResidencyDecision {
+    record Allowed(String ruleKey) implements ResidencyDecision {}
+    record AllowedWithAssessment(String ruleKey, UUID assessmentId) implements ResidencyDecision {}   // TRANSFER đã APPROVED
+    record Denied(String ruleKey, String reason) implements ResidencyDecision {}   // reason: residency.storage_country, residency.no_transfer_assessment
+}
+```
+
+- Bean mặc định của `-privacy` là `PermissiveDataResidency`: luôn `Allowed`, log cảnh báo một lần. `-privacy-dsr` thay bằng
+  `RuleBasedDataResidency`: đọc quy tắc của tenant (cache 60 giây, xoá theo event), có `ALLOW_WITH_ASSESSMENT` thì tìm
+  `privacy_assessment` kind `TRANSFER` đã `APPROVED` cho `processorKey`, không có thì `Denied`.
+- Mọi quyết định `Denied` và `AllowedWithAssessment` ghi `privacy_residency_event` (thống kê, bằng chứng cho hồ sơ Mẫu 09)
+  và metric `vyforge.privacy.residency.decisions`. Ở `MONITOR` thì trả `Allowed` nhưng vẫn ghi như `Denied`.
+- **Ai gọi** (theo gap analysis): ai (forge-48) chặn gửi prompt có dữ liệu cá nhân ra LLM nước ngoài; files kiểm region
+  của bucket; telemetry kiểm sink; notification kiểm provider (SMS/email gateway nước ngoài); webhooks kiểm endpoint đích
+  khi payload có `subjectRefs`; export kiểm Gotenberg/ký từ xa.
+- **Báo cáo:** màn hình "Bản đồ dữ liệu" gộp asset, processor và vị trí. Đích ngoài VN mà chưa có hồ sơ TRANSFER thì cảnh
+  báo (K13). `RecordsReport` liệt kê vi phạm `storage`.
+
+Giới hạn: residency kiểm **ý định gửi** mà module khai báo. Nó không chặn được code tự gọi HTTP ra ngoài. Lớp mạng
+(NetworkPolicy, egress gateway) là việc của `platform-policies`/hạ tầng, README ghi rõ.
+
+### 3.13 Consent làm đầu vào cho telemetry
+
+Gap analysis (mục 2.14, mục 3) đặt consent của privacy-dsr là **đầu vào bắt buộc** của module `telemetry`: không có đồng ý
+thì không gửi, hoặc chỉ gửi ẩn danh. Hợp đồng:
+
+| Phía | Hợp đồng |
+|---|---|
+| Purpose chuẩn | Privacy khai báo sẵn (`source=CODE`, tenant chỉ sửa tiêu đề/tắt): `analytics.product` (hành vi trong sản phẩm, gắn người dùng; dữ liệu `sensitive.online_behavior` theo NĐ 356 Điều 4 → `sensitive=true`), `analytics.web` (thống kê truy cập web có cookie), `marketing.attribution` (đo hiệu quả quảng cáo). Legal basis đều `CONSENT` |
+| Server | `Telemetry.track()` gọi `PrivacyGuard.check(subject, purpose)` (cache, mục 3.11). `allowed=false` thì telemetry **bỏ định danh**: không `userId`, không `anon` id bền, chỉ gửi event tổng hợp không có dữ liệu cá nhân, hoặc bỏ event (cấu hình của telemetry) |
+| Trình duyệt | `@vyforge/privacy` ghi cookie first-party `vf_consent` (không HttpOnly, `SameSite=Lax`, giá trị: `v=1;p=analytics.web,analytics.product;n=<noticeVersion>;t=<epoch>` và chữ ký HMAC ngắn để server kiểm) và phát `window` event `vyforge:consent-changed`. `@vyforge/analytics` đọc qua hàm `getConsentSnapshot()` export từ `@vyforge/privacy/client`, **không tự đọc cookie** để định dạng có thể đổi. Chưa có quyết định = coi như từ chối (Luật Điều 9: im lặng không là đồng ý) |
+| Đổi ý | Event `ConsentChanged` (purpose `analytics.*`, state `WITHDRAWN`) → telemetry ngừng gắn định danh ngay; tuỳ chọn xoá event cũ qua contributor `telemetry` (ERASE theo subject) |
+| Khách vãng lai | Consent ẩn danh `anon:<deviceId>` (K16); khi đăng nhập, `ConsentLinker` ghép sang `user:<sub>` và phát `ConsentChanged` cho subject mới; telemetry dùng event này để ghép phiên nếu đã có đồng ý |
+| Residency | Sink của telemetry (PostHog Cloud, Umami tự host…) gọi `DataResidency.checkTransfer` với `dataTypes = {sensitive.online_behavior}` |
+| Telemetry là contributor | Telemetry cài `PersonalDataContributor` key `telemetry`: EXPORT (event gắn subject), ERASE (xoá hoặc ẩn danh `distinct_id` ở sink nếu sink hỗ trợ; không hỗ trợ thì `Retained` có ghi rõ trong RoPA) |
+
+Privacy không phụ thuộc telemetry; telemetry phụ thuộc `-privacy` (SPI `PrivacyGuard`) và `@vyforge/privacy/client`.
+
+### 3.14 Offboarding tenant
+
+Gap analysis giao `tenant-lifecycle` dùng lại SPI xuất/xoá của privacy khi tenant rời platform. Khi đó **bên kiểm soát là
+tenant**, không phải chủ thể. Hợp đồng:
+
+- `ErasurePlan` và `ContributorContext` có `scope`: `SUBJECT` (mặc định) hoặc `TENANT`. Ở `TENANT`, contributor xuất hoặc
+  xoá **mọi** dữ liệu của tenant hiện tại, kể cả dữ liệu không gắn chủ thể. Contributor không hỗ trợ thì khai
+  `actions` không có `TENANT_EXPORT`/`TENANT_ERASE`, và tenant-lifecycle tự xử lý phần đó.
+- Privacy cung cấp `TenantDataOperations` (`exportTenant`, `eraseTenant`): một request nội bộ type `TENANT_EXPORT` hoặc
+  `TENANT_ERASE`, không có SLA luật định (SLA theo hợp đồng, cấu hình), cùng orchestrator, task, gói ZIP và báo cáo
+  `Retained`. Chỉ người vận hành gọi được (`privacy:tenant:Export/Erase`, MFA, duyệt 4 mắt).
+- Sau `TENANT_ERASE` thì bảng `privacy_*` của tenant cũng bị xoá, chỉ giữ: hồ sơ breach (sàn 5 năm), biên bản xoá (request,
+  timeline) và bằng chứng consent đã ẩn danh theo Q3. Phần giữ lại ghi trong báo cáo cho tenant.
+
 ---
 
 ## 4. Mô hình dữ liệu
@@ -580,6 +702,8 @@ erDiagram
   privacy_assessment }o--|| privacy_processing_activity : "đánh giá"
   privacy_assessment }o--|| privacy_assessment_template : "theo mẫu"
   privacy_breach ||--o{ privacy_breach_event : "timeline"
+  privacy_residency_rule ||--o{ privacy_residency_event : "quyết định"
+  privacy_processor ||--o{ privacy_assessment : "TRANSFER"
 ```
 
 ### 4.2 Nguyên tắc
@@ -1062,6 +1186,35 @@ create table privacy_breach_event (
     occurred_at      timestamptz  not null
 );
 
+create table privacy_residency_rule (
+    id               uuid primary key,
+    tenant_id        varchar(100) not null,               -- '*' = mặc định platform
+    key              varchar(120) not null,
+    data_types       text[]       not null,               -- 'basic.*', 'sensitive.health'
+    purposes         text[]       not null default '{}',
+    subject_types    text[]       not null default '{}',
+    storage          text[]       not null default '{}',  -- nước được lưu bản gốc: {'VN'}
+    transfer         jsonb        not null,               -- {"schema_version":1,"allow":["VN"],"withAssessment":["*"],"deny":[]}
+    mode             varchar(20)  not null default 'MONITOR', -- MONITOR | ENFORCE
+    legal_reference  text,
+    priority         int          not null default 0,
+    status           varchar(20)  not null default 'ACTIVE',
+    updated_at       timestamptz  not null,
+    unique (tenant_id, key)
+);
+
+create table privacy_residency_event (                     -- quyết định Denied / WithAssessment / MONITOR-vi phạm
+    id               uuid         not null,
+    tenant_id        varchar(100) not null,
+    caller           varchar(60)  not null,
+    rule_key         varchar(120),
+    decision         varchar(30)  not null,
+    data_types       text[]       not null,
+    destination      jsonb        not null,               -- {"country","region","provider","processorKey"}
+    occurred_at      timestamptz  not null,
+    primary key (id, occurred_at)
+) partition by range (occurred_at);                       -- giữ 2 năm
+
 create table privacy_tenant_settings (
     tenant_id        varchar(100) primary key,
     settings         jsonb        not null,               -- {"schema_version":1,"sla":{...},"verification":{...},"exemption":...,"dpo":{...},"controller":{...}}
@@ -1194,7 +1347,10 @@ public sealed interface ErasureItem {
 }
 public record ErasureResult(List<ErasureItem> items, boolean complete, @Nullable Checkpoint checkpoint) {}
 public record ErasurePlan(boolean dryRun, Set<String> dataTypes /* rỗng = tất cả */, @Nullable String reason,
-        Set<SubjectRef> legalHolds) {}
+        Set<SubjectRef> legalHolds, PrivacyScope scope /* SUBJECT (mặc định) | TENANT, mục 3.14 */) {}
+
+/** DISCOVER, EXPORT, ERASE, RECTIFY, RESTRICT, TENANT_EXPORT, TENANT_ERASE. */
+public enum PrivacyAction { DISCOVER, EXPORT, ERASE, RECTIFY, RESTRICT, TENANT_EXPORT, TENANT_ERASE }
 
 /** Sink nhận dữ liệu export; module không tự tạo file. */
 public interface ExportSink {
@@ -1370,9 +1526,12 @@ paths:
   /admin/breaches/{id}/{action}:    { post: { summary: "assess | notify-authority | notify-subjects | close" } }
   /admin/breaches/{id}/authority-form: { get: { summary: Mẫu 08 } }
   /admin/contributors:              { get: { summary: Contributor đang đăng ký, health, action hỗ trợ } }
+  /admin/residency/rules:          { get: {}, post: {}, put: {} }
+  /admin/residency/events:         { get: { summary: Quyết định Denied/WithAssessment, lọc theo caller, đích } }
+  /admin/residency/map:            { get: { summary: Bản đồ dữ liệu (asset, processor, vị trí, hồ sơ TRANSFER) } }
+  /admin/tenant-operations:        { post: { summary: "TENANT_EXPORT | TENANT_ERASE (chỉ người vận hành, duyệt 4 mắt)" } }
   /admin/settings:                  { get: {}, put: {} }
   /admin/dashboard:                 { get: { summary: Số liệu SLA, yêu cầu quá hạn, hồ sơ thiếu, sự cố đang mở } }
-  /admin/calendar/holidays:         { get: {}, put: { summary: Ngày nghỉ lễ theo năm (ghi đè mặc định) } }
 ```
 
 **Action catalog (authz, `privacy:<resource>:<Verb>`):**
@@ -1393,6 +1552,8 @@ paths:
 | `privacy:record:List/Get/Update/Publish` | `vrn:privacy:record/*` | RoPA, processor, asset |
 | `privacy:assessment:List/Get/Update/Approve/Submit` | `vrn:privacy:assessment/*` | |
 | `privacy:breach:List/Get/Create/Update/Notify/Close` | `vrn:privacy:breach/*` | |
+| `privacy:residency:List/Update` | `vrn:privacy:residency/*` | Đổi `mode` sang ENFORCE nên yêu cầu MFA |
+| `privacy:tenant:Export/Erase` | `vrn:privacy:tenant/*` | Chỉ người vận hành, duyệt 4 mắt |
 | `privacy:settings:Get/Update` | `vrn:privacy:settings` | |
 | `privacy:dashboard:Get` | `vrn:privacy:dashboard` | |
 
@@ -1416,6 +1577,7 @@ PII**: dùng `subjectRef` (có thể là `user:<sub>`) và `subjectHash`; không
 | `ProcessingRestricted/RestrictionLifted {subjectRef, purpose, kind}` | Đặt/gỡ | Contributor cache, hệ marketing ngoài |
 | `RetentionExecuted {policy, asset, deleted, anonymized}` | Sau mỗi run | Báo cáo |
 | `RetentionClockStarted {subjectRef, trigger, at}` (nghe vào) | App phát | privacy ghi `privacy_retention_clock` |
+| `ResidencyViolationDetected {caller, ruleKey, decision, destinationCountry}` | Denied hoặc vi phạm ở MONITOR | Alert, DPO |
 | `BreachRecorded/BreachDeadlineApproaching {breachId, dueAt}` | Ghi nhận, 24/48/66 giờ | Pager, notification |
 | `AssessmentReviewDue {assessmentId, dueAt}` | Tới hạn 6 tháng/60 ngày | DPO |
 
@@ -1444,6 +1606,7 @@ PII**: dùng `subjectRef` (có thể là `user:<sub>`) và `subjectHash`; không
 | SPI / hook | Ở đâu | Dùng để | Mặc định |
 |---|---|---|---|
 | `PersonalDataContributor` | `-privacy` | Module/app tự xuất, xoá, sửa, hạn chế dữ liệu của mình | Không có; các module P1 cài (mục 6.2) |
+| `DataResidency` | `-privacy` | Kiểm nơi lưu/nơi gửi trước khi gửi ra ngoài process | `PermissiveDataResidency`; `-privacy-dsr` thay bằng `RuleBasedDataResidency` |
 | `RetentionCapable` | `-privacy` | Contributor nhận lệnh retention trung tâm | — |
 | `PrivacyGuard` | `-privacy` | Kiểm được phép xử lý | `PermitAllPrivacyGuard`; `-privacy-dsr` thay bằng `DefaultPrivacyGuard` |
 | `SubjectIdentityResolver` | `-privacy-dsr` | Mở rộng `SubjectRef` thành identifier (email, phone, customerId) | `DirectorySubjectResolver` (danh bạ auth-server, khi có `user:`); app thêm cho `customer:` |
@@ -1452,7 +1615,7 @@ PII**: dùng `subjectRef` (có thể là `user:<sub>`) và `subjectHash`; không
 | `PrivacyNotifier` | `-privacy-dsr` | Gửi thư cho chủ thể và DPO | `NotificationPrivacyNotifier` khi có `Notifications`; không có thì `LoggingPrivacyNotifier` + cảnh báo khởi động |
 | `DsrPackageStore` | `-privacy-dsr` | Lưu gói tải về | `FilesPackageStore` khi có files; `JdbcPackageStore` (bytea mã hoá, giới hạn 200 MB) |
 | `RequestTypeDefinition` | `-privacy-dsr` | Thêm/chỉnh loại yêu cầu (action, SLA, cần duyệt, verifier tối thiểu) | 8 loại ở mục 2.1 |
-| `BusinessCalendar` | `-privacy-dsr` | Ngày làm việc | `VnBusinessCalendar`: T7, CN nghỉ + ngày lễ cấu hình theo năm (Tết âm lịch không tự tính) |
+| `WorkingDays` | `-privacy-dsr` | Ngày làm việc cho SLA | `CalendarWorkingDays` khi có `platform-starter-calendar` (forge-55); không có thì `WeekendOnlyWorkingDays` (an toàn, hạn sớm hơn) |
 | `RequestInterceptor` | `-privacy-dsr` | Hook trước/sau đổi trạng thái (vd. tạo ticket CRM, chặn xoá khi còn nợ) | — |
 | `ConsentInterceptor` | `-privacy-dsr` | Hook trước/sau ghi receipt (vd. đồng bộ CDP) | — |
 | `ConsentMirror` | `-privacy-dsr` | Đẩy consent sang hệ ngoài (OneTrust, Ketch, CDP) | — |
@@ -1636,9 +1799,9 @@ vyforge:
       guard:
         cache-ttl: 30s
         fail-closed-sensitive: true
-      calendar:
-        holidays:                             # nghỉ lễ VN; cập nhật hằng năm theo thông báo của Bộ LĐTBXH/Bộ Nội vụ
-          2027: [2027-01-01, 2027-02-05, 2027-02-06, ..., 2027-04-30, 2027-05-01, 2027-09-02]
+      sla:
+        zone: Asia/Ho_Chi_Minh                # ngày lịch/ngày làm việc tính theo giờ VN
+        # ngày lễ, làm bù, lịch tenant: cấu hình ở module calendar, không ở đây
       retention:
         cron: "0 0 2 * * *"
         batch-size: 500
@@ -1663,6 +1826,7 @@ vyforge:
 | `vyforge.privacy.breach.open` | gauge | `tenant`, `status` |
 | `vyforge.privacy.assessment.due` | gauge | `tenant`, `kind`, `overdue` |
 | `vyforge.privacy.consent.chain.violations` | counter | `tenant` |
+| `vyforge.privacy.residency.decisions` | counter | `caller`, `decision`, `country` |
 
 Span OTel: `privacy.consent.record`, `privacy.request.transition`, `privacy.contributor.<action>` (attribute
 `contributor`, `request.id`; không có PII). Log có `tenant_id`, `request_id`, `privacy.request` (id, không phải số hiển thị).
@@ -1691,7 +1855,7 @@ Health: `privacyContributors` (contributor remote: gọi `/descriptor` có cache
 | Remote không đến được | Như trên | Circuit breaker, retry tới `remote.max-wait` |
 | notification vắng mặt | Không gửi thư xác nhận/OTP | Khởi động cảnh báo; OTP không khả dụng → form công khai chỉ còn xác minh tay |
 | files vắng mặt | Không lưu gói lớn | `JdbcPackageStore` (≤ 200 MB); vượt → gói thành nhiều phần, hoặc admin gửi tay |
-| Lịch nghỉ lễ năm sau chưa cấu hình | Ngày làm việc tính sai | Khởi động và job hằng ngày cảnh báo khi năm hiện tại/năm sau chưa có dữ liệu; tính tạm chỉ T7/CN |
+| Module calendar vắng mặt, hoặc chưa có lịch quốc gia năm hiện tại/năm sau | Ngày làm việc không trừ ngày lễ | `WeekendOnlyWorkingDays`, hạn sớm hơn hạn luật (an toàn); cảnh báo khởi động và trên dashboard. Calendar báo thiếu lịch năm sau qua health của chính nó |
 | Đồng hồ hệ thống lệch | SLA sai | Dùng `Clock` của platform; mốc lưu `timestamptz` UTC; hiển thị giờ VN |
 
 ### 7.5 Giới hạn tải và dung lượng
@@ -1728,6 +1892,7 @@ Health: `privacyContributors` (contributor remote: gọi `/descriptor` có cache
 | Hồ sơ chuyển ra nước ngoài | Luật Điều 20, NĐ 356 Điều 18 | `privacy_processor.cross_border` → bắt buộc assessment TRANSFER (Mẫu 09) |
 | Thông báo vi phạm 72 giờ; chủ thể với vị trí/sinh trắc/tài chính; lưu 5 năm | Luật Điều 23, NĐ 356 Điều 8 khoản 3, 28, 29 | `privacy_breach`, đồng hồ, Mẫu 08, sàn retention 5 năm |
 | Nhân sự/bộ phận bảo vệ dữ liệu | Luật Điều 33, NĐ 356 Điều 13–16 | Thông tin DPO trong settings; hiện trong notice và thư trả lời |
+| Lưu dữ liệu người dùng tại VN (chưa kiểm chứng chi tiết) | Luật An ninh mạng 116/2025, NĐ 333/2026 | `privacy_residency_rule` + `DataResidency` (mục 3.12) |
 | Ưu đãi DN nhỏ | Luật Điều 38 | `exemption` có điều kiện tự huỷ |
 | Xử phạt | NĐ 330/2026 Mục 6 (Điều 39–71) | Dashboard "rủi ro tuân thủ" liệt kê thiếu sót theo nhóm nghĩa vụ; không tính tiền phạt |
 
@@ -1778,11 +1943,12 @@ Health: `privacyContributors` (contributor remote: gọi `/descriptor` có cache
 | 1 | Mở rộng `-privacy`: package `spi` (SubjectRef, DataSubject, contributor, kết quả, `PrivacyGuard` + `PermitAllPrivacyGuard`), taxonomy YAML, `@PersonalData(type, erase)`, `@PersonalDataOwner`, `PersonalDataInventory`; cập nhật javadoc `PersonalDataCategory` theo NĐ 356 Điều 3–4 | `platform-starter-privacy` | Unit; test tương thích ngược (annotation cũ không đổi hành vi) |
 | 2 | Khung `-privacy-dsr`: auto-config, properties, `StarterSchemaMigrator` module `privacy`, migration V1 (bảng mục 4.3), file SQL gộp, settings theo tenant | `platform-starter-privacy-dsr` | Testcontainers PostgreSQL: migrate sạch, `flyway_schema_history_privacy` |
 | 3 | Consent: catalog, notice/version/publish, collection point, receipt + chuỗi băm, state projection, `Consents`, `DefaultPrivacyGuard` + cache + `@RequiresPurpose`, ConsentLinker, event | như trên | Unit dạng bảng cho quyết định guard; Testcontainers cho chuỗi băm, trigger chỉ ghi thêm, partition |
-| 4 | DSR: request + state machine, `RequestTypeRegistry`, `SlaCalculator` + `VnBusinessCalendar`, verifier (session, OTP, manual), orchestrator trên `DurableTaskQueue`, `PackageBuilder` + `JdbcPackageStore`/`FilesPackageStore`, restriction | như trên | Unit SLA (ngày lễ, cuối tuần, gia hạn); Testcontainers: luồng ACCESS/ERASE end-to-end với 3 contributor giả (một lỗi tạm, một `Retained`, một `OnHold`) |
+| 4 | DSR: request + state machine, `RequestTypeRegistry`, `SlaCalculator` + `WorkingDays` (adapter calendar, fallback chỉ T7/CN), verifier (session, OTP, manual), orchestrator trên `DurableTaskQueue`, `PackageBuilder` + `JdbcPackageStore`/`FilesPackageStore`, restriction | như trên | Unit SLA (ngày lễ, cuối tuần, gia hạn); Testcontainers: luồng ACCESS/ERASE end-to-end với 3 contributor giả (một lỗi tạm, một `Retained`, một `OnHold`) |
 | 5 | Contributor remote: client + `ContributorEndpoint` trong `-privacy`; JSON Schema + test hợp đồng | cả hai | WireMock; test hợp đồng chạy với chính `ContributorEndpoint` |
 | 6 | `EntityContributorFactory` (sinh từ annotation) | `-privacy-dsr` | Testcontainers với entity mẫu |
 | 7 | Retention: policy, binding, clock, legal hold, sweeper (`@ClusterScheduled` perTenant), REVIEW | như trên | Testcontainers |
 | 8 | Hồ sơ: data asset sync, RoPA, processor, assessment + template Mẫu 09/10 (JSON Schema), job nhắc; breach + đồng hồ + Mẫu 08 (HTML renderer; export renderer khi có) | như trên | Unit + Testcontainers |
+| 8b | Residency: bảng quy tắc, `DataResidency` (SPI trong `-privacy` + `RuleBasedDataResidency`), sự kiện, bản đồ dữ liệu; purpose chuẩn `analytics.*`, cookie `vf_consent` có chữ ký; `TenantDataOperations` (`scope=TENANT`) | cả hai | Unit dạng bảng cho quyết định residency; Testcontainers cho TENANT_ERASE với contributor giả |
 | 9 | REST (me, public, admin), ProblemCodes vi/en, action catalog, audit, rate limit | như trên | MockMvc + `TestAuthz`; test không lộ PII trong log |
 | 9b | `GET /admin/info` (capabilities theo bean), `vyforge.privacy.dsr.enabled`, `OperatorTenantSelection` ở API quản trị, `PUT /internal/catalogs/{service}` | như trên | MockMvc |
 | 9c | Chế độ `remote` (client `@HttpExchange` cho `Consents`, `DataSubjectRequests`, `Restrictions`, `Retention`; `RemotePrivacyGuard` có snapshot), `PrivacyContractTests` hai chế độ | như trên | Testcontainers: `platform-services` giả (app tối thiểu nhúng starter) |
@@ -1800,7 +1966,8 @@ Contributor của các module P1 (mục 6.2) làm **trong session của từng m
 
 `-privacy-dsr`: `platform-starter-privacy`, `platform-core` (`SecretCipher`), `-jpa` (`StarterSchemaMigrator`,
 `TenantEntity`), `-scheduling` (`DurableTaskQueue`, `@ClusterScheduled`), `-web`, `-messaging` (event), `-audit`; optional:
-`-authz`, `-ratelimit`, `platform-starter-notification`, `platform-starter-files`, `platform-starter-export`. Thư viện mới:
+`-authz`, `-ratelimit`, `platform-starter-calendar`, `platform-starter-notification`, `platform-starter-files`,
+`platform-starter-export`, `platform-starter-features`. Thư viện mới:
 không có (ZIP bằng `java.util.zip`, JSON Schema validator đã có trong bom nếu features/notification đưa vào —
 `com.networknt:json-schema-validator`, Apache-2.0; nếu chưa thì thêm vào `platform-bom`).
 
@@ -1842,7 +2009,8 @@ không có (ZIP bằng `java.util.zip`, JSON Schema validator đã có trong bom
 | Q4 | Gói DSR: ZIP JSON + CSV, không mã hoá bằng mật khẩu | Bảo vệ bằng re-auth + URL ngắn hạn | ZIP AES có mật khẩu gửi kênh khác (khó dùng, hỗ trợ kém trên điện thoại) |
 | Q5 | Privacy tự đóng gói thay vì dùng export | Tự đóng gói | Mở rộng export với "nguồn nhiều phần" — **phiên điều phối chọn** |
 | Q6 | Ngưỡng "xử lý quy mô lớn" cho tự huỷ miễn trừ Điều 38 | Cấu hình, mặc định 100.000 chủ thể (theo báo cáo nghiên cứu) | **Pháp chế đối chiếu** văn bản hướng dẫn |
-| Q7 | Lịch nghỉ lễ | Cấu hình tay theo năm, cảnh báo khi thiếu | Thư viện âm lịch tự tính Tết (dễ sai khi Chính phủ đổi lịch nghỉ bù) |
+| Q8 | Nội dung quy tắc residency mặc định | Mẫu `basic.*, sensitive.* → lưu VN; gửi ra ngoài cần hồ sơ TRANSFER`, chế độ MONITOR | **Pháp chế xác nhận** phạm vi "dữ liệu người dùng" và thời hạn lưu theo Luật An ninh mạng 2025/NĐ 333/2026 trước khi bật ENFORCE |
+| Q7 | Lịch nghỉ lễ | Dùng module `calendar` (forge-55) qua port `WorkingDays`; thiếu thì chỉ trừ T7/CN (an toàn) | Privacy tự giữ lịch (trùng việc với calendar, đã bỏ theo gap analysis) |
 
 Không có quyết định nào chặn việc code; mọi điểm trên là cấu hình hoặc tách được.
 
@@ -1913,7 +2081,7 @@ chỉ với màn hình được đánh dấu, và mọi lần xem nội dung yê
   "version": "0.13.0",
   "apiVersion": 1,
   "mode": "services",
-  "capabilities": ["consent", "dsr", "retention", "records", "breach",
+  "capabilities": ["consent", "dsr", "retention", "records", "breach", "residency", "calendar",
                    "package.files", "notifier.notification", "render.export",
                    "contributors.remote", "contributors.entity"]
 }
@@ -1929,6 +2097,7 @@ chỉ với màn hình được đánh dấu, và mọi lần xem nội dung yê
 | notification | `PrivacyNotifier` (OTP, thư); `PromotionalConsent` cài cho notification | Log cảnh báo; OTP không khả dụng; notification dùng opt-in nội bộ |
 | files | `DsrPackageStore`; ảnh giấy tờ xác minh | `JdbcPackageStore`; xác minh tay không có ảnh đính kèm |
 | export | `AssessmentRenderer`, xuất danh sách (export luôn nhúng ở app, D10 → chỉ dùng khi privacy nhúng cùng app) | `HtmlRenderer`; CSV đơn giản |
+| calendar | `WorkingDays` → `BusinessCalendar` của tenant | Chỉ trừ T7, CN (hạn sớm hơn, an toàn) + cảnh báo |
 | features | Entitlement `module.privacy` | Coi như bật |
 | authz, audit, ratelimit | Optional như các module P1 | Không có API admin; không audit; rate limit trong bộ nhớ |
 | Module P1 khác | Cài `PersonalDataContributor` (chỉ phụ thuộc `-privacy`) | Không có contributor đó trong kế hoạch DSR |
@@ -1970,8 +2139,10 @@ Màn hình (nhóm: `O` chỉ người vận hành, `T` tenant admin/DPO và ngư
 | Sự cố vi phạm: đồng hồ 72h, Mẫu 08, gửi thông báo chủ thể | O+T (O tạo sự cố hạ tầng cho nhiều tenant) | `privacy:breach:*` | `BreachList`, `BreachDetail`, `BreachClock` |
 | Contributor: tình trạng, action hỗ trợ, remote | O+T (O cấu hình remote cấp platform) | `privacy:settings:Get` | `ContributorStatus` |
 | Việc nền queue `privacy` | O+T | `privacy:request:OverrideTask` | `TaskQueueTable` |
+| Residency: quy tắc, bản đồ dữ liệu, quyết định bị chặn | T (O sửa quy tắc mặc định platform) | `privacy:residency:*` | `ResidencyRuleTable`, `DataMap`, `ResidencyEvents` |
+| Xuất/xoá toàn bộ dữ liệu tenant (offboarding) | O | `privacy:tenant:Export/Erase` | `TenantOperationForm` |
 | Cài đặt tenant: bên kiểm soát, DPO, SLA siết thêm, xác minh, miễn trừ | T | `privacy:settings:*` | `PrivacySettingsForm` (trên `JsonSchemaForm`) |
-| Mặc định platform: lịch nghỉ lễ, mẫu DPIA, bên xử lý dùng chung (hạ tầng, SaaS) | O | `privacy:settings:Update` trên `vrn:privacy:settings/platform` | `PlatformDefaultsForm`, `HolidayCalendarEditor` |
+| Mặc định platform: mẫu DPIA, bên xử lý dùng chung (hạ tầng, SaaS), quy tắc residency mặc định (lịch nghỉ lễ thuộc khu quản trị của calendar) | O | `privacy:settings:Update` trên `vrn:privacy:settings/platform` | `PlatformDefaultsForm` |
 
 Người vận hành **không** xem nội dung yêu cầu và consent của tenant khác theo mặc định; chỉ khi đang xem tenant đó qua
 `OperatorTenantSelection` và có action tương ứng, mọi lần xem ghi audit (K15).
@@ -2020,6 +2191,8 @@ export default defineAdminManifest({
     { id: 'records', path: '/records', title: { vi: 'Hồ sơ xử lý', en: 'Processing records' },
       audience: 'tenant',
       permission: { action: 'privacy:record:List', resource: 'vrn:privacy:record/*' } },
+    { id: 'residency', path: '/residency', title: { vi: 'Nơi lưu dữ liệu', en: 'Data residency' },
+      permission: { action: 'privacy:residency:List', resource: 'vrn:privacy:residency/*' } },
     { id: 'assessments', path: '/assessments', title: { vi: 'Đánh giá tác động', en: 'Impact assessments' },
       audience: 'tenant',
       permission: { action: 'privacy:assessment:List', resource: 'vrn:privacy:assessment/*' } },
