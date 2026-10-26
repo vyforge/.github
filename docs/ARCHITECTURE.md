@@ -109,6 +109,19 @@ Phần dùng chung nằm trong artifact có version (Renovate tự cập nhật)
 
 Caller workflow của dự án cấp `permissions: packages: read` để CI tải được các artifact này. Package npm và chart: thêm repo dự án vào *Manage Actions access* (Read) của từng package. Package Maven chỉ cấp quyền theo repo nguồn, nên repo backend cần secret `PACKAGES_TOKEN` (PAT classic, scope `read:packages`); `java-ci.yml` dùng secret này khi có (`secrets: inherit`).
 
+## Service nền tảng
+
+Các service dùng chung. Mỗi service có một repo và một image OCI, đẩy lên registry do tổ chức cấu hình (`VYFORGE_OCI_REGISTRY`: Harbor on-prem, GHCR hoặc registry của cloud):
+
+| Repo | Vai trò |
+|---|---|
+| `platform-auth-server` | Identity provider OIDC: đăng nhập, MFA, Google/Microsoft, token exchange RFC 8693 (ADR-0008) |
+| `platform-iam-server` | IAM tập trung: lưu policy và group, API nội bộ cho chế độ `remote`, phát event xoá cache qua Redis (ADR-0010) |
+| `platform-gateway` | Spring Cloud Gateway: kiểm JWT và `aud`, định tuyến, rate limit; không phân quyền (ADR-0010) |
+| `platform-auth-admin` | Console quản trị (Next.js) cho tài khoản, client, role |
+
+Kế hoạch thêm, gộp, đổi tên và bỏ module đến cuối 2027 nằm ở [MODULE_PLAN.md](MODULE_PLAN.md). Kế hoạch đó gồm cả việc đưa CI/CD và registry ra khỏi GitHub.
+
 ## Delivery
 
 - Mỗi dự án tách repo `<du-an>-backend`, `<du-an>-frontend` (và `<du-an>-infra` khi deploy Kubernetes).
