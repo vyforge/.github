@@ -12,6 +12,7 @@ Repo cấu hình chung cho toàn bộ tổ chức **Vyforge** trên GitHub. Các
 | Hỗ trợ | `SUPPORT.md` | Kênh hỏi đáp nội bộ |
 | Quy tắc ứng xử | `CODE_OF_CONDUCT.md` | Chuẩn mực làm việc |
 | Chuẩn kiến trúc | `docs/ARCHITECTURE.md` | Kiến trúc backend/frontend, tier, quy tắc bắt buộc/khuyến nghị |
+| Quy hoạch module | `docs/MODULE_PLAN.md` | Thêm, gộp, đổi tên, bỏ module và lộ trình theo quý đến cuối 2027 (đang chờ duyệt) |
 | Quyết định kiến trúc | `docs/adr/` | ADR cho các lựa chọn dùng chung (Maven, Modulith, PostgreSQL, auth server, Renovate…) |
 | Reusable workflows | `.github/workflows/` | CI/CD dùng chung, gọi bằng `uses: vyforge/.github/.github/workflows/<file>@v1`: `java-ci`, `node-ci`, `container` (image + Trivy + SBOM/provenance), `gitops-bump`, `maven-publish`, `npm-publish`, `helm-publish` |
 | Workflow templates | `workflow-templates/` | File CI mỏng gọi reusable workflow, chọn ở **Actions → New workflow** |
