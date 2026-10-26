@@ -1,6 +1,7 @@
 # Thiết kế module files: `platform-starter-files` + `@vyforge/files`
 
-> **Trạng thái:** bản thiết kế chờ duyệt (26/10/2026). Chưa có code.
+> **Trạng thái:** đã duyệt (26/10/2026), Q1–Q6 giữ như đề xuất. Chỉnh sau duyệt: dùng khối chung `SecretCipher`,
+> `DurableTaskQueue` (queue `files`: scan, transform, purge) và `StarterSchemaMigrator` của platform-java 0.12.1.
 > **Phạm vi:** lưu trữ file dùng chung cho mọi dự án Vyforge: upload, metadata, gắn file vào bản ghi nghiệp vụ, xử lý
 > (quét virus, kiểm MIME thật, ảnh, preview), quyền truy cập, quota, retention, legal hold, xoá theo yêu cầu chủ thể dữ liệu.
 > **Nền:** platform-java 0.12.0 (sẽ ra 0.13.0), platform-web 0.9.0. Theo quy ước chung của các module P1.
@@ -172,7 +173,7 @@ flowchart LR
     POL["BucketRegistry + TenantFileSettings<br/>(chính sách hiệu lực)"]
     ACC["FileAccessGuard<br/>(Authz + AttachmentAccessPolicy)"]
     Q["QuotaService"]
-    TASK["FileTaskWorker<br/>(bảng file_task, SKIP LOCKED)"]
+    TASK["TaskHandler của queue 'files'<br/>(DurableTaskQueue, bảng vyforge_task)"]
     JOBS["@ClusterScheduled: purge, retention,<br/>upload hết hạn, đối soát quota, mồ côi"]
     SPI{{"SPI: StorageAdapter · MalwareScanner · ContentInspector<br/>ImageTransformer · PreviewGenerator · DeliveryUrlSigner<br/>FileLifecycleInterceptor · FileValidator · QuotaProvider"}}
     DB[("PostgreSQL<br/>file_* + event_publication")]
@@ -206,9 +207,11 @@ Nguyên tắc:
   trình duyệt không tới được.
 - **Hexagonal.** Lõi (`com.vyforge.platform.files`) chỉ biết port. Adapter cài qua bean hoặc `ServiceLoader`, chọn theo
   cấu hình và theo tenant.
-- **Mọi việc chạy lâu đi qua bảng `file_task`** (quét, kiểm tra, biến thể, xoá blob, publish), có retry backoff, trạng
-  thái `DEAD`, API retry/cancel. Bảng này được nạp bằng listener của event outbox (Spring Modulith), nên không mất việc khi
-  app chết giữa chừng.
+- **Mọi việc chạy lâu đi qua `DurableTaskQueue`** của platform-starter-scheduling (khối chung, mục 5.2 của quy ước
+  module), queue `files`, ba kind: `scan` (đọc stream một lần: tính SHA-256, metadata, quét virus), `transform` (biến thể
+  ảnh, preview PDF, bỏ EXIF, publish sang vùng public) và `purge` (xoá object và biến thể của blob). Retry backoff, `DEAD`,
+  API retry/cancel và backlog do khối chung lo. Việc được `enqueue` trong cùng transaction với complete, nên chỉ tồn tại
+  khi transaction commit và không mất khi app chết giữa chừng.
 
 ### 3.2 Gói Java
 
@@ -217,8 +220,8 @@ com.vyforge.platform.files                 API công khai: FileService, Attachme
                                            FileErasure, FileContentReader, record/enum, event, FilesErrors, FilesActions
 com.vyforge.platform.files.spi             StorageAdapter, StorageAdapterFactory, MalwareScanner, ContentInspector,
                                            ImageTransformer, PreviewGenerator, DeliveryUrlSigner, FileLifecycleInterceptor,
-                                           FileValidator, AttachmentAccessPolicy, ObjectKeyStrategy, QuotaProvider, SecretCipher
-com.vyforge.platform.files.internal        Entity JPA, repository, chính sách, state machine, quota, task worker, job
+                                           FileValidator, AttachmentAccessPolicy, ObjectKeyStrategy, QuotaProvider
+com.vyforge.platform.files.internal        Entity JPA, repository, chính sách, state machine, quota, TaskHandler, job
 com.vyforge.platform.files.web             Controller REST, DTO
 com.vyforge.platform.files.adapter.s3      AWS SDK v2 (S3, SeaweedFS, RustFS, R2, Ceph, vStorage…)
 com.vyforge.platform.files.adapter.azure   azure-storage-blob (optional dependency, @ConditionalOnClass)
@@ -252,9 +255,9 @@ sequenceDiagram
   N->>A: POST /api/v1/files/uploads/{id}/complete
   A->>S: HEAD (size, etag, checksum) + GET Range 0-65535
   A->>A: Tika: MIME thật; so với allowlist và MIME khai báo; FileValidator
-  A->>D: tx: file_object + file_version + file_blob (hoặc dùng lại blob trùng hash)<br/>file_usage (giữ chỗ → đã dùng), file_attachment, event FileUploaded (outbox)
+  A->>D: tx: file_object + file_version + file_blob<br/>file_usage (giữ chỗ → đã dùng), file_attachment, event FileUploaded (outbox),<br/>enqueue vyforge_task (queue files, kind scan)
   A-->>B: 201 {file, status: PROCESSING|AVAILABLE}
-  Note over A,D: Listener của FileUploaded tạo file_task: SCAN, INSPECT, VARIANT…
+  Note over A,D: Handler scan xong thì enqueue transform cho từng biến thể/preview/publish
 ```
 
 Chi tiết quan trọng:
@@ -262,8 +265,9 @@ Chi tiết quan trọng:
 - **Kích thước:** presigned PUT ký header `Content-Length` nên client không gửi được số byte khác số đã khai báo; lúc
   complete vẫn `HEAD` lại vì không phải storage nào cũng kiểm header đã ký.
 - **Checksum:** client có thể gửi SHA-256 (base64) lúc initiate. Khi storage có capability `checksumSha256`, URL ký kèm
-  `x-amz-checksum-sha256` và storage tự từ chối byte sai. Nếu không, task `INSPECT` tính SHA-256 khi đọc stream để quét và
-  so sánh. Không gửi hash thì server tự tính ở task (dedup vẫn chạy sau upload).
+  `x-amz-checksum-sha256` và storage tự từ chối byte sai. Nếu không, việc `scan` tính SHA-256 khi đọc stream để quét và
+  so sánh. Không gửi hash thì server tự tính ở task `scan`; dedup chạy ngay sau khi có hash: blob trùng
+  `(tenant, storage, sha256)` thì version trỏ sang blob cũ và blob vừa upload được enqueue `purge`.
 - **Key bất biến:** `blobId` (UUID v7) cấp lúc initiate. Key không chứa tên file (PII, ký tự tiếng Việt, ký tự đặc biệt).
 - **Idempotency:** `Idempotency-Key` của platform-starter-web cho initiate và complete. Complete gọi lại sau khi đã xong
   trả lại đúng kết quả cũ (theo `uploadId`), không tạo file thứ hai.
@@ -311,20 +315,20 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
   autonumber
-  participant O as Outbox (event_publication)
-  participant L as Listener FileUploaded
-  participant W as FileTaskWorker
+  participant Q as DurableTaskQueue (vyforge_task)
+  participant W as ScanTaskHandler (queue files, kind scan)
   participant S as Storage
   participant C as clamd
   participant D as PostgreSQL
-  O->>L: FileUploaded (giao lại nếu app chết)
-  L->>D: insert file_task SCAN, INSPECT, VARIANT* (unique theo blob+kind+param)
-  W->>D: select ... for update skip locked (đến hạn)
+  participant O as Outbox (event_publication)
+  Q->>W: việc scan đến hạn (SKIP LOCKED, TenantContext.run)
   W->>S: GET stream
+  W->>W: tee: SHA-256 + metadata (ảnh/PDF)
   W->>C: INSTREAM (chunk 64 KiB)
   alt Sạch
     C-->>W: stream: OK
-    W->>D: blob.scan_status=CLEAN; version → AVAILABLE nếu mọi task bắt buộc xong
+    W->>D: blob.scan_status=CLEAN, sha256, metadata; dedup; version → AVAILABLE
+    W->>Q: enqueue transform (biến thể, preview, publish) nếu bucket cần
     W->>O: FileAvailable
   else Có virus
     C-->>W: stream: Eicar-Signature FOUND
@@ -332,8 +336,8 @@ sequenceDiagram
     W->>D: blob.scan_status=INFECTED; version → QUARANTINED; audit
     W->>O: FileQuarantined
   else clamd lỗi / timeout
-    W->>D: attempts+1, next_attempt_at = now + backoff(30s·2^n, tối đa 1h)
-    Note over W,D: Quá max-attempts (mặc định 8) → DEAD, metric + alert,<br/>file vẫn PROCESSING (fail-closed), admin retry qua API
+    W-->>Q: ném lỗi → queue tự retry (backoff exponential + jitter)
+    Note over Q,D: Quá max_attempts (queue files: 8) → DEAD, metric vyforge.task.* + alert,<br/>file vẫn PROCESSING (fail-closed), admin retry qua API của DurableTaskQueue
   else File > giới hạn quét
     W->>D: scan_status=SKIPPED_TOO_LARGE → bucket quyết định:<br/>REQUIRED → REJECTED, OPTIONAL → AVAILABLE kèm cờ
   end
@@ -373,8 +377,8 @@ sequenceDiagram
 - `Content-Type` của response lấy theo MIME đã kiểm, không theo giá trị client gửi. HTML, SVG, XML và loại không nằm
   trong danh sách "hiển thị inline an toàn" luôn trả `attachment`, kèm `X-Content-Type-Options: nosniff` khi signer hỗ trợ
   header response.
-- **Public** (bucket `visibility: PUBLIC`): byte được upload vào prefix private như mọi file. Sau khi quét sạch, task
-  `PUBLISH` copy sang prefix `public/` (hoặc bucket public riêng), nơi CDN đọc được không cần ký. Nhờ vậy file chưa quét
+- **Public** (bucket `visibility: PUBLIC`): byte được upload vào prefix private như mọi file. Sau khi quét sạch, việc
+  `transform` (thao tác `publish`) copy sang prefix `public/` (hoặc bucket public riêng), nơi CDN đọc được không cần ký. Nhờ vậy file chưa quét
   không bao giờ public. Chi phí copy chấp nhận được vì file public thường nhỏ (avatar, ảnh sản phẩm). URL public ổn định:
   `{cdnBase}/public/{tenant}/{bucket}/{blobId}[/{variant}]`.
 - **Adapter local**: không có presign của storage, nên ký URL HMAC tới endpoint của app `GET /api/v1/files/blobs/{token}`
@@ -421,8 +425,8 @@ stateDiagram-v2
 - **Legal hold**: cờ trên file, có lý do và người đặt; chặn `TRASHED → PURGED` và chặn xoá theo chủ thể dữ liệu. Khi
   storage hỗ trợ Object Lock và bucket bật `mirrorToStorage`, đặt thêm `PutObjectLegalHold`/retention ở storage (lớp WORM
   thật, chống cả admin của app).
-- **Purge** = xoá metadata cá nhân (tên file, metadata trích xuất) + giảm `ref_count` của blob; blob về 0 thì task
-  `DELETE_BLOB` xoá object và mọi biến thể. Dòng `file_object` giữ lại dạng tombstone (id, tenant, bucket, thời điểm) trong
+- **Purge** = xoá metadata cá nhân (tên file, metadata trích xuất) + giảm `ref_count` của blob; blob về 0 thì việc
+  `purge` (queue `files`) xoá object và mọi biến thể. Dòng `file_object` giữ lại dạng tombstone (id, tenant, bucket, thời điểm) trong
   `vyforge.files.tombstone-retention` (mặc định 90 ngày) để audit và để event cũ còn tham chiếu được.
 
 ### 3.9 Đa tenant
@@ -451,7 +455,7 @@ erDiagram
   file_object ||--o{ file_share_link : "chia sẻ"
   file_blob ||--o{ file_variant : "biến thể"
   file_upload }o--o| file_object : "tạo hoặc thêm version"
-  file_blob ||--o{ file_task : "xử lý"
+  file_blob ||--o{ vyforge_task : "queue files: scan/transform/purge"
   file_tenant_settings ||--o{ file_bucket_policy : "ghi đè theo bucket"
 
   file_object {
@@ -517,8 +521,7 @@ create table file_storage (
     storage_key      varchar(63)  not null,               -- tên tenant đặt, vd. "onprem-ceph"
     type             varchar(32)  not null,               -- s3 | azure | gcs | local (kiểm ở code)
     config           jsonb        not null,               -- endpoint, bucket, region, path-style… (không có secret)
-    secret_ciphertext bytea,                              -- access key/secret/SAS key, mã hoá AES-GCM (SecretCipher)
-    secret_key_id    varchar(63),                         -- id khoá mã hoá, để xoay khoá
+    secret_ciphertext text,                               -- access key/secret/SAS key, bản mã của SecretCipher (platform-core), context files:storage:<tenant>:<id>
     country          varchar(2),                          -- nơi đặt dữ liệu (ISO 3166), phục vụ dataResidency
     status           varchar(16)  not null,               -- ACTIVE | DISABLED
     schema_version   int          not null default 1,
@@ -535,7 +538,7 @@ create table file_blob (
     storage_id       varchar(80)  not null,               -- "platform:<key>" hoặc "tenant:<storage_key>"
     object_key       varchar(1024) not null,
     size_bytes       bigint       not null,
-    sha256           bytea,                               -- null tới khi INSPECT tính xong
+    sha256           bytea,                               -- null tới khi việc scan tính xong
     content_type     varchar(255) not null,               -- MIME thật (Tika)
     etag             varchar(255),
     storage_version  varchar(255),                        -- version id của storage nếu có
@@ -671,26 +674,8 @@ create table file_share_link (
 );
 create index file_share_file_idx on file_share_link (tenant_id, file_id);
 
--- Hàng đợi việc nền bền vững: một dòng = một bước xử lý.
-create table file_task (
-    id              uuid primary key,
-    tenant_id       varchar(63)  not null,
-    kind            varchar(32)  not null,                 -- SCAN | INSPECT | VARIANT | PREVIEW | PUBLISH | DELETE_BLOB | MIRROR_HOLD…
-    blob_id         uuid,
-    file_id         uuid,
-    param           varchar(255) not null default '',      -- vd. variant key
-    status          varchar(16)  not null,                 -- PENDING | RUNNING | SUCCEEDED | FAILED | DEAD | CANCELLED
-    attempts        int          not null default 0,
-    next_attempt_at timestamptz  not null,
-    locked_until    timestamptz,
-    locked_by       varchar(255),
-    last_error      varchar(2000),
-    created_at      timestamptz  not null,
-    updated_at      timestamptz  not null,
-    unique (tenant_id, kind, blob_id, file_id, param)
-);
-create index file_task_due_idx  on file_task (next_attempt_at) where status in ('PENDING', 'FAILED');
-create index file_task_dead_idx on file_task (tenant_id, status) where status = 'DEAD';
+-- Không có bảng việc nền riêng: việc của files nằm trong vyforge_task (DurableTaskQueue của platform-starter-scheduling),
+-- queue 'files', kind scan | transform | purge, payload JSONB có schema_version, idempotency_key theo blob/thao tác.
 
 -- Dung lượng đã dùng và đang giữ chỗ. bucket_key = '*' là tổng của tenant.
 create table file_usage (
@@ -727,13 +712,14 @@ Ghi chú:
   hằng đêm tính lại từ `file_blob`/`file_object` và ghi metric độ lệch.
 - Dedup: blob dùng chung tính quota **theo file** (mỗi file tính đủ kích thước). Người dùng không nhận ra được dedup qua
   quota, và quota không phụ thuộc file của người khác.
-- `file_task` cho phép unique theo `(kind, blob, file, param)` nên listener chạy lại (outbox giao lại) không tạo việc trùng.
+- Việc trong queue `files` có `idempotency_key` (`scan:<blobId>`, `transform:<blobId>:<op>:<variant>`, `purge:<blobId>`),
+  nên complete gọi lại hoặc handler chạy lại không tạo việc trùng.
 
 ### 4.3 Partition, retention của dữ liệu metadata
 
 - Không partition ở bản đầu. Ước tính một file ≈ 1 dòng `file_object` + 1 `file_version` + 1 `file_blob` + 0–1
   `file_attachment`, tổng khoảng 1,5 KB kể cả index. 10 triệu file ≈ 15 GB: Postgres xử lý tốt với các index trên.
-- `file_task` `SUCCEEDED`/`CANCELLED` xoá sau 7 ngày (`vyforge.files.tasks.keep-succeeded`), `DEAD` giữ tới khi admin xử lý.
+- Dọn việc `SUCCEEDED`/`CANCELLED` trong `vyforge_task` theo cấu hình của DurableTaskQueue; `DEAD` giữ tới khi admin xử lý.
 - `file_upload` kết thúc xoá sau 30 ngày.
 - Tombstone `file_object` `PURGED` xoá sau 90 ngày (cấu hình được).
 - Khi một tenant vượt khoảng 50 triệu file, cân nhắc partition `file_object`/`file_blob` theo hash `tenant_id` (ghi lại ở
@@ -742,7 +728,7 @@ Ghi chú:
 ### 4.4 Tiến hoá schema
 
 - **Migration riêng của starter**, location `classpath:META-INF/vyforge/db/files`, chạy bằng một instance Flyway riêng
-  với bảng lịch sử `flyway_schema_history_files` (xem §10, lệch quy ước có lý do). Version `V1__files.sql`, `V2__…`; không
+  với bảng lịch sử `flyway_schema_history_files`, qua `StarterSchemaMigrator` của platform-starter-jpa (quy ước mục 5.3). Version `V1__files.sql`, `V2__…`; không
   sửa migration đã phát hành.
 - **JSONB có `schema_version`**: `settings`, `overrides`, `request`, `attributes`, `metadata`. Code đọc nâng cấp bản cũ
   lúc đọc (upcaster), ghi luôn bản mới.
@@ -1137,7 +1123,8 @@ khai báo trong `META-INF/services/com.vyforge.platform.files.spi.StorageAdapter
 starter (ghi, đọc, range, multipart, list part, abort, presign put/get, copy, xoá, health); adapter mới chỉ cần lớp con.
 
 **Storage riêng của tenant (BYO):** admin tenant khai báo qua `/admin/storages`; secret mã hoá bằng `SecretCipher`
-(AES-256-GCM, khoá từ `vyforge.files.secrets.keys.<id>`, xoay khoá bằng `secret_key_id`). API không bao giờ trả secret.
+của platform-core (AES-256-GCM, keyring `vyforge.crypto.keys.<kid>`, context `files:storage:<tenant>:<id>` làm AAD);
+job định kỳ mã hoá lại khi `needsRotation`. API không bao giờ trả secret.
 `/test` thử ghi/đọc/xoá và kiểm CORS cho `public-endpoint`.
 
 ### 6.4 Quyền theo bản ghi cha
@@ -1165,7 +1152,7 @@ File gắn vào nhiều bản ghi: đọc được nếu đọc được **một
 | SPI | Mặc định | Ví dụ mở rộng |
 |---|---|---|
 | `FileLifecycleInterceptor` (`beforeInitiate`, `afterComplete`, `beforeDownload`, `beforeDelete`, `afterAvailable`) | không có | Giới hạn 10 ảnh mỗi sản phẩm; chặn xoá file của hồ sơ đã nộp; gắn `subjectRef` theo nghiệp vụ |
-| `FileValidator` (theo tên, chọn trong `validators` của bucket; chạy như task `VALIDATE` trước `AVAILABLE`) | không có | `xlsx-structure`: mở bằng FastExcel, kiểm sheet/cột; `pdf-not-encrypted` |
+| `FileValidator` (theo tên, chọn trong `validators` của bucket; chạy trong việc `scan`, trước `AVAILABLE`) | không có | `xlsx-structure`: mở bằng FastExcel, kiểm sheet/cột; `pdf-not-encrypted` |
 | `MalwareScanner` | `clamav`, `noop` (chỉ khi `scan: none` hoặc profile dev) | ICAP (RFC 3507) cho phần mềm diệt virus doanh nghiệp, dịch vụ quét của cloud |
 | `ContentInspector` | Tika (`tika-core`) | Bộ nhận dạng riêng cho định dạng ngành (DICOM y tế) |
 | `ImageTransformer` | `imgproxy` (URL ký, `expires`, chỉ preset) hoặc `jvm` (Thumbnailator, sinh sẵn vào `file_variant`) | Dịch vụ ảnh của CDN |
@@ -1210,23 +1197,19 @@ class ProductImageLimit implements FileLifecycleInterceptor {
 | `vyforge.files.share.max-ttl` | `30d` | |
 | `vyforge.files.scan.clamav.host` / `port` / `timeout` | `localhost` / `3310` / `60s` | |
 | `vyforge.files.scan.max-size` | `100MB` | Phải ≤ `StreamMaxLength` của clamd |
-| `vyforge.files.tasks.concurrency` | `4` | Số task chạy song song mỗi replica |
-| `vyforge.files.tasks.max-attempts` | `8` | |
-| `vyforge.files.tasks.poll-interval` | `2s` | Worker cũng được đánh thức ngay sau commit của listener |
+| Queue `files` của DurableTaskQueue | đồng thời 4 mỗi replica, `max_attempts` 8 | Cấu hình theo queue của platform-starter-scheduling |
 | `vyforge.files.events.externalize` | `false` | |
 | `vyforge.files.schema.migrate` | `true` | Chạy Flyway riêng của starter |
 
 ### 7.2 Metric, trace, log
 
-Metric Micrometer (không gắn tag `tenant` để tránh bùng cardinality; số theo tenant xem qua `/admin/usage`):
+Việc nền có metric `vyforge.task.*` của DurableTaskQueue (tag `queue=files`, `kind`). Metric Micrometer riêng (không gắn tag `tenant` để tránh bùng cardinality; số theo tenant xem qua `/admin/usage`):
 
 | Metric | Loại | Tag |
 |---|---|---|
 | `vyforge.files.uploads` | counter | `bucket`, `mode`, `outcome` (completed, rejected, expired, aborted, failed) |
 | `vyforge.files.upload.bytes` | distribution summary | `bucket` |
 | `vyforge.files.scan` | timer | `result` (clean, infected, skipped, error) |
-| `vyforge.files.tasks` | timer | `kind`, `outcome` |
-| `vyforge.files.tasks.backlog` | gauge | `kind`, `status` (pending, dead) |
 | `vyforge.files.storage.requests` | timer | `storage`, `operation`, `outcome` |
 | `vyforge.files.downloads` | counter | `bucket`, `via` (presign, cdn, proxy, share) |
 | `vyforge.files.quota.rejections` | counter | `bucket` |
@@ -1357,7 +1340,7 @@ văn** trước khi cam kết với khách):
 | 2 | SPI + adapter `local` + adapter `s3`; `StorageAdapterContractTests` | Contract test trên local và **SeaweedFS 4.51** (Testcontainers, `server -s3`) |
 | 3 | Chính sách bucket, ghép theo tenant, quota (giữ chỗ/commit/trả), `ObjectKeyStrategy` | Unit (luật ghép, chỉ thu hẹp), test đồng thời cho quota |
 | 4 | Luồng upload SINGLE + MULTIPART, complete (HEAD, Tika, validator), idempotency, hết hạn | Testcontainers end-to-end: PUT thật lên SeaweedFS qua URL ký; multipart 3 part + resume; size/MIME sai |
-| 5 | `file_task` + worker (SKIP LOCKED, backoff, DEAD, retry/cancel), event outbox, listener | Test nhiều worker không chạy trùng task; app chết giữa task |
+| 5 | `TaskHandler` cho queue `files` (scan, transform, purge) trên DurableTaskQueue, event outbox | Test handler idempotent, enqueue trong transaction complete |
 | 6 | ClamAV client `INSTREAM` + scanner | Unit với clamd giả (server TCP nhỏ trong test); một test tích hợp với `clamav/clamav:1.5` và chuỗi EICAR (tag `slow`, chạy trong `verify`) |
 | 7 | Download (presign, `Content-Disposition` RFC 6266), public publish, proxy, share link, legal hold, retention, thùng rác, purge, `FileErasure` | Integration + `TenantIsolationTests` |
 | 8 | Attachment + `AttachmentAccessPolicy` (cấu hình và bean) + authz | `TestAuthz` với policy theo bản ghi cha |
@@ -1393,7 +1376,7 @@ phía client; partition theo tenant.
 | features | Bean `QuotaProvider` trả quota theo gói | features cung cấp bean, files không phụ thuộc features |
 | privacy (DSR, bản sau) | Gọi `FileErasure.findForSubject` / `eraseForSubject`; `ErasureReport` có danh sách giữ lại kèm căn cứ | privacy → files |
 | webhooks | Chuyển tiếp event công khai của files | webhooks → event |
-| Dùng chung `SecretCipher` | Nếu notification/payment đưa interface mã hoá secret vào `platform-core`, files chuyển sang dùng chung; tạm thời nằm trong `files.spi` | Ghi trong báo cáo, phiên điều phối quyết khi merge |
+| Khối chung 0.12.1 | `SecretCipher` (platform-core), `DurableTaskQueue` (platform-starter-scheduling), `StarterSchemaMigrator` (platform-starter-jpa) | files → platform-java 0.12.1 |
 
 ---
 
@@ -1401,18 +1384,8 @@ phía client; partition theo tenant.
 
 ### 10.1 Lệch quy ước
 
-1. **Flyway riêng của starter với bảng lịch sử riêng** (`flyway_schema_history_files`) thay vì để app thêm location vào
-   `spring.flyway.locations`. Lý do: schema của files sẽ tiến hoá (thêm cột, index) nên cần migration có version, không
-   dùng được `R__` như scheduling. Dùng version trong bảng lịch sử chung thì đụng số với migration của dự án và của starter
-   khác (authz đã dùng `V1`), còn đặt dải số riêng thì gặp lỗi "migration cũ chưa chạy" khi dự án đã ở version cao hơn.
-   Bảng lịch sử riêng tránh cả hai. Starter chạy Flyway của mình trước `EntityManagerFactory` (dùng
-   `EntityManagerFactoryDependsOnPostProcessor` của Spring Boot). Tắt bằng `vyforge.files.schema.migrate=false` (khi DBA
-   tự chạy SQL, file SQL gộp có trong `META-INF/vyforge/sql/files.sql`). Đề nghị phiên điều phối cân nhắc đưa cách này
-   thành quy ước chung cho các starter P1.
-2. **Hàng đợi việc nền bằng bảng `file_task`** thay vì chỉ dựa vào retry của outbox Modulith. Outbox vẫn dùng để không
-   mất event; `file_task` thêm thứ outbox không có: trạng thái theo từng bước, backoff, `DEAD`, API retry/cancel, xem
-   backlog. Đúng tinh thần quy ước (outbox hoặc job), chỉ ghi ra để các module khác biết.
-3. **`SecretCipher` tạm nằm trong starter** vì `platform-core` chưa có (xem §9.4).
+Không còn lệch quy ước. Ba điểm ở bản thiết kế đầu (Flyway riêng, hàng đợi việc nền, mã hoá secret) đã được phiên
+điều phối đưa thành khối dùng chung (quy ước mục 5) và files dùng các khối đó.
 
 ### 10.2 Quyết định cần người dùng chọn
 
