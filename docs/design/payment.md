@@ -1536,3 +1536,94 @@ Thứ tự (mỗi bước có test, commit riêng):
 | Stripe | 0.15, artifact riêng dùng SDK | 0.13, chung starter, gọi REST bằng `RestClient` |
 | Thu bằng token | 0.14 | 0.13, theo thứ tự ở §9.1 |
 | ADR | ADR-0021 riêng | Mục `payment` trong ADR-0020 |
+
+---
+
+## 12. Đóng gói và triển khai độc lập
+
+Theo mục 6 của quy ước module (yêu cầu ngày 26/10/2026). Payment là một đơn vị triển khai độc lập gồm ba phần, mỗi phần
+cài hoặc bỏ riêng được.
+
+### 12.1 Backend
+
+| Cách chạy | Nội dung | Ghi chú |
+|---|---|---|
+| Starter nhúng vào app | `platform-starter-payment` | Mặc định. Intent và đơn hàng commit cùng transaction với nghiệp vụ |
+| Trong server dùng chung `platform-services` | Cùng starter, bật trong `platform-services` (forge-37 chốt) | App nghiệp vụ gọi REST `/api/v1/payments/**`, nhận event qua Kafka (`payment-events`) thay vì listener trong JVM |
+| Server riêng của module | Một app Boot chỉ có starter này, schema riêng | Khi khách cần tách hạ tầng thanh toán (PCI, kiểm toán riêng) |
+
+Starter chạy giống nhau ở cả ba cách: API Java, REST, event và schema (`flyway_schema_history_payment`) không đổi. Khác
+nhau chỉ ở cấu hình (`vyforge.payment.public-base-url`, đường route của gateway tới `/api/v1/payments/notify/**`).
+
+**Phụ thuộc:**
+
+- **Cứng**, chỉ tới các khối nền của platform: `platform-core` (`TenantContext`, `SecretCipher`), `-web`, `-jpa`
+  (`StarterSchemaMigrator`), `-scheduling` (`@ClusterScheduled`, `DurableTaskQueue`), `-messaging` (`TenantAwareEvent`),
+  `-authz`, `-audit`.
+- **Không phụ thuộc** module P1 nào. Mọi điểm nối với module khác đều tắt được:
+
+| Module | Điểm nối | Cách nối | Không có module đó thì |
+|---|---|---|---|
+| `-realtime` | `PaymentStatusChanged` | Realtime đăng ký listener (`@ConditionalOnClass` ở phía realtime) | Frontend dùng polling (`PaymentStatus` tự lùi về polling) |
+| `-notification` | `PaymentSucceeded`, `PaymentScheduleDue`, `PaymentRequiresReview` | App hoặc module notification nghe event | Không gửi thông báo; event vẫn có |
+| `-webhooks` | Mọi event `payment.*` | Module webhooks đăng ký loại event | Không có webhook ra ngoài |
+| `-files` | `ReconciliationService.importStatement(…, List<StatementLine>)` | App đọc file từ `-files` rồi truyền dòng; REST nhận CSV trực tiếp | Nhập CSV qua REST |
+| `-einvoice` (P2) | `PaymentSucceeded`, `RefundSucceeded` | Einvoice nghe event | Không có hoá đơn tự động |
+
+Bean tuỳ chọn khác dùng `@ConditionalOnBean` hoặc `@ConditionalOnClass`: Micrometer (metric), resilience4j (ẩn cổng
+đang mở mạch), Spring MVC (REST).
+
+### 12.2 Package frontend `@vyforge/payment`
+
+Cho app nghiệp vụ:
+
+- client server-only (`createPaymentClient`);
+- Server Action bắt đầu thanh toán và hoàn tiền;
+- component cho khách: `PaymentMethodPicker`, `PaymentNextAction`, `PaymentQr`, `PaymentRedirect`, `PaymentStatus`,
+  `PaymentResult`;
+- `paymentErrorMessages` (vi/en).
+
+Package không phụ thuộc package admin.
+
+### 12.3 Admin (microfrontend `@vyforge/payment-admin`)
+
+Trong lúc forge-37 chốt kỹ thuật microfrontend, component admin nằm ở `@vyforge/payment/admin` (subpath), chỉ dùng
+`@vyforge/ui` và client ở 12.2. Sau đó chỉ cần bọc lại thành MFE, không phải viết lại.
+
+**Màn hình:**
+
+| Màn hình | Route (tương đối) | Quyền tối thiểu | API | Bản |
+|---|---|---|---|---|
+| Danh sách thanh toán | `/payments` | `payment:intent:List` | `GET /intents` | tenant admin, kế toán |
+| Chi tiết thanh toán (attempt, lịch sử, sổ cái, hoàn tiền, duyệt) | `/payments/:id` | `payment:intent:Get` | `GET /intents/{id}`, `/attempts`, `POST /refunds`, `/review`, `/manual-payments`, `/manual-refunds` | tenant admin, kế toán |
+| Tiền về chưa khớp | `/payments/unmatched` | `payment:event:List` + `payment:intent:Match` | `GET /provider-events?status=unmatched`, `POST /provider-events/{id}/match` | kế toán |
+| Merchant account | `/payments/merchants` | `payment:merchant:List` | `GET/POST/PATCH /merchant-accounts`, `GET /providers`, `/test`, `/rotate-notify-key` | tenant admin |
+| Chính sách | `/payments/settings` | `payment:settings:Update` | `GET/PUT /settings` | tenant admin |
+| Đối soát | `/payments/reconciliation` | `payment:reconciliation:List` | `/reconciliation/**` | kế toán |
+| Sổ cái | `/payments/ledger` | `payment:ledger:List` | `/ledger/**` | kế toán |
+| Lịch thu, liên kết | `/payments/schedules` | `payment:schedule:List` | `/schedules/**`, `/mandates` | tenant admin |
+
+**Hai bản:**
+
+- **Tenant admin:** chỉ thấy dữ liệu tenant của token (API đã giới hạn theo tenant).
+- **Người vận hành platform:** quản lý merchant mặc định của platform. Bản 0.13 cấu hình phần này bằng
+  `vyforge.payment.platform-merchants`, không có màn hình; màn hình làm cùng `platform-admin` sau.
+
+**Manifest (hợp đồng với shell; khuôn dạng cuối theo forge-37):**
+
+```json
+{
+  "module": "payment",
+  "version": "0.13.0",
+  "route": "/payments",
+  "apiBase": "/api/v1/payments",
+  "menu": [
+    { "label": { "vi": "Thanh toán", "en": "Payments" }, "path": "/payments", "permission": "payment:intent:List" },
+    { "label": { "vi": "Đối soát", "en": "Reconciliation" }, "path": "/payments/reconciliation", "permission": "payment:reconciliation:List" },
+    { "label": { "vi": "Merchant", "en": "Merchants" }, "path": "/payments/merchants", "permission": "payment:merchant:List" }
+  ],
+  "minPermission": "payment:intent:List"
+}
+```
+
+i18n vi/en nằm trong package. Shell chỉ cấp phiên đăng nhập, token và locale.
