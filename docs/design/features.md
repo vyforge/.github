@@ -1433,8 +1433,6 @@ chạy song song được; Jackson 2 vẫn có trong BOM của Boot 4. Cần ki�
 
 - Duyệt nhiều cấp (hai người duyệt trở lên) trong cài đặt có sẵn; hiện app tự viết `ChangeApprovalPolicy`.
 - Guarded rollout (tự dừng khi metric xấu), A/B có thống kê.
-- Provider `remote` cho entitlement (bản 0.13 chỉ có `remote` cho flag; entitlement ở service khác gọi API `/me/entitlements`
-  hoặc dùng chung DB).
 - Kiểu gộp `UNIQUE_COUNT` (MAU) và `WEIGHTED_SUM`.
 - Rule rate limit theo gói trong `-ratelimit`.
 - Trang công khai so sánh gói (pricing page) — thuộc app.
@@ -1485,52 +1483,97 @@ Cho app nghiệp vụ: client OFREP + `/me/*` (server-only), helper `isEnabled`/
 `EntitlementGate`, `UpgradePrompt`, `UsageMeter`, `QuotaBanner`, hook client (`@vyforge/features/react`). Không chứa
 màn hình quản trị.
 
-### 9a.3 Admin microfrontend `@vyforge/features-admin`
+### 9a.3 Admin microfrontend `/m/features`
 
-Kỹ thuật microfrontend do forge-37 chốt (`docs/design/platform-services.md`); module không tự chọn. Trong lúc chờ, component
-quản trị nằm ở `@vyforge/features/admin` (subpath), sau chỉ cần bọc thành MFE.
+Kiến trúc đã chốt ở `docs/design/platform-services.md` (D1–D10, mục 4.11–4.12, 5.1–5.2, 6.5): Next.js Multi-Zones,
+zone `features-admin` tại `/m/features` trong repo `platform-admin` (`apps/features-admin`, dựng bằng
+`pnpm create-admin-zone features`), khung `@vyforge/admin-shell`. Phần của module:
 
-**Màn hình, quyền, API:**
+- **Component** ở `@vyforge/features/admin` (đã làm): nhận dữ liệu và Server Action qua props, nhận `can(action,
+  resource)` để ẩn nút, không tự đọc cookie hay env. Một bộ component dùng cho zone (người vận hành và tenant admin) và
+  cho trang `/admin` dựng sẵn trong app nghiệp vụ.
+- **`GET /api/v1/features/admin/info`** (đã làm): `{module: "features", version, apiVersion: 1, capabilities, mode}`.
+  `capabilities`: `flags`, `entitlements` (khi bật), `approval` (duyệt 4 mắt bật), `fast-counters` (có Valkey),
+  `flagd-export`, `principal-attributes`.
+- **Danh sách tenant có subscription** cho màn hình `TenantSubscriptionTable`: `GET /api/v1/features/subscriptions?status=&plan=&page=&size=`
+  (người vận hành, `features:subscription:Get` trên `vrn:features:tenant/*`).
+- **App zone** `apps/features-admin` (route, trang, Server Action, `admin.manifest.ts`): làm sau khi forge-37 xong
+  `create-admin-zone`.
 
-| Màn hình | Ai dùng | Quyền tối thiểu (IAM) | API |
-|---|---|---|---|
-| Danh sách flag, báo cáo flag rác | Người vận hành | `features:flag:List` | `GET /flags`, `GET /reports/stale-flags` |
-| Chi tiết flag: biến thể, rule, rollout, prerequisite, bật/tắt | Người vận hành | `features:flag:Get`, sửa: `features:flag:Update` | `GET/PATCH /flags/{key}`, `POST /flags/validate` |
-| Lịch sử, diff, khôi phục | Người vận hành | `features:flag:Get` / `Update` | `GET /flags/{key}/revisions`, `POST /rollback` |
-| Ghi đè theo tenant | Người vận hành | `features:override:Put` | `GET/PUT/DELETE /flags/{key}/tenants/{tenantId}` |
-| Lịch thay đổi | Người vận hành | `features:schedule:Create` | `GET/POST /flags/{key}/schedules`, `DELETE /schedules/{id}` |
-| Mô phỏng | Người vận hành | `features:flag:Simulate` | `POST /simulate` |
-| Segment | Người vận hành | `features:segment:*` | `/segments` |
-| Duyệt thay đổi (4 mắt) | Người vận hành (người duyệt) | `features:change:List`, `features:change:Approve` | `/changes`, `:approve`, `:reject`, `:cancel` |
-| Danh mục feature | Người vận hành | `features:catalog:*` | `/catalog/features` |
-| Gói, version, ma trận quyền, phát hành, chuyển khách | Người vận hành | `features:plan:*` | `/plans/**` |
-| Gói của tenant, add-on, override quyền, grant, mức dùng | Người vận hành, kinh doanh (`vyforge:FeaturesPlanSales`) | `features:subscription:Get/Change`, `features:grant:Create`, `features:usage:Get` | `/tenants/{tenantId}/**`, `POST /grants:bulk` |
-| Gói của tôi, mức dùng, tính năng thử nghiệm | Tenant admin của khách hàng | `features:subscription:GetOwn`, `features:optin:Put` | `/me/subscription`, `/me/entitlements`, `/me/opt-ins` |
+**Màn hình, quyền, API** (khớp bảng 6.5 của platform-services):
 
-Có hai bản: **bản người vận hành** (mọi màn hình trên trừ dòng cuối, chỉ chạy với token của tenant vận hành) và **bản tenant
-admin** (dòng cuối). Nhãn vi/en có sẵn, component dùng `@vyforge/ui`.
+| Màn hình | Nhóm | Quyền tối thiểu (IAM) | API | Component |
+|---|---|---|---|---|
+| Flag: danh sách, flag cũ | O | `features:flag:List` | `GET /flags`, `GET /reports/stale-flags` | `FlagTable`, `StaleFlagReport` |
+| Flag: sửa (biến thể, rule, rollout), bật/tắt | O | `features:flag:Get` / `Update` | `GET/PATCH /flags/{key}`, `POST /flags/validate` | `FlagEditor`, `FlagStateToggle` |
+| Lịch sử, khôi phục | O | `features:flag:Get` / `Update` | `GET /flags/{key}/revisions`, `POST /rollback` | `FlagHistory` |
+| Ghi đè theo tenant | O | `features:override:Put/Delete` | `GET/PUT/DELETE /flags/{key}/tenants/{tenantId}` | `TenantOverrideTable`, `TenantOverrideManager` |
+| Lịch thay đổi | O | `features:schedule:Create/Cancel` | `GET/POST /flags/{key}/schedules`, `DELETE /schedules/{id}` | `ScheduleEditor` |
+| Mô phỏng | O | `features:flag:Simulate` | `POST /simulate` | `FlagSimulator` |
+| Segment | O | `features:segment:*` | `/segments` | `SegmentTable` |
+| Duyệt thay đổi (4 mắt) | O | `features:change:List/Approve` | `/changes`, `:approve`, `:reject`, `:cancel` | `ChangeRequestTable`, `ChangeReviewForm` |
+| Danh mục feature | O | `features:catalog:List/Update` | `/catalog/features` | `FeatureCatalogTable` |
+| Gói: version, ma trận, phát hành, chuyển khách | O | `features:plan:*` | `/plans/**` | `PlanTable`, `PlanEditor` |
+| Subscription của mọi tenant | O, kinh doanh | `features:subscription:Get/Change` | `GET /subscriptions`, `/tenants/{tenantId}/subscription:*` | `SubscriptionPanel` |
+| Mức dùng, điều chỉnh tay | O | `features:usage:Get/Adjust` | `/tenants/{tenantId}/usage` | `UsageTable` |
+| Grant (tặng hạn mức), grant hàng loạt | O, kinh doanh | `features:grant:Create/Void` | `/tenants/{tenantId}/grants`, `POST /grants:bulk` | `GrantManager` |
+| Gói của tôi, mức dùng, ngưỡng | T | `features:subscription:GetOwn` | `/me/subscription`, `/me/entitlements` | `SubscriptionPanel` (chỉ đọc), `UsageMeter`, `QuotaBanner` |
+| Tính năng thử nghiệm tự bật | T | `features:optin:Put` | `/me/opt-ins` | `OptInList` |
 
-**Manifest (hợp đồng với shell `platform-admin`):**
+O = người vận hành (tenant vận hành), T = tenant admin. Nhãn vi/en: `featuresAdminLabels`.
 
-```json
-{
-  "module": "features",
-  "version": "0.1.0",
-  "routes": { "operator": "/features", "tenant": "/settings/plan" },
-  "menu": [
-    { "id": "features.flags", "label": { "vi": "Feature flag", "en": "Feature flags" }, "path": "/features/flags",
-      "permission": { "action": "features:flag:List", "resource": "vrn:features:flag/*" }, "audience": "operator" },
-    { "id": "features.plans", "label": { "vi": "Gói dịch vụ", "en": "Plans" }, "path": "/features/plans",
-      "permission": { "action": "features:plan:List", "resource": "vrn:features:plan/*" }, "audience": "operator" },
-    { "id": "features.changes", "label": { "vi": "Chờ duyệt", "en": "Pending changes" }, "path": "/features/changes",
-      "permission": { "action": "features:change:List", "resource": "vrn:features:change/*" }, "audience": "operator" },
-    { "id": "features.my-plan", "label": { "vi": "Gói của tôi", "en": "My plan" }, "path": "/settings/plan",
-      "permission": { "action": "features:subscription:GetOwn", "resource": "vrn:features:tenant/*" },
-      "audience": "tenant" }
+**Manifest** (`contract: 1`, mục 5.2 của platform-services), dự kiến cho `apps/features-admin/admin.manifest.ts`:
+
+```ts
+export default defineAdminManifest({
+  contract: 1,
+  name: 'features',
+  version: pkg.version,
+  title: { vi: 'Tính năng và gói', en: 'Features and plans' },
+  icon: 'toggle-right',
+  order: 20,
+  audiences: ['operator', 'tenant'],
+  minPermission: { anyOf: [
+    { action: 'features:flag:List', resource: 'vrn:features:flag/*' },
+    { action: 'features:plan:List', resource: 'vrn:features:plan/*' },
+    { action: 'features:subscription:GetOwn', resource: 'vrn:features:tenant/*' } ] },
+  api: { base: '/api/v1/features', requires: '>=0.13.0 <1.0.0' },
+  menu: [
+    { id: 'flags', path: '/flags', title: { vi: 'Feature flag', en: 'Feature flags' }, audience: 'operator',
+      permission: { action: 'features:flag:List', resource: 'vrn:features:flag/*' } },
+    { id: 'segments', path: '/segments', title: { vi: 'Segment', en: 'Segments' }, audience: 'operator',
+      permission: { action: 'features:segment:List', resource: 'vrn:features:segment/*' } },
+    { id: 'changes', path: '/changes', title: { vi: 'Chờ duyệt', en: 'Pending changes' }, audience: 'operator',
+      permission: { action: 'features:change:List', resource: 'vrn:features:change/*' } },
+    { id: 'plans', path: '/plans', title: { vi: 'Gói dịch vụ', en: 'Plans' }, audience: 'operator',
+      permission: { action: 'features:plan:List', resource: 'vrn:features:plan/*' } },
+    { id: 'tenants', path: '/tenants', title: { vi: 'Gói của khách hàng', en: 'Customer plans' }, audience: 'operator',
+      permission: { action: 'features:subscription:Get', resource: 'vrn:features:tenant/*' } },
+    { id: 'my-plan', path: '/my-plan', title: { vi: 'Gói của tôi', en: 'My plan' }, audience: 'tenant',
+      permission: { action: 'features:subscription:GetOwn', resource: 'vrn:features:tenant/*' } },
+    { id: 'beta', path: '/beta', title: { vi: 'Tính năng thử nghiệm', en: 'Beta features' }, audience: 'tenant',
+      permission: { action: 'features:optin:Put', resource: 'vrn:features:flag/*' } },
   ],
-  "apiBase": "/api/v1/features"
-}
+});
 ```
+
+Module features không có `entitlement` trong manifest (bật module theo tenant dựa vào chính module này).
+
+### 9a.4 Chế độ `remote` (platform-services D8, mục 3.5)
+
+`vyforge.features.mode: embedded | remote`. Ở `remote` (app dùng features chạy trong `platform-services`): không
+migration, repository, controller, `TaskHandler`, job; cùng interface Java:
+
+| Interface | Đường gọi | Token |
+|---|---|---|
+| `FeatureFlags` (provider `VyforgeFlagProvider` như embedded) | `GET /api/v1/features/internal/snapshot` (flag + segment + version, `ETag`), override theo tenant `GET /internal/tenants/{tenantId}/flag-overrides`; làm mới khi nhận `vyforge:features:changed` qua Valkey chung, poll dự phòng | Client credentials (scope `features.sync`) |
+| `Entitlements.hasAccess/get/all/config/require/checkLimit` | `GET /internal/tenants/{tenantId}/entitlements` (đã giải, gồm mức dùng), cache theo tenant (`refresh-after`), xoá cache cùng kênh trên | Client credentials |
+| `Entitlements.consume/tryConsume/release/record/setGauge` | `POST /internal/tenants/{tenantId}/usage` đồng bộ (cần kết quả); `idempotencyKey` bắt buộc (không truyền thì starter sinh một khoá cho mỗi lời gọi, không chống trùng khi retry ở tầng trên) | Client credentials |
+
+Đường `/internal/**` không qua gateway (gateway trả 404). Server nhận tenant theo path chỉ khi token có scope
+`features.internal` (hoặc `services.internal` khi chạy trong `platform-services`); giới hạn tenant theo client giống API
+nội bộ của iam-server. `SubscriptionService` và API quản trị không có ở `remote` (quản trị đi qua admin MFE tới server).
+`@RequiresFlag`, `@RequiresEntitlement`, OFREP của app (`/ofrep/**` ở app) vẫn chạy ở `remote`.
 
 ---
 
