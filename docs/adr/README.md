@@ -17,3 +17,5 @@ Mẫu: `NNNN-tieu-de.md` với các mục **Trạng thái · Bối cảnh · Quy
 - [ADR-0009: Phân quyền nghiệp vụ theo mô hình IAM (policy JSON) trong app](0009-iam-authorization.md)
 - [ADR-0010: API Gateway, dịch vụ IAM tập trung và token exchange khi có nhiều service](0010-api-gateway-central-iam.md)
 - [ADR-0011: Tenant ở platform-auth-server, claim `tenant_id` và danh bạ người dùng](0011-tenant-and-user-directory.md)
+- [ADR-0012: IdP mở rộng — passkey, SAML 2.0, LDAP/AD, Zalo — cấu hình trong database](0012-idp-extensions.md)
+- [ADR-0015: Tenant ở tầng dữ liệu, `platform-core` và mặc định cho lời gọi ra ngoài](0015-tenant-data-isolation-platform-core.md)
