@@ -25,6 +25,7 @@
 8. [Bảo mật và tuân thủ](#8-bảo-mật-và-tuân-thủ)
 9. [Kế hoạch triển khai](#9-kế-hoạch-triển-khai)
 10. [Lệch quy ước và quyết định cần người dùng chọn](#10-lệch-quy-ước-và-quyết-định-cần-người-dùng-chọn)
+11. [Đóng gói và triển khai độc lập](#11-đóng-gói-và-triển-khai-độc-lập)
 
 ---
 
@@ -1686,3 +1687,79 @@ Mã hoá secret, hàng đợi việc nền và migration **theo đúng** module-
    toàn văn. Cần pháp chế xác nhận và theo dõi nghị định thay thế. Mọi con số là cấu hình.
 6. **Tenant được tự cấu hình provider hay không** (`tenants-may-override-providers`). Mặc định `true`. Với SaaS mà công ty
    trả phí kênh thay khách thì nên đặt `false`.
+
+---
+
+## 11. Đóng gói và triển khai độc lập
+
+Theo module-conventions mục 6 (yêu cầu của người dùng ngày 26/10/2026), notification là một đơn vị triển khai độc lập
+gồm ba phần. Mỗi phần cài hay bỏ riêng được. Khách hàng không mua notification thì không có phần nào.
+
+### 11.1 Backend
+
+| Cách chạy | Cách làm | Khi nào |
+|---|---|---|
+| **Starter nhúng vào app** | Thêm `platform-starter-notification` vào app nghiệp vụ | Mặc định: một app, hoặc mỗi service tự gửi tin của mình |
+| **Trong server dùng chung `platform-services`** | `platform-services` (forge-37) nhúng starter. App khác gọi REST `/api/v1/notifications/**` qua gateway | Nhiều service dùng chung cấu hình provider, template, inbox của tenant |
+| **Server riêng của module** | Một app tối thiểu chỉ nhúng starter (cùng jar, khác cấu hình). Có Kafka ingress `notification-requests` thì service khác chỉ phát event | Lưu lượng lớn, cần scale và trực riêng |
+
+**Không phụ thuộc cứng vào module khác.** Phụ thuộc bắt buộc chỉ là các khối nền của platform (`platform-core`, `-web`,
+`-jpa` cho `StarterSchemaMigrator`, `-scheduling` cho `DurableTaskQueue`, `-privacy`, `-messaging` cho kiểu event). Mọi
+điểm nối với module ứng dụng khác đi qua interface hoặc event, bật bằng `@ConditionalOnBean`/`@ConditionalOnClass`:
+
+| Module khác | Điểm nối | Vắng thì |
+|---|---|---|
+| files | `AttachmentResolver`; mặc định `FilesAttachmentResolver` bật khi có bean `com.vyforge.platform.files.FileContentReader` (gọi qua reflection, không phụ thuộc biên dịch) | Request có file đính kèm bị từ chối `notification.attachment_unsupported` |
+| realtime | Event `InboxChanged` và SPI `InboxRealtimeBridge` (realtime cài bằng `RealtimePublisher.toUser(sub, "inbox", …)`) | Client poll `/me/inbox/counts` |
+| webhooks | Module webhooks đăng ký `NotificationProvider` cho kênh `webhook` | Dùng `SignedWebhookProvider` tối thiểu |
+| privacy (consent) | `PromotionalConsent` | Dùng opt-in trong tuỳ chọn của module |
+| authz, audit, ratelimit, security | Optional; API admin chỉ bật khi có `Authz`, audit khi có `AuditLog`, throttle chung khi có `RateLimiter` | Không có API admin; không ghi audit; throttle trong bộ nhớ |
+| export, payment, auth-server | Gọi `Notifications` (optional dependency phía họ) | Họ bỏ qua bước gửi tin |
+
+### 11.2 Package frontend `@vyforge/notifications`
+
+Cho app nghiệp vụ (người dùng cuối): client server-only, Server Action, `NotificationBell`, `InboxList`,
+`PreferencesForm`, hook realtime (`subscribe` do app truyền vào), helper Web Push. Không chứa màn hình quản trị.
+
+### 11.3 Admin microfrontend `@vyforge/notifications-admin`
+
+Build và deploy riêng, gắn vào shell `platform-admin` lúc chạy. Kỹ thuật MFE do forge-37 chốt trong
+`docs/design/platform-services.md`; module không tự chọn. **Trong lúc chờ, component admin nằm ở
+`@vyforge/notifications/admin`** (dùng `@vyforge/ui`, i18n vi/en, client gọi API admin); khi kỹ thuật đã chốt chỉ còn
+bọc thành MFE và viết manifest.
+
+Màn hình, quyền và API:
+
+| Màn hình | Action IAM tối thiểu | API | Tenant admin | Người vận hành |
+|---|---|---|---|---|
+| Tổng quan gửi tin (số lượng theo kênh/trạng thái, chi phí ước tính) | `notification:stats:Get` | `GET /admin/stats` | Có | Có, chọn tenant |
+| Tra cứu tin, timeline delivery, gửi lại, huỷ | `notification:message:List`, `:Get`, `:Retry`, `:Cancel`; xem dữ liệu cần `:GetContent` | `GET /admin/messages`, `GET /admin/messages/{id}`, `POST /admin/deliveries/{id}/retry`, `POST /admin/messages/{id}/cancel` | Có | Có |
+| Loại thông báo và nhóm (routing, digest, bật/tắt, khôi phục mặc định) | `notification:type:List`, `:Update`, `:Reset` | `GET/PUT/DELETE /admin/types/{key}`, `/admin/categories/{key}` | Có | Có |
+| Template (ma trận kênh × ngôn ngữ, soạn Liquid, xem trước, gửi thử, publish, lịch sử) | `notification:template:*` | `/admin/types/{type}/templates`, `/admin/templates/{type}/{channel}/{locale}/versions[/…]`, `/preview` | Có | Có |
+| Layout email (MJML biên dịch ở trình duyệt) | `notification:template:Update` | `GET /admin/layouts`, `PUT /admin/layouts/{key}` | Có | Có |
+| Template ZNS đã được Zalo duyệt | `notification:template:Update` | `GET/PUT/DELETE /admin/external-templates/{providerType}/{id}` | Có | Có |
+| Provider (form sinh từ JSON Schema, secret chỉ ghi, kiểm kết nối) | `notification:provider:*` | `GET /admin/provider-types`, `/admin/providers[/{id}[/test]]` | Chỉ khi `tenants-may-override-providers=true` | Có; provider cấp platform chỉ đọc |
+| Suppression list | `notification:suppression:*` | `GET/POST/DELETE /admin/suppressions` | Có | Có |
+| Tuỳ chọn của một người nhận (CSKH), mặc định của tenant | `notification:preference:Get`, `:Update` | `GET/PUT /admin/recipients/{id}/preferences`, `PUT /admin/defaults/preferences` | Có | Có |
+| Gửi thông báo hệ thống | `notification:message:Send` | `POST /admin/send` | Có | Có |
+
+Phác thảo manifest (hợp đồng với shell; trường cuối cùng theo chuẩn forge-37 chốt):
+
+```json
+{
+  "module": "notifications",
+  "version": "0.1.0",
+  "route": "/notifications",
+  "apiBase": "/api/v1/notifications/admin",
+  "menu": [
+    { "id": "overview", "label": { "vi": "Thông báo", "en": "Notifications" }, "icon": "bell", "path": "/" },
+    { "id": "messages", "label": { "vi": "Tin đã gửi", "en": "Messages" }, "path": "/messages", "permission": "notification:message:List" },
+    { "id": "templates", "label": { "vi": "Template", "en": "Templates" }, "path": "/templates", "permission": "notification:template:List" },
+    { "id": "providers", "label": { "vi": "Nhà cung cấp", "en": "Providers" }, "path": "/providers", "permission": "notification:provider:List" },
+    { "id": "suppressions", "label": { "vi": "Địa chỉ bị chặn", "en": "Suppressions" }, "path": "/suppressions", "permission": "notification:suppression:List" }
+  ],
+  "requiredPermission": "notification:message:List",
+  "audiences": ["tenant-admin", "operator"]
+}
+```
+
