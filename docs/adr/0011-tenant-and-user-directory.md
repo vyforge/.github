@@ -34,7 +34,9 @@ claim này, nên mọi app thực chất đang chạy một tenant (`default`). 
   - Không khoá và không xoá được `default`.
   - Lý do: giữ nguyên hành vi cho mọi app và dữ liệu hiện có (xem mục 6), và không phải đổi luồng đăng ký, mời hay đăng
     nhập ngoài.
-- Role `platform-admin` chỉ có nghĩa ở tenant `default` và không gán được trong tenant khác.
+- Role `platform-admin` chỉ có nghĩa ở tenant `default` và không gán được trong tenant khác. Ở `default`, chỉ người đã có
+  `platform-admin` (hoặc scope `auth.admin`) mới gán hoặc gỡ được role này; `admin` không tự nâng quyền, cũng không cấp
+  cho người khác (`account.role_requires_platform_admin`, 403).
 
 ### 2. Chọn tenant khi đăng nhập
 
@@ -51,7 +53,12 @@ Ràng buộc kèm theo:
 - Người dùng phải là thành viên của tenant và tenant phải `ACTIVE`.
   - `/oauth2/authorize` kiểm tra ngay sau khi đăng nhập. Không đạt thì trả trang lỗi 403, không chuyển hướng về app.
   - Mỗi lần cấp token đều kiểm tra lại, kể cả khi refresh (xem mục 4).
-- Tenant đã chọn được lưu cùng authorization request, nên refresh token luôn giữ tenant ban đầu.
+- **Tenant cố định theo phiên.** Tenant chọn ở lần cấp token đầu (claim `tenant_id` của access token) được lưu trong
+  authorization ở server. Refresh token đọc lại đúng tenant đó, không chọn lại theo binding hay tham số hiện tại, và trả
+  `invalid_grant` (người dùng đăng nhập lại) khi:
+  - tenant không còn tồn tại hoặc đang bị khoá;
+  - client đã được gắn vào một tenant khác với tenant đã lưu (ví dụ phiên bắt đầu khi client còn dùng chung);
+  - client đã bị gỡ khỏi tenant (xem mục 5).
 - Chưa làm màn hình chọn tenant ở auth server (xem mục "Chưa làm").
 
 ### 3. Claim `tenant_id`
@@ -61,10 +68,13 @@ Ràng buộc kèm theo:
 - **Client credentials:**
   - Tenant là tenant của client nếu client có gắn, không thì là `default`.
   - Tenant bị khoá thì trả `unauthorized_client`.
+  - Client từng gắn tenant rồi bị gỡ **không** rơi về `default`: trả `unauthorized_client` cho tới khi được gắn lại.
 - **Token exchange (ADR-0010 §4):**
   - Token mới giữ nguyên `tenant_id` của `subject_token` (token cũ không có claim thì coi là `default`).
   - `roles` được tính lại theo membership của tenant đó.
   - Client đang đổi mà gắn với tenant khác thì trả `invalid_grant`.
+  - Không đổi được sang audience của chính auth server (API quản trị `platform-auth-server`, danh bạ
+    `platform-auth-directory`), kể cả khi audience đó nằm trong `audiences` của client: trả `invalid_target`.
 - `platform-starter-authz` đọc claim `tenant_id`. Tuỳ chọn `vyforge.authz.tenant.required=true` từ chối (403) token
   không có claim.
 
@@ -82,10 +92,17 @@ Ràng buộc kèm theo:
 
 - **Admin xuyên tenant** chỉ dành cho role `platform-admin` trong tenant `default`, hoặc token client credentials có scope
   `auth.admin` của tenant `default`. Cả hai đều phải đã qua MFA như ADR-0008 (MFA không áp dụng cho client credentials).
+- **Token uỷ quyền** (có claim `act`, từ token exchange) bị API quản trị và danh bạ từ chối (401): service không quản trị
+  auth server hay đọc danh bạ thay mặt người dùng. Không cấp audience `platform-auth-server` cho client có grant
+  `token_exchange`.
 - API `/api/v1/admin/tenants`:
-  - CRUD tenant, `POST …/{slug}/lock` và `…/unlock`.
+  - CRUD tenant, `POST …/{slug}/lock` và `…/unlock`. **Xoá** chỉ được khi tenant đã khoá
+    (`tenant.delete_requires_lock`) và không còn client gắn vào (`tenant.has_clients`); FK `tenant_clients.tenant_id` là
+    `ON DELETE RESTRICT`.
   - `…/{slug}/members`: thêm theo email, sửa role, gỡ thành viên.
-  - `…/{slug}/clients/{clientId}`: gắn hoặc gỡ client.
+  - `…/{slug}/clients/{clientId}`: gắn hoặc gỡ client. **Gỡ** client thu hồi mọi authorization đã cấp qua client đó
+    (event `TenantClientUnbound`) và đánh dấu client "đã gỡ" (`tenant_released_clients`): mọi grant bị từ chối cho tới
+    khi gắn lại vào một tenant, có thể là `default`. Client của khách hàng không bao giờ âm thầm thành client dùng chung.
   - Mọi thao tác ghi nhật ký quản trị (`@Audited`, action `auth:tenant:*`).
 - Các API quản trị hiện có (`/api/v1/admin/**`, role `admin`) **chỉ nhận token của tenant `default`**. Lý do: role giờ là
   role theo tenant, nên `admin` của một tenant khách hàng không được quyền quản trị toàn auth server.
@@ -108,9 +125,13 @@ API này dành cho service và màn hình quản trị IAM:
 
 Ràng buộc:
 
-- **Quyền đọc:** token có `aud` chứa `platform-auth-server`, kèm một trong hai:
+- **Audience riêng:** token có `aud` chứa `platform-auth-directory` (`vyforge.auth.directory.audience`). Service đọc danh
+  bạ chỉ cần audience này, không cần audience của API quản trị. Token có `platform-auth-server` (admin console) cũng được
+  nhận. Token exchange không đổi sang được audience này, và token có claim `act` bị từ chối.
+- **Quyền đọc**, một trong hai:
   - scope `directory.read` (client credentials của service);
-  - token người dùng có role `admin` hoặc `IAM_ADMIN` trong tenant của token.
+  - token người dùng có role `admin` hoặc `IAM_ADMIN` trong tenant của token **và đã qua MFA** (`amr` chứa `mfa`, cùng
+    cấu hình `vyforge.auth.admin-api.require-mfa` với API quản trị).
 - **Cô lập tenant:** kết quả chỉ gồm thành viên của tenant trong token. Không có tham số nào để đọc chéo tenant. Danh bạ
   của `default` gồm mọi tài khoản (vì membership mặc nhiên).
 - **Chống liệt kê tràn lan:**
@@ -121,7 +142,11 @@ Ràng buộc:
 
 ### 7. Migrate dữ liệu cũ
 
-Migration Flyway V020–V029 của module `tenant`:
+Migration Flyway của module `tenant` dùng dải V020–V029 (hiện V020–V024). **Nhánh này merge và deploy trước nhánh dùng
+V030+** (`feat/idp-extensions`). Deploy sai thứ tự thì auth server dừng lúc khởi động với lỗi nêu rõ migration bị bỏ
+qua; chạy bù bằng một lần deploy với `AUTH_FLYWAY_OUT_OF_ORDER=true` (các migration này chỉ tạo bảng và thêm dữ liệu).
+
+Nội dung:
 
 - Tạo tenant `default` (`ACTIVE`).
 - Mọi tài khoản và role hiện có tự động thuộc `default` theo quy tắc ở mục 1, không cần chép dữ liệu.
@@ -134,8 +159,9 @@ Migration Flyway V020–V029 của module `tenant`:
 
 - Một auth server phục vụ được nhiều khách hàng. Người dùng có một tài khoản duy nhất và role riêng ở từng tenant. IAM
   (ADR-0009/0010) cô lập dữ liệu nhờ claim `tenant_id` thật.
-- Thu hồi quyền theo tenant (khoá tenant, gỡ thành viên) có hiệu lực từ lần cấp token kế tiếp, tối đa 10 phút với access
-  token đã cấp.
+- Thu hồi quyền theo tenant (khoá tenant, gỡ thành viên, gỡ client) có hiệu lực từ lần cấp token kế tiếp, tối đa 10 phút
+  với access token đã cấp. Phiên không bao giờ âm thầm đổi tenant: đổi binding hay xoá tenant buộc đăng nhập lại.
+- Xoá tenant là thao tác nhiều bước có chủ đích: gỡ client, khoá, rồi xoá.
 - `default` có ngữ nghĩa đặc biệt: danh bạ của nó thấy mọi tài khoản. App dành cho khách hàng nên dùng tenant riêng thay vì
   `default`.
 - Client gắn tenant là cách an toàn nhất cho app của một khách hàng. Client dùng chung phải tự truyền tham số `tenant`.
