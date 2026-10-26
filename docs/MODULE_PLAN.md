@@ -12,19 +12,22 @@ theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo 
 - [Quy hoạch danh mục module và lộ trình](research/2026-10-quy-hoach-vyforge.md): bằng chứng trong code cho từng quyết
   định, kiến trúc runtime đích, rủi ro.
 
-## Tiến độ (cập nhật 26/10/2026)
+## Tiến độ (cập nhật 26/10/2026, tối)
 
 | Việc | Trạng thái |
 |---|---|
-| Archive `nextjs-ui`, `spring-boot-starter` | Xong (archive, chưa xoá) |
-| Đổi tên `platform-auth-admin` → `platform-admin` | Xong |
-| Tạo `platform-ci` (vyforge-ci 0.1, ci-toolbox), `template-infra`, `platform-infra` | Đã tạo repo; `platform-ci` v0.1.0 đã đẩy lên |
-| `platform-core`, tenant ở tầng dữ liệu, mặc định `RestClient` (ADR-0015) | Xong, platform-java 0.10.0 |
-| `-privacy` (tối thiểu), `-scheduling`, `-ratelimit` | Xong, platform-java 0.11.0 |
-| Tenant, danh bạ, IdP mở rộng, quản trị theo tenant | Xong (ADR-0011, ADR-0012) |
-| CI/CD trung lập (ADR-0014) | ADR và `platform-ci` xong; đang chuyển từng repo |
-| Chuyển `platform-iam-server` vào `platform-java` | Đang làm |
-| `template-infra`, `platform-infra`, chart `platform-observability`, `platform-policies` | Đang làm |
+| Archive `nextjs-ui`, `spring-boot-starter`; đổi tên `platform-admin`; archive repo `platform-iam-server` (đã chuyển vào `platform-java`) | Xong |
+| `platform-core`, tenant ở tầng dữ liệu, mặc định `RestClient` (ADR-0015) | Xong: platform-java 0.10.0 |
+| `-privacy` (tối thiểu), `-scheduling`, `-ratelimit` | Xong: platform-java 0.11.0 |
+| `platform-iam-server` thành module của `platform-java` | Xong: platform-java 0.12.0, image `platform-iam-server:0.12.0` |
+| Tenant, danh bạ, IdP mở rộng, quản trị theo tenant (API + giao diện) | Xong: ADR-0011, ADR-0012; `@vyforge/iam` 0.4.0; template-nextjs v2.1.0 |
+| Gateway và auth-server dùng `-ratelimit` (Valkey) | Xong |
+| CI/CD trung lập (ADR-0014): `platform-ci` v0.1.0, image `ci-toolbox:0.1.0` | Xong; thư viện đã chuyển; service và template đang chuyển |
+| `template-infra` v0.1.0, `platform-infra` (dev trỏ tới image thật theo digest) | Xong; backup PITR và bật observability/policies đang làm |
+| Chart `platform-observability`, `platform-policies` | Xong: platform-helm-charts v0.4.0 |
+| Image đầu tiên của service | gateway 0.1.0, admin 0.1.0, auth-server 0.1.1 (0.1.0 bị chặn do Bouncy Castle 1.84), iam-server 0.12.0 |
+| Template | template-spring-boot v2.1.0, template-nextjs v2.1.0 |
+| Module P1 (notification, files, export, webhooks, features, payment, realtime) | Chờ pilot theo nguyên tắc 5 |
 
 ## Tóm tắt quyết định
 
