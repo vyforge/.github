@@ -464,6 +464,10 @@ Bảng màn hình của từng module (mục 6) ghi rõ màn hình nào thuộc 
   từng request, `script-src 'self' 'nonce-…' 'strict-dynamic'`, `connect-src 'self'`, `frame-ancestors 'none'`,
   `form-action 'self'`. Tài nguyên của zone nằm dưới `/m/<module>/_next/` cùng origin nên `'self'` đã đủ. Không zone nào
   được nới CSP; cần nguồn ngoài thì thêm vào cấu hình chung và qua review.
+- **`frame-src` động** (bổ sung từ thiết kế cms-content, đã duyệt): mặc định không có `frame-src`. Zone cần nhúng
+  iframe (vd. live preview site của tenant) khai báo hook `createAdminProxy({ routing, frameSources })`; hook trả URL
+  (thường là `baseUrl` các site của tenant, zone tự cache), `frameSourceOrigins()` chỉ giữ origin `https:` (hoặc
+  `http://localhost`), bỏ wildcard, path và ký tự lạ, tối đa 50. Hook lỗi thì `frame-src` vẫn đóng.
 - `createAdminZone()` (bọc `next.config`) đặt: `basePath`, `output: 'standalone'`, header bảo mật như shell,
   `experimental.serverActions.allowedOrigins: [<host công khai của admin>]` (Next yêu cầu với multi-zones),
   `deploymentId: process.env.DEPLOYMENT_ID` (CI đặt bằng digest của image).
@@ -515,6 +519,16 @@ export default async function TemplatesPage() {
   return <TemplateMatrix types={types} can={access.can} />;
 }
 ```
+
+**Ghi chú khi triển khai (27/10/2026):**
+- `matcher` của `proxy.ts` trong zone là `['/', '/((?!api|_next|_vercel|.*\\..*).*)']`: gốc `basePath` (`/m/<module>`)
+  cần mẫu `'/'` riêng để chuyển sang `/m/<module>/<locale>`.
+- `AdminFrame` là Server Component và **không nhận hàm `Link`**: Server Component không truyền hàm sang client
+  component được. `ModuleNav`, `ZoneLink` tự dùng `next/link` (tự thêm `basePath`).
+- Template zone ở `platform-admin/templates/admin-zone`, `pnpm create-admin-zone <module>` sinh app; `apps/example-admin`
+  sinh từ template và có test giữ hai bên khớp nhau.
+- Chạy được bằng `next build` standalone với `outputFileTracingRoot` là gốc workspace; image:
+  `docker build --build-arg APP=<module>-admin`.
 
 ### 4.12 Trách nhiệm của từng module (hợp đồng với các phiên module)
 
