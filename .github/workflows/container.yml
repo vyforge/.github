@@ -123,7 +123,9 @@ jobs:
           build-args: GITHUB_ACTOR=${{ github.actor }}
           cache-from: type=gha
       - name: Attest provenance
-        if: env.PUSH == 'true'
+        # Artifact attestation cho repo private cần gói GitHub Enterprise Cloud; image vẫn có SBOM + provenance của
+        # BuildKit trong registry.
+        if: env.PUSH == 'true' && !github.event.repository.private
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.name.outputs.image }}
