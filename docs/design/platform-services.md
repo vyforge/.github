@@ -1,6 +1,8 @@
 # Thiết kế `platform-services` và khu quản trị microfrontend cho các module dùng chung
 
-> **Trạng thái:** bản thiết kế chờ duyệt (26/10/2026), phiên forge-37. Chưa có code.
+> **Trạng thái:** **đã duyệt (27/10/2026)** toàn bộ D1–D10, L1–L5 và mục 10.2, phiên forge-37. Chấp nhận tải lại trang
+> khi chuyển module. L2 duyệt kèm ba điều kiện bắt buộc (mục 10.4). Đang triển khai L1/L2 (`@vyforge/admin-shell`,
+> workspace `platform-admin`, registry, e2e); P2 (backend) và P5 (gateway) chờ lệnh riêng khi 7 module merge.
 >
 > **Phạm vi:** cách đóng gói, triển khai và quản trị 7 module P1 (notification, files, export, webhooks, features,
 > payment, realtime) và các module sau này:
@@ -724,9 +726,11 @@ Người vận hành đăng nhập ở tenant vận hành. Để xem hoặc sử
 `platform-services` nhận header `X-Vyforge-Tenant: <X>` qua filter `OperatorTenantSelection`:
 
 1. Chỉ áp cho path `/admin/**` và các path quản trị module khai báo trong `AdminPaths` của mình.
-2. Token phải thuộc tenant vận hành (`vyforge.services.operator-tenant`, mặc định `default`), `amr` có `mfa`.
+2. Token phải thuộc tenant vận hành (`vyforge.services.operator-tenant`, mặc định `default`), có role `platform-admin`
+   (ADR-0011) và `amr` có `mfa` (điều kiện duyệt L2-b, mục 10.4).
 3. `Authz.check("platform:tenant:Operate", "vrn:platform:tenant/<X>")` phải cho phép.
-4. Thoả cả ba thì request chạy trong `TenantContext.run(X, …)`; mọi `AuditLog` ghi thêm `actorTenant` và `actingTenant`.
+4. Thoả cả ba thì request chạy trong `TenantContext.run(X, …)`. **Mọi thao tác** (đọc lẫn ghi) qua header này ghi
+   `AuditLog` với `actorTenant` và `actingTenant`, kể cả khi bị từ chối.
    Thiếu một điều kiện thì trả `403 services.tenant_selection_forbidden`.
 
 Trong giao diện, `AdminFrame` có ô chọn "tenant đang xem" (chỉ ở chế độ operator). Lựa chọn lưu ở cookie
@@ -1072,3 +1076,25 @@ yêu cầu cho L1). Thứ tự merge: admin-shell → platform-admin (shell) →
 3. **Phiên features phải làm `RemoteEntitlements` ngay ở 0.13** (thiết kế features đang để bản sau).
 4. **Phiên realtime phải làm khu quản trị ở 0.13** (thiết kế realtime đang để bản sau).
 5. Số ADR: ADR-0021 riêng hay mục trong ADR-0020.
+
+### 10.4 Kết quả duyệt (27/10/2026)
+
+- Duyệt toàn bộ D1–D10, L1–L5 và các quyết định ở mục 10.2. Chấp nhận tải lại trang khi chuyển module (10.3 mục 1).
+- **L2 duyệt kèm điều kiện bắt buộc:**
+  - (a) `X-Tenant-Id` chỉ có hiệu lực ở API nội bộ `/api/v1/<route>/internal/**`, chỉ với client có scope
+    `services.internal`, và tenant phải nằm trong danh sách cho phép theo client
+    (`vyforge.services.internal-api.clients.<client_id>.tenants`), giống API nội bộ của iam-server. Ở mọi đường khác
+    header bị bỏ qua.
+  - (b) `X-Vyforge-Tenant` chỉ nhận với token có role `platform-admin` (thuộc tenant vận hành) và đã đăng nhập có MFA
+    (`amr` có `mfa`), cộng action `platform:tenant:Operate`. Mọi thao tác qua header này ghi audit.
+  - (c) `platform-gateway` **luôn gỡ** cả `X-Tenant-Id` lẫn `X-Vyforge-Tenant` khỏi request đến từ bên ngoài (thêm vào
+    `HeaderSanitizingFilter`), có test e2e. Hai header chỉ đến được `platform-services` qua mạng nội bộ (app gọi thẳng)
+    hoặc do BFF của admin đặt sau gateway… — **lưu ý khi làm P2/P5:** admin MFE gọi qua gateway, nên `X-Vyforge-Tenant`
+    của người vận hành cũng bị gỡ. Cách giữ được điều kiện (c): BFF của zone gọi `platform-services` bằng URL nội bộ
+    (không qua gateway) cho API quản trị khi đang xem tenant khác, hoặc gateway chỉ cho header này đi qua khi request
+    mang token có role `platform-admin` + MFA. Phiên P5 chọn và ghi lại; mặc định chọn cách thứ nhất (gỡ vô điều kiện ở
+    gateway, đúng nguyên văn điều kiện).
+- `@vyforge/admin-shell` dùng role vận hành mặc định `admin` (role hiện có của platform-admin) cho chế độ `operator`
+  ở giao diện; backend áp `platform-admin` theo điều kiện (b). Khi auth-server thống nhất tên role thì đổi cấu hình
+  `operatorRoles`, không đổi code.
+- P2 (backend `platform-services`) và P5 (gateway) có lệnh riêng khi 7 module merge.
