@@ -1265,14 +1265,14 @@ paths:
   /api/v1/reports/{templateKey}/jobs:
     post: { summary: "Render hàng loạt { subjects | batchFilter, output: ZIP|MERGED|INDIVIDUAL } → 202" }
 
-  /api/v1/export-admin/templates:
+  /api/v1/export/admin/templates:
     get: {}
     post: { summary: Tạo template của tenant (ghi đè template classpath cùng key) }
-  /api/v1/export-admin/templates/{key}/versions:
+  /api/v1/export/admin/templates/{key}/versions:
     post: { summary: Upload phiên bản mới (DRAFT) }
-  /api/v1/export-admin/templates/{key}/versions/{v}/preview:
+  /api/v1/export/admin/templates/{key}/versions/{v}/preview:
     post: { summary: Render thử với dữ liệu mẫu của definition }
-  /api/v1/export-admin/templates/{key}/versions/{v}/publish: { post: {} }
+  /api/v1/export/admin/templates/{key}/versions/{v}/publish: { post: {} }
   /api/v1/export-schedules:
     get: {}
     post: { summary: "{ kind, definition, params, cron, zone, audience }" }
@@ -1281,7 +1281,7 @@ paths:
     put: {}
     delete: {}
   /api/v1/export-schedules/{id}/run-now: { post: {} }
-  /api/v1/export-admin/config:
+  /api/v1/export/admin/config:
     get: { summary: Cấu hình tenant (secret không bao giờ trả về; chỉ trả cờ "đã đặt") }
     put: {}
 ```
@@ -1770,39 +1770,63 @@ interface hoặc event, bật bằng `@ConditionalOnBean`/`@ConditionalOnClass`:
 Tắt cả module bằng `vyforge.export.enabled=false`; tắt API quản trị riêng bằng `vyforge.export.admin-api.enabled=false`
 (app chỉ cần xuất/nhập, quản trị đặt ở nơi khác).
 
-### 11.2 Admin microfrontend `@vyforge/export-admin`
+### 11.2 Admin microfrontend (kiến trúc đã chốt ở `docs/design/platform-services.md`)
 
-Trong lúc chờ forge-37, component quản trị viết trong `@vyforge/export` dưới subpath `@vyforge/export/admin`; sau đó chỉ
-bọc lại thành MFE.
+Theo platform-services D1–D10, mục 4.11–4.12, 5.1–5.2, 6.3:
+
+- **Next.js Multi-Zones**: app `platform-admin/apps/export-admin`, `basePath` `/m/export`, khung giao diện từ
+  `@vyforge/admin-shell`. App zone dựng bằng `pnpm create-admin-zone export` khi forge-37 xong; trang chỉ ghép component.
+- **Component quản trị** nằm ở `@vyforge/export/admin` (platform-web): nhận dữ liệu và Server Action qua props, nhận
+  `can` để ẩn nút, không tự đọc cookie hay env. Cùng bộ component dùng cho trang `/admin` dựng sẵn trong app nghiệp vụ.
+- **Export luôn nhúng** trong app (D10): API quản trị nằm ở app, dưới tiền tố `vyforge.export.api.base-path` (mặc định
+  `/api/v1`, vd. `/api/v1/crm`). Manifest đặt `api.base` từ `EXPORT_API_BASE`; nhiều app dùng export thì
+  `EXPORT_BACKENDS` liệt kê các app.
+- **`GET <base>/export/admin/info`** (đã làm): `{ module: "export", version, apiVersion: 1, capabilities, mode: "embedded" }`;
+  `capabilities` gồm `format.*`, `import.*`, `engine.*`, `sign.*`, `store.*`, `schedules`, để MFE ẩn màn hình không dùng
+  được (vd. không có `sign.pkcs12` thì ẩn hồ sơ ký).
+- API quản trị: `<base>/export/admin/**` (`info`, `definitions`, `config`, `templates/...`), tắt bằng
+  `vyforge.export.admin-api.enabled=false`. Việc của tenant và lịch dùng API chung `<base>/data-jobs?scope=tenant`,
+  `<base>/export-schedules?scope=tenant` với action `ListAll`.
 
 **Màn hình**
 
 | Màn hình | Người vận hành (platform) | Tenant admin | Quyền (action IAM) | API |
 |---|---|---|---|---|
 | Việc của tenant: lọc, xem chi tiết, huỷ, chạy lại, tải file | Có (chọn tenant) | Có | `export:job:ListAll`, `export:job:ManageAll`, `export:job:DownloadAll` | `GET /api/v1/data-jobs?scope=tenant`, `POST …/{id}/cancel`, `…/retry`, `GET …/files/{role}` |
-| Cấu hình xuất/nhập: giới hạn, định dạng, locale, múi giờ, branding, định dạng bị chặn với dữ liệu nhạy cảm, definition tắt | Có (giá trị mặc định cấp platform chỉ xem) | Có | `export:config:Get`, `export:config:Update` | `GET/PUT /api/v1/export-admin/config` |
-| Hồ sơ ký số: tải PKCS#12, mật khẩu (chỉ ghi, không hiển thị lại), lý do, nơi ký | Không | Có | `export:config:Update` | `PUT /api/v1/export-admin/config` (`secrets`) |
-| Mẫu báo cáo: danh sách phiên bản, tải lên bản nháp, xem trước với dữ liệu thật, phát hành | Có | Có | `export:template:Manage`, `export:template:Publish` | `GET/POST /api/v1/export-admin/templates/{key}/versions`, `POST …/{v}/preview`, `POST …/{v}/publish` |
+| Cấu hình xuất/nhập: giới hạn, định dạng, locale, múi giờ, branding, định dạng bị chặn với dữ liệu nhạy cảm, definition tắt | Có (giá trị mặc định cấp platform chỉ xem) | Có | `export:config:Get`, `export:config:Update` | `GET/PUT /api/v1/export/admin/config` |
+| Hồ sơ ký số: tải PKCS#12, mật khẩu (chỉ ghi, không hiển thị lại), lý do, nơi ký | Không | Có | `export:config:Update` | `PUT /api/v1/export/admin/config` (`secrets`) |
+| Mẫu báo cáo: danh sách phiên bản, tải lên bản nháp, xem trước với dữ liệu thật, phát hành | Có | Có | `export:template:Manage`, `export:template:Publish` | `GET/POST /api/v1/export/admin/templates/{key}/versions`, `POST …/{v}/preview`, `POST …/{v}/publish` |
 | Lịch của tenant: xem, tắt/bật, chạy ngay, xoá | Có | Có | `export:schedule:ListAll` | `GET /api/v1/export-schedules?scope=tenant`, `PUT/DELETE …/{id}`, `POST …/{id}/run-now` |
 | Hàng đợi (backlog, việc `DEAD`) | Có | Không | quyền quản trị task của `-scheduling` | API `TaskAdmin` của `-scheduling` (forge-35) |
 
-**Manifest (hợp đồng với shell)**, dạng đề xuất, chờ forge-37 chốt định dạng:
+**Manifest** (`contract: 1`, `defineAdminManifest` của `@vyforge/admin-shell/manifest`; khai báo ở app zone):
 
-```json
-{
-  "module": "export",
-  "name": { "vi": "Xuất, nhập và báo cáo", "en": "Export, import and reports" },
-  "version": "0.13.0",
-  "route": "/export",
-  "apiBase": "/api/v1",
-  "minPermission": "export:job:ListAll",
-  "menu": [
-    { "path": "/export/jobs", "label": { "vi": "Việc xuất/nhập", "en": "Data jobs" }, "permission": "export:job:ListAll" },
-    { "path": "/export/templates", "label": { "vi": "Mẫu báo cáo", "en": "Report templates" }, "permission": "export:template:Manage" },
-    { "path": "/export/schedules", "label": { "vi": "Lịch báo cáo", "en": "Schedules" }, "permission": "export:schedule:ListAll" },
-    { "path": "/export/settings", "label": { "vi": "Cấu hình", "en": "Settings" }, "permission": "export:config:Get" }
-  ]
-}
+```ts
+export default defineAdminManifest({
+  contract: 1,
+  name: 'export',
+  version: pkg.version,
+  title: { vi: 'Xuất, nhập và báo cáo', en: 'Export, import and reports' },
+  icon: 'file-spreadsheet',
+  order: 300,
+  audiences: ['tenant', 'operator'],
+  minPermission: { anyOf: [{ action: 'export:job:ListAll', resource: 'vrn:export:job/*' },
+                           { action: 'export:config:Get', resource: 'vrn:export:config/tenant' }] },
+  entitlement: 'admin.export',
+  api: { base: process.env.EXPORT_API_BASE ?? '/api/v1', requires: '>=0.13.0 <1.0.0' },
+  menu: [
+    { id: 'jobs', path: '/jobs', title: { vi: 'Việc xuất/nhập', en: 'Data jobs' },
+      permission: { action: 'export:job:ListAll', resource: 'vrn:export:job/*' } },
+    { id: 'definitions', path: '/definitions', title: { vi: 'Định nghĩa', en: 'Definitions' },
+      permission: { action: 'export:job:ListAll', resource: 'vrn:export:job/*' } },
+    { id: 'schedules', path: '/schedules', title: { vi: 'Lịch báo cáo', en: 'Schedules' },
+      permission: { action: 'export:schedule:ListAll', resource: 'vrn:export:schedule/*' } },
+    { id: 'templates', path: '/templates', title: { vi: 'Mẫu báo cáo', en: 'Report templates' },
+      permission: { action: 'export:template:Manage', resource: 'vrn:export:template/*' } },
+    { id: 'settings', path: '/settings', title: { vi: 'Cấu hình', en: 'Settings' },
+      permission: { action: 'export:config:Get', resource: 'vrn:export:config/tenant' } },
+  ],
+});
 ```
 
 Giao diện dùng `@vyforge/ui`, i18n vi/en (`exportMessages`), gọi API qua `@vyforge/api-client` bằng token của người dùng
