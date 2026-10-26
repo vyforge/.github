@@ -1608,3 +1608,94 @@ thứ tự và portal).
 - Các quyết định ở mục 10.2 giữ nguyên.
 - Không cần tên pilot.
 - ADR: một mục "webhooks" trong ADR-0020 chung cho các module P1.
+
+---
+
+## 11. Đóng gói và triển khai độc lập
+
+Theo mục 6 của quy ước P1 và thiết kế [platform-services](platform-services.md) (D1–D10, mục 4.11–4.12, 5.1–5.2, 6.4).
+Module webhooks gồm ba phần, mỗi phần cài hay bỏ riêng được.
+
+### 11.1 Backend
+
+| Cách chạy | Cấu hình | Khi nào |
+|---|---|---|
+| Nhúng vào app | Thêm `platform-starter-webhooks` (+ `platform-starter-jpa` cho schema) | Một app duy nhất phát webhook |
+| Trong `platform-services` | Bật module trong image `platform-services`; `vyforge.webhooks.api.mode=services` | Từ hai app trở lên (khuyến nghị của D10: dispatcher dùng chung) |
+| Server riêng | Cùng image `platform-services`, chỉ bật webhooks | Lưu lượng lớn, cần tách tài nguyên |
+
+- **Không phụ thuộc cứng module P1 khác.** Phụ thuộc bắt buộc chỉ là nền platform: `platform-core` (`SecretCipher`),
+  `-web`, `-messaging` (interface `TenantAwareEvent`), `-scheduling` (`@ClusterScheduled`). `-authz`, `-audit`, `-jpa`
+  là optional: không có `-authz` thì không có REST; không có `-audit` thì không ghi audit; không có `-jpa` thì DBA chạy
+  `META-INF/vyforge/sql/webhooks.sql`.
+- **Artifact inbound là thư viện nền**, không phải module có trạng thái: không bảng, không job. `-payment` và
+  `-notification` dùng nó (khuyến nghị khai báo `optional` + `@ConditionalOnClass` để vẫn chạy khi bỏ webhooks).
+  Gói `signature` là Java thuần; nếu sau này cần bỏ hẳn phụ thuộc này thì chuyển gói đó vào `platform-core`.
+- **Điểm nối với module khác chỉ qua event và interface:** `-notification` nghe `WebhookEndpointDisabled`,
+  `WebhookDeliveryDead`, `WebhookClientCertificateExpiring`; kênh "webhook" của `-notification` gọi `WebhookPublisher`
+  khi bean có mặt (`@ConditionalOnBean`).
+- **Tắt toàn bộ:** `vyforge.webhooks.enabled=false` tắt mọi auto-config của outbound (đã có).
+- **Chế độ `remote` (D8), để bước sau:** app không nhúng engine vẫn dùng interface `WebhookPublisher`; bản remote gửi
+  message qua topic Kafka `webhooks-messages` (header `tenant_id`), consumer ở `platform-services` gọi publisher thật
+  (idempotent theo `idempotencyKey`). Catalog event type của app đăng ký lên server qua
+  `PUT /api/v1/webhooks/internal/catalogs/{service}` (giống catalog action của authz). Trong lúc chờ, app khác publish được
+  qua `POST /api/v1/webhooks/messages` (`publish-enabled`), đã có.
+
+### 11.2 Package frontend `@vyforge/webhooks`
+
+Client server-only `createWebhooksClient()`, Server Action và type cho app nghiệp vụ (trang `/admin` tự dựng, hoặc màn
+hình đối tác tự quản lý endpoint của mình).
+
+### 11.3 Admin microfrontend
+
+- **Kỹ thuật** theo platform-services D1, D4, D5: component ở `@vyforge/webhooks/admin`; zone
+  `platform-admin/apps/webhooks-admin`, `basePath` `/m/webhooks`, dựng bằng `pnpm create-admin-zone webhooks` khi
+  `@vyforge/admin-shell` sẵn sàng. Module không tự làm đăng nhập, khung, CSP, registry.
+- **Component** nhận dữ liệu và Server Action qua props, nhận `can` (hàm đồng bộ, quyền đã tính ở server bằng
+  `requireModuleAccess`) để ẩn nút; không đọc cookie hay env.
+- **Màn hình** (O = người vận hành, T = tenant admin; một image phục vụ cả hai, D6):
+
+| Màn hình | Nhóm | Action | Component |
+|---|---|---|---|
+| Endpoint: danh sách, trạng thái, tình trạng gửi | O+T | `webhooks:endpoint:List/Get` | `EndpointTable` |
+| Tạo/sửa endpoint | O+T | `webhooks:endpoint:Create/Update` + `webhooks:event-type:Subscribe` | `EndpointForm` |
+| Tạm dừng, chạy lại, bật lại (gửi bù), tắt, xoá | O+T | `webhooks:endpoint:Pause/Resume/Enable/Disable/Delete` | `EndpointActions` |
+| Secret: xem (có audit), xoay có thời gian chồng | O+T | `webhooks:endpoint:RevealSecret/RotateSecret` | `SecretPanel` |
+| Gửi thử | O+T | `webhooks:endpoint:Test` | `TestSendForm` |
+| Replay theo khoảng | O+T | `webhooks:endpoint:Replay` | `ReplayForm` |
+| Nhật ký gửi, chi tiết attempt, gửi lại, huỷ | O+T | `webhooks:delivery:List/Get/Retry/Cancel` | `DeliveryLog`, `DeliveryDetail` |
+| Message đã phát; payload cần quyền riêng | O+T | `webhooks:message:List/Get/GetPayload` | `MessageTable` |
+| Danh mục event type, schema, ví dụ, code kiểm chữ ký | O+T | `webhooks:event-type:List/Get` | `EventTypeCatalog`, `VerifySnippet` |
+| Chứng chỉ client mTLS | O+T | `webhooks:certificate:List/Create/Delete` | `ClientCertificateTable` |
+| Cấu hình tenant | T | `webhooks:settings:Get/Update` | `WebhookSettingsForm` |
+| Chính sách gửi ra của platform (chỉ xem) | O | `webhooks:settings:Get` trên `vrn:webhooks:settings/platform` | `EgressPolicyView` |
+
+- **API admin gọi:** toàn bộ `/api/v1/webhooks/**` ở mục 5.5, cộng hai endpoint mới:
+  - `GET /api/v1/webhooks/admin/info` (chỉ cần đăng nhập): `module`, `version`, `apiVersion` (1), `capabilities`
+    (`delivery`, `publish-api`, `reveal-secret`, `egress-proxy`, `mtls`, `replay`, `ordering`, `version-pins`,
+    `test-send`, `signature.v1`, `signature.v1a`), `mode` (`embedded` | `services`).
+  - `GET /api/v1/webhooks/admin/egress`: chỉ tenant vận hành (`vyforge.webhooks.api.operator-tenant`), 404 với tenant
+    khác.
+  - "Tenant đang xem" của người vận hành (platform-services §5.6) do filter `OperatorTenantSelection` của
+    `platform-services` áp; starter không tự xử lý header `X-Vyforge-Tenant`.
+- **Manifest** (`contract: 1`): `webhooksAdminManifest` trong `@vyforge/webhooks/admin` (name `webhooks`, title vi/en,
+  icon `webhook`, audiences `operator` + `tenant`, `minPermission` anyOf `webhooks:endpoint:List` /
+  `webhooks:delivery:List`, entitlement `admin.webhooks`, `api.base` `/api/v1/webhooks`, `api.requires`
+  `>=0.13.0 <1.0.0`, menu 7 mục; `settings` là `tenant`, `egress` là `operator`). Zone chỉ cần
+  `defineAdminManifest({ ...webhooksAdminManifest, version })`.
+- **i18n:** `webhooksLabels.vi/en` cho mọi component, `webhooksErrorMessages` cho mã lỗi; dùng `@vyforge/ui`.
+- **Gateway:** route `/api/v1/webhooks/**` tới nơi chạy module; không có đường công khai (webhook vào nằm ở app hoặc
+  `-payment`); rule rate limit `endpoints/*/test` 10/phút.
+
+## 12. Ghi chú triển khai (khác hoặc chi tiết hơn bản thiết kế)
+
+| Chỗ | Bản thiết kế | Đã làm | Lý do |
+|---|---|---|---|
+| Lưu trữ endpoint, settings | Entity `TenantEntity` | `JdbcClient` cho mọi bảng, tenant tường minh, ArchUnit `TENANT_ISOLATION` xanh | Bảng partition và truy vấn của dispatcher đều là SQL; một cách truy cập thống nhất, giống `-audit` |
+| Kiểm quyền | Trong service | Ở controller (`Authz.check`), như `-authz`/`-audit` | `-authz` là optional; app gọi Java API tự phân quyền |
+| Event nhạy cảm | Chặn đăng ký "mọi type" khi catalog có type `SENSITIVE` | Wildcard và bộ lọc rỗng **không bao giờ khớp** type `SENSITIVE`; phải ghi đúng tên và tenant phải bật `allowSensitiveEvents` | Bản thiết kế làm endpoint "mọi type" không tạo được; cách mới vẫn mặc định bảo vệ dữ liệu |
+| Rate limit theo endpoint | Bucket4j | Token bucket nhỏ tự viết (`TokenBucket`) | Chỉ cần trong bộ nhớ nhờ lease endpoint; không thêm phụ thuộc |
+| `TransactionTemplate` | — | Không đăng ký bean, tạo nội bộ | Tránh trùng với bean của Boot trong app |
+| `BLOCKED` | DEAD sau 3 lần liên tiếp | DEAD khi lần thứ 3 trở đi vẫn `BLOCKED` | Đơn giản, cùng hiệu quả |
+| Health indicator `webhooks` | Có | Chưa làm (metric và job đã có) | Để bản sau |
+| Body phản hồi | Che PII bằng `PiiMasker` | Lưu tối đa 4 KB, tắt được theo tenant; chưa che PII | Để bản sau (phụ thuộc `-privacy` optional) |
