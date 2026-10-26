@@ -218,3 +218,980 @@ Phạm vi hỗ trợ 1900–2199; ngoài phạm vi ném `LunarOutOfRangeExceptio
 | Plugin premium của FullCalendar | License thương mại riêng |
 
 ---
+
+## 3. Kiến trúc
+
+### 3.1 Khái niệm
+
+| Khái niệm | Nghĩa | Ví dụ |
+|---|---|---|
+| **Lịch quốc gia** (`nationalCode`) | Dữ liệu công bố theo năm: ngày nghỉ lễ, nghỉ bù, hoán đổi, làm bù, nhóm phương án; mỗi ngày có nguồn văn bản | `VN`, `VN-GOV`, `SG` |
+| **Lịch làm việc** (`BusinessCalendar`, khoá `key`) | Của một tenant: múi giờ, mẫu tuần, lịch quốc gia kế thừa (+ phương án đã chọn), ngoại lệ, lịch cha | `default`, `cn-hcm`, `cskh-vip`, `ca-dem` |
+| **Mẫu tuần** (`WorkPattern`) | Khoảng giờ làm theo thứ, chu kỳ 1–4 tuần tính từ `anchorDate`, có hiệu lực từ `validFrom` | T2–T6 08:00–12:00, 13:30–17:30; T7 tuần lẻ 08:00–12:00 |
+| **Ngoại lệ** (`CalendarException`) | Thay đổi của tenant đè lên mọi lớp dưới: `CLOSED` (nghỉ), `OPEN` (làm, có giờ), `HOURS` (đổi giờ); một ngày, nhiều ngày, hoặc lặp RRULE/âm lịch | Nghỉ du lịch công ty 15–16/7; 24/12 làm đến 12:00; mùng 1–3 Tết âm lịch hằng năm đóng cửa |
+| **Lịch biên dịch** (`CompiledCalendar`) | Kết quả gộp ba lớp cho một năm: danh sách khoảng làm việc (epoch giây), loại ngày, tổng tích luỹ | Bất biến, cache |
+| **Phiên bản lịch** (`CalendarVersion`) | Chuỗi định danh dữ liệu đã dùng để tính: `key@r<revision>+<national>@<datasetVersion>[+opt:<hash>]` | `default@r12+VN-GOV@2026.10.09` |
+| **Gán lịch** (`CalendarAssignment`) | Đối tượng → lịch, có hiệu lực theo ngày | user `u-123` → `ca-dem` từ 01/11/2026; đơn vị `cn-hcm` → `cn-hcm` |
+| **Nhắc** (`Reminder`) | Mốc phải báo, gắn đối tượng, có thể lặp, có thể theo giờ làm việc | "Nhắc trước hạn 4 giờ làm việc" |
+| **Sổ lịch** (`Agenda`) và **sự kiện** (`CalendarEvent`) | Sự kiện của calendar (lịch công tác, họp) | Lịch công tác tuần của Ban Giám đốc |
+| **Nguồn lịch** (`CalendarFeedContributor`) | Module khác đưa sự kiện (chỉ đọc) vào màn hình lịch | to-do (collaboration), hạn hồ sơ (workflow), lịch hẹn (booking), lịch xuất bản (cms) |
+| **Tick** | Sự kiện thời gian theo lịch của tenant | `BusinessDayStarted{key: default, date: 2026-11-25}` |
+
+### 3.2 Thành phần
+
+```mermaid
+flowchart TB
+  subgraph APP["App nghiệp vụ / platform-services"]
+    direction TB
+    subgraph CAL["platform-starter-calendar"]
+      API["API công khai<br/>BusinessCalendars · BusinessCalendar · LunarCalendar<br/>Reminders · Agendas · CalendarSchedules · CalendarAdmin"]
+      ENG["Lõi tính toán (thuần)<br/>CalendarCompiler · CompiledCalendar<br/>DayCountRule · BusinessDuration · SlaTimer"]
+      LUN["VietnameseLunarCalendar (UTC+7)<br/>HolidayRuleEngine (sinh nháp, dự đoán)"]
+      CACHE["CompiledCalendarCache<br/>(Caffeine, khoá tenant+key+rev+năm)"]
+      REM["ReminderService<br/>+ TaskHandler 'calendar/reminder.fire'"]
+      TICK["TickPublisher<br/>@ClusterScheduled(perTenant) + watermark"]
+      AG["AgendaService · RecurrenceExpander (ical4j)<br/>IcsCodec (ical4j) · FeedAggregator"]
+      ADM["REST: /api/v1/calendar/** · /admin/** · /internal/**<br/>/feeds/{token}.ics (public)"]
+      SPI["SPI: NationalHolidaySource · CalendarResolverStep<br/>CalendarFeedContributor · ReminderChannel<br/>CalendarChangeInterceptor · HolidayDraftGenerator(impl)"]
+    end
+    REPO[("PostgreSQL<br/>cal_* + vyforge_task")]
+  end
+  MD["master-data<br/>PublicHolidays (tuỳ chọn)"]
+  PACK["Pack lịch nghỉ đóng sẵn<br/>META-INF/vyforge/calendar/packs/*.pack.json.gz"]
+  ORG["organization (tuỳ chọn)<br/>unitsOf(user)"]
+  NOTI["notification (tuỳ chọn)<br/>Notifications.send"]
+  SCH["-scheduling<br/>DurableTaskQueue · @ClusterScheduled"]
+  MOD["Modulith events → Kafka (tuỳ chọn)"]
+  WEB["@vyforge/calendar<br/>+ calendar-admin MFE"]
+  USERS["workflow · privacy-dsr · collaboration · helpdesk<br/>booking · automation · forms · export"]
+
+  USERS -->|interface Java| API
+  API --> ENG --> CACHE
+  ENG --> LUN
+  CACHE -->|biên dịch| REPO
+  SPI -.->|adapter @ConditionalOnBean| MD
+  SPI -.->|mặc định| PACK
+  SPI -.-> ORG
+  REM --> SCH
+  TICK --> SCH
+  REM -.-> NOTI
+  REM & TICK & ADM -->|event| MOD
+  WEB --> ADM
+```
+
+**Phụ thuộc cứng:** `platform-core`, `-jpa`, `-web`, `-security`, `-authz`, `-audit`, `-scheduling` (task queue, cluster
+job), `-messaging` (event). **Tuỳ chọn** (`<optional>true</optional>` + `@ConditionalOnBean`): master-data,
+organization, notification, files (lưu file ICS nhập lớn), features (giới hạn). Không module P1 nào bắt buộc.
+
+Package (giống workflow, privacy-dsr):
+
+```
+com.vyforge.platform.calendar
+├── api/            BusinessCalendars, BusinessCalendar, LunarCalendar, Reminders, Agendas, CalendarSchedules,
+│                   CalendarAdmin, record/enum công khai (DayInfo, DayKind, BusinessDuration, DayCountRule…)
+├── core/           CalendarCompiler, CompiledCalendar, IntervalMath, SlaTimer, DayCountEngine
+├── lunar/          VietnameseLunarCalendar, Astronomy (Meeus), CanChi, HolidayRuleEngine
+├── national/       NationalHolidayRegistry, PackNationalHolidaySource, MasterDataNationalHolidaySource,
+│                   PackVerifier (Ed25519 + JCS, dùng chung định dạng master-data 4.5)
+├── reminder/       ReminderService, ReminderFireHandler, OffsetResolver
+├── tick/           TickPublisher, TickWatermarkRepository, ScheduleSpecEvaluator
+├── agenda/         AgendaService, RecurrenceExpander, IcsCodec, FeedAggregator, FeedTokenService
+├── spi/            NationalHolidaySource, CalendarResolverStep, CalendarFeedContributor, ReminderChannel,
+│                   CalendarChangeInterceptor, PersonalAbsenceSource (bản sau)
+├── integration/    masterdata, organization, notification, privacy (DSR contributor), forms (interceptor mẫu)
+├── web/            controller công khai, admin, internal, feed
+├── remote/         client HTTP + snapshot cho mode=remote
+└── internal/       entity, repository, migration
+```
+
+### 3.3 Port và adapter
+
+| Port (SPI) | Mặc định | Adapter khác |
+|---|---|---|
+| `NationalHolidaySource` | `PackNationalHolidaySource`: pack trong classpath (`VN`, `VN-GOV` từ 2024) + pack người vận hành nhập (`cal_holiday_pack`) | `MasterDataNationalHolidaySource` (`@ConditionalOnBean(PublicHolidays.class)`, ưu tiên cao hơn); dự án tự cài (vd. đọc từ hệ thống nội bộ của tập đoàn) |
+| `CalendarResolverStep` (chuỗi) | `ExplicitAssignmentStep` (`cal_assignment` theo user/resource) → `TenantDefaultStep` | `OrgUnitStep` (organization: `unitsOf(user)` → gán theo đơn vị, đi lên cây) |
+| `CalendarFeedContributor` | Sổ lịch của calendar | collaboration (to-do có hạn), workflow (hạn hồ sơ), booking (lịch hẹn, khoảng bận), cms-content (lịch xuất bản), privacy-dsr (hạn DSR) — mỗi module tự cài khi có calendar |
+| `ReminderChannel` | `EventOnlyChannel` (chỉ phát `ReminderDue`) | `NotificationReminderChannel` (`@ConditionalOnBean(Notifications.class)`), app tự cài (gửi vào hệ thống khác) |
+| `CalendarChangeInterceptor` | Không có | Chặn sửa lịch khi đang khoá sổ chấm công; bắt buộc nhập lý do khi sửa ngày quá khứ |
+| `HolidayDraftGenerator` (SPI của master-data) | Calendar cài `LunarHolidayDraftGenerator` khi có `MasterDataAdmin` | — |
+| `PersonalAbsenceSource` (bản sau) | Không có | HRM của dự án: ngày nghỉ phép của người, để tính lịch rảnh/hạn theo người |
+
+### 3.4 Lõi tính toán
+
+**Biên dịch** (`CalendarCompiler.compile(definition, year)` → `CompiledCalendar`), làm theo từng ngày địa phương `d`
+trong năm, theo múi giờ của lịch:
+
+```
+1. pattern   = WorkPattern có validFrom ≤ d lớn nhất          (của lịch, nếu không có thì của lịch cha)
+   week      = floor((d − anchorDate) / 7) mod cycleWeeks
+   base      = pattern.intervals[week][dayOfWeek(d)]           (có thể rỗng)
+2. national  = các ngày quốc gia của d (sau khi áp phương án đã chọn)
+   HOLIDAY | COMPENSATORY_DAY_OFF | SWAPPED_DAY_OFF  → base = ∅, kind = tương ứng
+   MAKEUP_WORKING_DAY(swappedWith = s)                → base = intervals của ngày s theo pattern
+                                                         (không có s thì intervals của thứ Hai)
+3. parent    = áp ngoại lệ của lịch cha (đệ quy, sâu tối đa 3)
+4. exception = ngoại lệ của chính lịch, theo thứ tự: CLOSED → ∅; OPEN → intervals của ngoại lệ (hoặc base nếu trống);
+               HOURS → thay intervals. Nhiều ngoại lệ cùng ngày: cái tạo sau thắng, admin cảnh báo trùng
+5. intervals → khoảng thời gian tuyệt đối: [ZonedDateTime(d, from, zone), ZonedDateTime(d', to, zone)) với
+               d' = d+1 nếu to ≤ from (ca qua nửa đêm). Giờ không tồn tại khi chuyển DST: dời theo ZonedDateTime.
+               Khoảng chồng nhau giữa ngày d và ca đêm của d−1 được gộp.
+```
+
+Kết quả lưu dạng mảng nguyên thuỷ: `long[] starts, ends` (epoch giây, đã sắp, không chồng), `long[] cumSeconds` (tổng
+thời gian làm việc tích luỹ tới hết khoảng i), `byte[] dayKind` (366 phần tử), `int[] cumWorkingDays`. Một năm với 2
+khoảng/ngày ≈ 520 khoảng ≈ 15 KB. Cache Caffeine theo `(tenant, key, revision, nationalDatasetVersion, year)`, tối đa
+`vyforge.calendar.cache.max-entries` (mặc định 5.000), TTL 24 giờ (quy ước cache bắt buộc TTL), xoá khi có
+`BusinessCalendarChanged` hoặc dữ liệu quốc gia đổi.
+
+**Phép tính** (mọi phép đều nhận `Instant` hoặc `LocalDate`, làm việc trên nhiều năm liên tiếp khi cần):
+
+| Phép | Cách tính | Độ phức tạp |
+|---|---|---|
+| `isWorkingTime(t)` | tìm nhị phân `starts`, kiểm `t < ends[i]` | O(log n) |
+| `businessDurationBetween(a, b)` | `cumAt(b) − cumAt(a)`, `cumAt(t)` = cum tới khoảng trước + phần đã qua của khoảng chứa t | O(log n) |
+| `addBusinessDuration(t, d)` | tìm khoảng có `cum ≥ cumAt(t) + d` (nhị phân trên `cumSeconds`), cộng phần dư | O(log n) |
+| `addBusinessDays(t, n, rule)` | dùng `cumWorkingDays` để nhảy tới ngày làm việc thứ n, rồi áp `rule.endAt` | O(log n) |
+| `businessDaysBetween(d1, d2)` | hiệu `cumWorkingDays` | O(1) |
+| `workingIntervals(a, b)` | cắt mảng theo `[a, b)` | O(log n + k) |
+| `n < 0` | đối xứng, đi lùi | như trên |
+
+Giới hạn tìm kiếm: tối đa `vyforge.calendar.max-horizon-years` (mặc định 5) tính từ mốc; lịch không có giờ làm việc nào
+trong khoảng đó (vd. lịch bị cấu hình rỗng) ném `CalendarHorizonExceededException` (`calendar.horizon_exceeded`) thay
+vì lặp vô hạn.
+
+**Quy tắc đếm ngày** (`DayCountRule`, record bất biến, có preset):
+
+| Thành phần | Giá trị | Nghĩa |
+|---|---|---|
+| `start` | `EXCLUDE_START_DAY` | Ngày chứa mốc không tính (BLDS Điều 147); ngày làm việc thứ 1 là ngày làm việc *sau* ngày đó |
+| | `INCLUDE_IF_BEFORE(cutoff)` | Mốc trước giờ chốt và ngày đó là ngày làm việc thì ngày đó là ngày thứ 0 (đếm từ ngày kế); sau giờ chốt hoặc ngày nghỉ thì coi như nhận vào đầu ngày làm việc kế tiếp |
+| | `FROM_INSTANT` | Đếm theo mốc chính xác (cho `SAME_TIME`) |
+| `endAt` | `END_OF_DAY` | 24:00 giờ địa phương của ngày làm việc thứ n (BLDS Điều 148) |
+| | `END_OF_WORKING_HOURS` | Hết khoảng làm việc cuối của ngày thứ n |
+| | `SAME_TIME_OF_DAY` | Cùng giờ trong ngày với mốc (mốc ngoài giờ thì dời về đầu giờ làm việc kế tiếp trước khi đếm) |
+| | `AT(LocalTime)` | Một giờ cố định (vd. trả kết quả trước 16:00) |
+
+Preset: `DayCountRule.LEGAL = (EXCLUDE_START_DAY, END_OF_DAY)`, `SAME_TIME = (FROM_INSTANT, SAME_TIME_OF_DAY)`,
+`DayCountRule.cutoff(LocalTime) = (INCLUDE_IF_BEFORE(cutoff), END_OF_WORKING_HOURS)`. Ví dụ K1: nhận 16:40 thứ Sáu
+20/11/2026, `LEGAL`, n = 2 → ngày làm việc 1 = thứ Hai 23/11, thứ Ba 24/11 nghỉ (Ngày Văn hoá), ngày làm việc 2 = thứ
+Tư 25/11 → hạn `2026-11-25T24:00+07:00` = `2026-11-25T17:00:00Z`.
+
+**`BusinessDuration`** (ngữ pháp chung với workflow mục 3.7): `^-?\d+(bd|bh|bm)$` cho ngày/giờ/phút làm việc, hoặc
+ISO-8601 `P…`/`PT…` cho thời gian lịch. `parse("2bd")`, `parse("-4bh")`, `parse("PT30M")`. `bd` mặc định áp
+`SAME_TIME`; lời gọi có thể truyền rule khác.
+
+**`SlaTimer`** (record thuần, caller lưu JSON): `{budget: BusinessDuration, segments: [{start, end?, running}]}`;
+`pause(at)`, `resume(at)`, `elapsed(calendar, now)`, `dueAt(calendar)` (tính lại khi đang chạy), `breached(now)`. Helpdesk
+dùng cho "4 giờ làm việc, dừng khi chờ khách"; workflow giữ cơ chế `generation` của mình và có thể dùng `SlaTimer` để
+tính phần còn lại.
+
+### 3.5 Lịch quốc gia và phương án
+
+Dữ liệu đọc qua `NationalHolidaySource.days(code, from, toExclusive)`, trả `NationalDay`:
+
+```java
+public record NationalDay(LocalDate date, NationalDayKind kind,   // HOLIDAY, COMPENSATORY_DAY_OFF, SWAPPED_DAY_OFF,
+                                                                   // MAKEUP_WORKING_DAY, OPTIONAL_DAY_OFF
+                          @Nullable String holidayCode,            // tet-am-lich, quoc-khanh, van-hoa-vn…
+                          @Nullable LocalDate swappedWith,         // MAKEUP 22/8 ↔ SWAPPED 31/8
+                          @Nullable String optionGroup,            // "2026-quoc-khanh-lien-ke"
+                          @Nullable String option,                 // "truoc" | "sau"
+                          boolean optionDefault,                   // phương án dùng khi tenant chưa chọn
+                          LocalizedText name, List<LegalRef> legalRefs, Status status) {} // OFFICIAL | PROVISIONAL
+```
+
+- `OPTIONAL_DAY_OFF` chỉ có hiệu lực khi phương án của nó được chọn (hoặc là mặc định và tenant chưa chọn). Ví dụ
+  Quốc khánh 2026 ở `VN`: 2/9 `HOLIDAY`; 1/9 `OPTIONAL_DAY_OFF` (`truoc`); 3/9 `OPTIONAL_DAY_OFF` (`sau`). Mặc định:
+  phương án trùng khu vực công (1/9), theo khuyến khích của Bộ Nội vụ.
+- Tết 2027 ở `VN`: các ngày Tết chắc chắn (mùng 1–2, vì cả ba phương án đều có) là `HOLIDAY`; các ngày còn lại thuộc
+  nhóm `2027-tet` với ba phương án `1+4`, `2+3`, `3+2`; nghỉ bù khi trùng cuối tuần nằm trong từng phương án.
+- **Đề nghị master-data** (mục 10.3, Q1): bổ sung `kind = OPTIONAL_DAY_OFF` và ba thuộc tính `optionGroup`, `option`,
+  `optionDefault`, `swappedWith` vào item `holiday-day:*`. Định dạng pack giữ `format: 1` vì chỉ thêm thuộc tính.
+- Tenant chọn phương án trong admin (`PUT /admin/calendars/{key}/national-options/{group}`), ghi audit. Admin hiện
+  banner khi còn nhóm chưa chọn và ngày đầu tiên của nhóm cách hôm nay ≤ 45 ngày (luật yêu cầu báo người lao động trước
+  30 ngày cho Tết 2027).
+
+**Năm chưa công bố.** `NationalHolidayRegistry.status(code, year)` = `OFFICIAL` | `PROVISIONAL` (có nháp/dự đoán) |
+`MISSING`. Khi `MISSING`/`PROVISIONAL`, `HolidayRuleEngine` dự đoán theo quy tắc: 1/1, 30/4, 1/5, 2/9 + 1 ngày liền kề
+(mặc định 1/9 hoặc 3/9 theo luật hoán đổi năm trước, xem 10.2), 24/11 (từ 2026), Giỗ Tổ (10/3 âm lịch), Tết (29 hoặc 30
+tháng Chạp → mùng 4, hoặc theo mẫu năm trước), nghỉ bù khi trùng cuối tuần. Mọi kết quả tính có dùng năm dự đoán mang
+`provisional = true`. Lời gọi chọn:
+
+- `UnknownYearPolicy.PREDICT` (mặc định): dùng dự đoán (đúng cho hiển thị, booking, nhắc việc);
+- `UnknownYearPolicy.CONSERVATIVE`: chỉ trừ cuối tuần và ngày lễ dương lịch cố định → hạn sớm hơn hoặc bằng thực tế.
+  privacy-dsr dùng chế độ này cho hạn luật.
+
+### 3.6 Luồng chính: tính hạn (embedded)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as privacy-dsr (CalendarWorkingDays)
+  participant BC as BusinessCalendars
+  participant R as CalendarResolver
+  participant C as CompiledCalendarCache
+  participant CP as CalendarCompiler
+  participant N as NationalHolidayRegistry
+  participant S as NationalHolidaySource (master-data hoặc pack)
+  P->>BC: forSubject(tenant default) 
+  BC->>R: resolve(SubjectRef.tenant())
+  R-->>BC: key = "default"
+  P->>BC: calendar.addBusinessDays(receivedAt, 2, LEGAL, CONSERVATIVE)
+  BC->>C: get(tenant, default, rev 12, VN@2026.10.09, 2026)
+  alt cache miss
+    C->>CP: compile(definition, 2026)
+    CP->>N: days(VN, 2026)
+    N->>S: days(VN, 2026-01-01, 2027-01-01)
+    S-->>N: NationalDay[] (OFFICIAL)
+    CP-->>C: CompiledCalendar
+  end
+  C-->>BC: CompiledCalendar
+  BC-->>P: Deadline{at: 2026-11-25T17:00Z, version: default@r12+VN@2026.10.09, provisional: false}
+```
+
+### 3.7 Luồng: công bố dữ liệu quốc gia mới (K13)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant OP as Người vận hành
+  participant MD as master-data (hoặc admin calendar khi không có master-data)
+  participant L as NationalDataListener (calendar)
+  participant C as CompiledCalendarCache
+  participant DB as cal_* (revision)
+  participant APP as workflow / privacy / collaboration
+  OP->>MD: Sinh nháp năm 2027 (HolidayDraftGenerator của calendar)
+  MD-->>OP: Nháp theo âm lịch UTC+7 (PROVISIONAL)
+  OP->>MD: Sửa theo TB 11483/TB-BNV, gắn nguồn, công bố
+  MD-->>L: MasterDataPublished{list: holiday-day:VN-GOV, effectiveDates[]}
+  L->>C: invalidate(national = VN-GOV, years 2027)
+  L->>DB: tìm lịch tenant dùng VN-GOV (mọi tenant, theo trang)
+  loop từng lịch bị ảnh hưởng (task 'calendar/national-changed', theo tenant)
+    L-->>APP: BusinessCalendarChanged{tenant, key, cause: NATIONAL_DATA, affectedFrom: 2027-02-04, affectedTo: 2027-02-11}
+  end
+  Note over APP: Module tự quyết: privacy giữ hạn đã lưu (chỉ báo admin);<br/>workflow tính lại việc ACTIVE có due_at trong khoảng (generation+1)
+```
+
+Phát event theo tenant đi qua `DurableTaskQueue` (queue `calendar`, kind `national-changed`, idempotency
+`<code>:<datasetVersion>:<tenant>`), nên 10.000 tenant không phát trong một transaction.
+
+### 3.8 Luồng: nhắc việc (K8)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant CO as collaboration
+  participant RM as Reminders
+  participant DB as cal_reminder
+  participant Q as DurableTaskQueue
+  participant H as ReminderFireHandler
+  participant CH as ReminderChannel (notification)
+  participant EV as Modulith events
+  CO->>RM: schedule(subject=collab:todo/77, anchor=dueAt, offset=-4bh, calendar=forSubject(assignee), channel=notification:todo.due-soon, idempotencyKey=todo77:due-soon)
+  RM->>RM: fireAt = calendar.addBusinessDuration(dueAt, -4h)
+  RM->>DB: insert (status SCHEDULED, generation 1)
+  RM->>Q: enqueue(queue=calendar, kind=reminder.fire, runAt=fireAt, key=<id>:1:0) (cùng transaction)
+  Q->>H: run (đúng giờ, một replica)
+  H->>DB: đọc reminder; khác generation/đã huỷ → bỏ qua
+  H->>CH: deliver(reminder) (idempotency theo id + occurrence)
+  H->>EV: ReminderDue{subject, reminderId, occurrence, fireAt}
+  H->>DB: lặp RRULE → occurrence+1, fireAt mới, enqueue tiếp; không lặp → FIRED
+  alt kênh lỗi
+    H-->>Q: ném lỗi → retry backoff (max 8) → DEAD
+    Q-->>DB: (listener) status FAILED, phát ReminderFailed
+  end
+```
+
+Lịch đổi (`BusinessCalendarChanged`) → `ReminderRecalculator` tính lại `fireAt` của nhắc `SCHEDULED` có offset theo giờ
+làm việc trong khoảng bị ảnh hưởng: tăng `generation`, enqueue việc mới; việc cũ tự bỏ qua ở bước kiểm generation (cách
+workflow mục 3.7.5 đã làm).
+
+### 3.9 Luồng: tick theo lịch tenant (K9)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant J as @ClusterScheduled(cron "0 * * * * *", perTenant) TickPublisher
+  participant W as cal_tick_watermark
+  participant CC as CompiledCalendar
+  participant Q as DurableTaskQueue
+  participant H as TickHandler
+  participant EV as Modulith events (+Kafka)
+  J->>W: đọc watermark (tenant, calendar, stream)
+  J->>CC: các mốc trong (watermark, now]: đầu/cuối ngày làm việc, đầu tuần/tháng/quý/năm làm việc, ScheduleSpec đã đăng ký
+  loop mỗi mốc (tối đa catch-up 7 ngày; quá thì bỏ và phát TickGapDetected)
+    J->>Q: enqueue(kind=tick, key=<cal>:<stream>:<instant>)
+  end
+  J->>W: watermark = now
+  Q->>H: run
+  H->>EV: BusinessDayStarted / BusinessPeriodStarted / ScheduleFired{specId}
+```
+
+- Chỉ tenant **có người đăng ký** stream mới được quét (`cal_tick_subscription`, do `CalendarSchedules.register` hoặc
+  `@BusinessDayListener` khai báo lúc khởi động), để 10.000 tenant không sinh 10.000 lần đọc mỗi phút vô ích.
+- Mốc tính bằng `CompiledCalendar` nên "ngày làm việc đầu tiên của tháng" tự đúng với Tết, làm bù.
+- Nghe event: `@ApplicationModuleListener void on(BusinessDayStarted e)` (Modulith, chạy sau commit, có
+  `event_publication`); tick ra Kafka khi `vyforge.calendar.events.externalize=true`.
+
+### 3.10 Sổ lịch, lặp, iCalendar
+
+- `CalendarEvent` theo mô hình Google: `allDay` (`startDate`/`endDate` dạng ngày, end loại trừ) hoặc `startAt`/`endAt` +
+  `timeZone` IANA; chuỗi lặp lưu ở bản ghi gốc (`rrule`, `rdates`, `exdates`); ngoại lệ một lần là bản ghi con
+  (`seriesId`, `originalStart`), xoá một lần = thêm `exdate` hoặc ngoại lệ `status = CANCELLED`.
+- Sửa "lần này và các lần sau": tách chuỗi (đặt `UNTIL` cho chuỗi cũ, tạo chuỗi mới cùng `icalUid` gốc + hậu tố), như
+  Google.
+- Mở rộng lần lặp: `RecurrenceExpander` (ical4j `Recur`) trong khoảng truy vấn, giới hạn 2.000 lần mỗi chuỗi mỗi truy vấn
+  và khoảng truy vấn ≤ 366 ngày. RRULE có thêm tham số mở rộng của Vyforge **`X-VY-BUSINESS=<calendarKey>;
+  X-VY-ADJUST=NEXT|PREV|SKIP`** (lưu riêng cột, không trong chuỗi RRULE chuẩn) để lặp "theo ngày làm việc": mỗi lần rơi
+  vào ngày nghỉ thì dời hoặc bỏ. Khi xuất ICS, chuỗi có điều chỉnh được xuất thành `RDATE` đã tính sẵn cho 2 năm tới.
+- Lặp theo âm lịch (giỗ, rằm): `lunarRule {month?, day, leapPolicy: SKIP|USE_REGULAR}` — không có trong RFC 5545, xuất
+  ICS thành `RDATE` 10 năm.
+- `FeedAggregator.events(range, viewer, sources[])` gọi song song sổ lịch và các `CalendarFeedContributor` (timeout 2 s
+  mỗi nguồn, nguồn lỗi trả cờ `partial`), mỗi contributor tự kiểm quyền người xem.
+- **Xuất ICS:** `GET /agendas/{key}.ics`, `GET /calendars/{key}/holidays.ics?years=` (ngày nghỉ của lịch làm việc).
+  **Đăng ký (webcal):** `GET /feeds/{token}.ics` — token 32 byte ngẫu nhiên, lưu SHA-256, gắn người tạo và phạm vi
+  (agenda nào, `BUSY_ONLY` hay đầy đủ), thu hồi được, hết hạn tuỳ chọn; rate limit 60/phút/token.
+- **Nhập ICS:** upload (≤ 5 MB, ≤ 5.000 VEVENT) → xem trước → ghi vào agenda; khoá trùng là `icalUid` + `recurrence-id`
+  (nhập lại cập nhật, không nhân bản). Nhập file ngày nghỉ (VEVENT cả ngày) vào ngoại lệ `CLOSED` của lịch làm việc.
+
+### 3.11 Luồng lỗi
+
+| Lỗi | Hành vi |
+|---|---|
+| Lịch `key` không tồn tại | `CalendarNotFoundException` (`calendar.not_found`, 404). `forSubject` luôn rơi về lịch mặc định của tenant; tenant chưa có lịch nào → tự tạo `default` (T2–T6 08:00–12:00, 13:00–17:00, `VN`, `Asia/Ho_Chi_Minh`) lúc đọc đầu tiên, ghi audit `system` |
+| Nguồn quốc gia lỗi (master-data `remote` không gọi được) | Dùng snapshot cuối của adapter; không có snapshot → pack đóng sẵn; metric `vyforge.calendar.national.fallback` + health `DEGRADED` |
+| Năm chưa công bố | Dự đoán + `provisional` (3.5); health báo `WARN` sau `vyforge.calendar.national.expect-next-year-by` (mặc định 15/11) |
+| Vượt horizon / lịch rỗng | `calendar.horizon_exceeded` (422) |
+| RRULE sai, vượt giới hạn mở rộng | `calendar.recurrence_invalid` (400), `calendar.recurrence_too_many` (422) |
+| Âm lịch ngoài 1900–2199 | `calendar.lunar_out_of_range` (400) |
+| Kênh nhắc lỗi | Retry backoff (`DurableTaskQueue`), hết lượt → `FAILED` + `ReminderFailed`; admin retry/cancel |
+| App tắt khi tới mốc tick | Watermark bù tối đa 7 ngày; dài hơn → `TickGapDetected{from, to}` cho admin |
+| Contributor lịch lỗi/chậm | Bỏ nguồn đó, `partial: true`, metric |
+| Chế độ `remote`, server không gọi được | Tính bằng snapshot đã tải (có hạn `stale-after` 24 h); quá hạn → vẫn tính, gắn `stale: true`, health `DEGRADED`; ghi (admin, nhắc) trả `503 calendar.dependency_unavailable` |
+
+---
+
+## 4. Mô hình dữ liệu
+
+### 4.1 ERD
+
+```mermaid
+erDiagram
+  cal_calendar ||--o{ cal_work_pattern : "mẫu tuần theo hiệu lực"
+  cal_calendar ||--o{ cal_exception : "ngoại lệ"
+  cal_calendar ||--o{ cal_national_option : "phương án đã chọn"
+  cal_calendar ||--o{ cal_calendar : "parent_key"
+  cal_calendar ||--o{ cal_assignment : "gán cho đối tượng"
+  cal_calendar ||--o{ cal_revision : "lịch sử thay đổi"
+  cal_reminder }o--|| cal_calendar : "calendar_key (offset bh/bd)"
+  cal_agenda ||--o{ cal_event : "sự kiện"
+  cal_event ||--o{ cal_event : "ngoại lệ của chuỗi (series_id)"
+  cal_agenda ||--o{ cal_feed_token : "phạm vi"
+  cal_tick_subscription ||--|| cal_tick_watermark : "mốc đã phát"
+  cal_holiday_pack }o..o{ cal_calendar : "national_code (khi không có master-data)"
+
+  cal_calendar {
+    uuid id PK
+    varchar tenant_id
+    varchar key
+    jsonb name
+    varchar time_zone
+    varchar parent_key
+    varchar national_code
+    varchar status
+    bigint revision
+  }
+  cal_work_pattern {
+    uuid id PK
+    uuid calendar_id FK
+    date valid_from
+    smallint cycle_weeks
+    date anchor_date
+    jsonb days
+  }
+  cal_exception {
+    uuid id PK
+    uuid calendar_id FK
+    varchar kind
+    date date_from
+    date date_to
+    jsonb intervals
+    varchar rrule
+    jsonb lunar_rule
+  }
+  cal_reminder {
+    uuid id PK
+    varchar tenant_id
+    varchar subject_vrn
+    timestamptz fire_at
+    varchar status
+    int generation
+  }
+  cal_event {
+    uuid id PK
+    uuid agenda_id FK
+    varchar ical_uid
+    timestamptz start_at
+    timestamptz end_at
+    varchar rrule
+    uuid series_id
+  }
+```
+
+### 4.2 DDL dự kiến
+
+Flyway riêng (quy ước 5.3): `classpath:META-INF/vyforge/db/calendar`, bảng lịch sử `flyway_schema_history_calendar`,
+file gộp cho DBA `META-INF/vyforge/sql/calendar.sql`. Mọi bảng có dữ liệu tenant dùng `TenantEntity` (`tenant_id` +
+`@TenantId`). Enum nghiệp vụ là `varchar` kiểm ở code (quy ước 2).
+
+```sql
+-- V1__calendar_core.sql
+create table cal_calendar (
+    id                 uuid         primary key,
+    tenant_id          varchar(64)  not null,
+    key                varchar(64)  not null,                    -- [a-z0-9][a-z0-9-]{0,63}
+    name               jsonb        not null,                    -- LocalizedText {"vi","en"}
+    description        jsonb,
+    time_zone          varchar(64)  not null default 'Asia/Ho_Chi_Minh',
+    parent_key         varchar(64),                              -- kế thừa; sâu tối đa 3, kiểm vòng ở code
+    national_code      varchar(32),                              -- 'VN' | 'VN-GOV' | 'SG' | null (không theo lịch quốc gia)
+    is_default         boolean      not null default false,
+    unknown_year_policy varchar(16) not null default 'PREDICT',  -- PREDICT | CONSERVATIVE (mặc định của lịch; lời gọi đè được)
+    status             varchar(16)  not null default 'ACTIVE',   -- ACTIVE | ARCHIVED
+    revision           bigint       not null default 1,          -- tăng mỗi thay đổi ảnh hưởng tính toán
+    color              varchar(16),
+    attributes         jsonb        not null default '{}',
+    schema_version     int          not null default 1,
+    created_at         timestamptz  not null default now(),
+    created_by         varchar(100),
+    updated_at         timestamptz  not null default now(),
+    updated_by         varchar(100),
+    version            bigint       not null default 0,          -- optimistic lock
+    constraint uq_cal_calendar_key unique (tenant_id, key)
+);
+create unique index uq_cal_calendar_default on cal_calendar (tenant_id) where is_default;
+
+create table cal_work_pattern (
+    id             uuid        primary key,
+    tenant_id      varchar(64) not null,
+    calendar_id    uuid        not null references cal_calendar(id) on delete cascade,
+    valid_from     date        not null,                         -- mẫu có hiệu lực từ ngày này tới mẫu kế tiếp
+    cycle_weeks    smallint    not null default 1 check (cycle_weeks between 1 and 4),
+    anchor_date    date        not null,                         -- thứ Hai của tuần 0 trong chu kỳ
+    days           jsonb       not null,                         -- xem 4.3
+    schema_version int         not null default 1,
+    created_at     timestamptz not null default now(),
+    created_by     varchar(100),
+    constraint uq_cal_pattern unique (calendar_id, valid_from)
+);
+
+create table cal_exception (
+    id           uuid         primary key,
+    tenant_id    varchar(64)  not null,
+    calendar_id  uuid         not null references cal_calendar(id) on delete cascade,
+    kind         varchar(16)  not null,                          -- CLOSED | OPEN | HOURS
+    date_from    date,                                           -- một ngày hoặc khoảng (cả hai đầu tính)
+    date_to      date,
+    rrule        varchar(500),                                   -- lặp dương lịch (FREQ=YEARLY;BYMONTH=8;BYMONTHDAY=15)
+    lunar_rule   jsonb,                                          -- lặp âm lịch {"month":1,"days":[1,2,3],"leap":"SKIP"}
+    valid_from   date,                                           -- giới hạn cho ngoại lệ lặp
+    valid_to     date,
+    intervals    jsonb,                                          -- [["08:00","12:00"]] cho OPEN/HOURS
+    name         jsonb        not null,
+    reason       text,
+    source       varchar(16)  not null default 'MANUAL',         -- MANUAL | IMPORT_ICS | API
+    legal_refs   jsonb        not null default '[]',
+    attributes   jsonb        not null default '{}',
+    created_at   timestamptz  not null default now(),
+    created_by   varchar(100),
+    constraint ck_cal_exception_shape check (
+        (date_from is not null and date_to is not null and date_to >= date_from and rrule is null and lunar_rule is null)
+     or (rrule is not null and lunar_rule is null)
+     or (lunar_rule is not null and rrule is null))
+);
+create index ix_cal_exception_range on cal_exception (calendar_id, date_from, date_to);
+
+create table cal_national_option (
+    tenant_id    varchar(64)  not null,
+    calendar_id  uuid         not null references cal_calendar(id) on delete cascade,
+    option_group varchar(64)  not null,                          -- '2026-quoc-khanh-lien-ke'
+    option       varchar(32)  not null,                          -- 'sau'
+    chosen_at    timestamptz  not null default now(),
+    chosen_by    varchar(100),
+    note         text,
+    primary key (calendar_id, option_group)
+);
+
+create table cal_assignment (
+    id            uuid        primary key,
+    tenant_id     varchar(64) not null,
+    subject_type  varchar(32) not null,                           -- USER | ORG_UNIT | RESOURCE | <app-defined>
+    subject_id    varchar(128) not null,
+    calendar_key  varchar(64) not null,
+    valid_from    date        not null,
+    valid_to      date,                                           -- loại trừ
+    created_at    timestamptz not null default now(),
+    created_by    varchar(100),
+    constraint uq_cal_assignment unique (tenant_id, subject_type, subject_id, valid_from)
+);
+create index ix_cal_assignment_subject on cal_assignment (tenant_id, subject_type, subject_id);
+
+create table cal_revision (                                       -- lịch sử thay đổi để giải thích "vì sao hạn đổi"
+    tenant_id     varchar(64) not null,
+    calendar_id   uuid        not null references cal_calendar(id) on delete cascade,
+    revision      bigint      not null,
+    cause         varchar(32) not null,                           -- PATTERN | EXCEPTION | OPTION | PARENT | SETTINGS
+    affected_from date,
+    affected_to   date,
+    summary       jsonb       not null,                           -- diff tóm tắt
+    changed_at    timestamptz not null default now(),
+    changed_by    varchar(100),
+    primary key (calendar_id, revision)
+);
+
+-- Dữ liệu quốc gia khi KHÔNG có master-data (dữ liệu dùng chung: tenant_id = '_platform', không TenantEntity)
+create table cal_holiday_pack (
+    id               uuid         primary key,
+    code             varchar(32)  not null,                       -- 'VN', 'VN-GOV'
+    dataset_version  varchar(32)  not null,                       -- '2026.10.09'
+    format           int          not null,
+    content          jsonb        not null,                       -- pack đầy đủ (định dạng master-data 4.5)
+    sha256           varchar(64)  not null,
+    signer_kid       varchar(64)  not null,
+    status           varchar(16)  not null default 'ACTIVE',      -- ACTIVE | SUPERSEDED
+    imported_at      timestamptz  not null default now(),
+    imported_by      varchar(100),
+    constraint uq_cal_pack unique (code, dataset_version)
+);
+
+-- V2__calendar_reminder.sql
+create table cal_reminder (
+    id               uuid          primary key,
+    tenant_id        varchar(64)   not null,
+    subject_vrn      varchar(300)  not null,                      -- vrn:collaboration:todo/77
+    owner_sub        varchar(100),                                -- người nhận chính (PII: chỉ id)
+    kind             varchar(64)   not null,                      -- do module đặt: 'todo.due-soon'
+    anchor_at        timestamptz,                                 -- mốc gốc (hạn)
+    offset_spec      varchar(32),                                 -- '-4bh', 'PT-30M', null = fire_at tuyệt đối
+    calendar_key     varchar(64),                                 -- cho offset bd/bh
+    rrule            varchar(500),                                -- lặp
+    until_at         timestamptz,
+    fire_at          timestamptz   not null,                      -- lần kế tiếp
+    occurrence       int           not null default 0,
+    channel          varchar(64)   not null default 'event',      -- 'event' | 'notification:<type>' | SPI khác
+    payload          jsonb         not null default '{}',         -- dữ liệu cho kênh (không chứa PII thô; xem 8.2)
+    payload_schema_version int     not null default 1,
+    status           varchar(16)   not null default 'SCHEDULED',  -- SCHEDULED | FIRED | CANCELLED | FAILED | PAUSED
+    generation       int           not null default 1,
+    idempotency_key  varchar(200)  not null,
+    last_fired_at    timestamptz,
+    last_error       text,
+    created_at       timestamptz   not null default now(),
+    created_by       varchar(100),
+    updated_at       timestamptz   not null default now(),
+    version          bigint        not null default 0,
+    constraint uq_cal_reminder_idem unique (tenant_id, idempotency_key)
+);
+create index ix_cal_reminder_subject on cal_reminder (tenant_id, subject_vrn);
+create index ix_cal_reminder_due on cal_reminder (tenant_id, calendar_key, fire_at) where status = 'SCHEDULED';
+create index ix_cal_reminder_purge on cal_reminder (updated_at) where status in ('FIRED','CANCELLED','FAILED');
+
+-- V3__calendar_tick.sql
+create table cal_tick_subscription (
+    id            uuid         primary key,
+    tenant_id     varchar(64)  not null,
+    calendar_key  varchar(64)  not null,
+    stream        varchar(64)  not null,                          -- BUSINESS_DAY | BUSINESS_PERIOD | SCHEDULE:<specId>
+    spec          jsonb,                                          -- ScheduleSpec khi stream = SCHEDULE
+    owner         varchar(64)  not null,                          -- module/app đăng ký
+    enabled       boolean      not null default true,
+    created_at    timestamptz  not null default now(),
+    constraint uq_cal_tick_sub unique (tenant_id, calendar_key, stream, owner)
+);
+create table cal_tick_watermark (
+    subscription_id uuid        primary key references cal_tick_subscription(id) on delete cascade,
+    tenant_id       varchar(64) not null,
+    last_tick_at    timestamptz not null,
+    updated_at      timestamptz not null default now()
+);
+
+-- V4__calendar_agenda.sql
+create table cal_agenda (
+    id            uuid         primary key,
+    tenant_id     varchar(64)  not null,
+    key           varchar(64)  not null,
+    name          jsonb        not null,
+    owner_type    varchar(16)  not null,                          -- USER | ORG_UNIT | RESOURCE | TENANT
+    owner_id      varchar(128),
+    visibility    varchar(16)  not null default 'INTERNAL',       -- PRIVATE | INTERNAL | PUBLIC
+    default_tz    varchar(64)  not null default 'Asia/Ho_Chi_Minh',
+    color         varchar(16),
+    business_calendar_key varchar(64),                            -- tô giờ làm việc, kiểm sự kiện ngoài giờ
+    attributes    jsonb        not null default '{}',
+    schema_version int         not null default 1,
+    created_at    timestamptz  not null default now(),
+    created_by    varchar(100),
+    version       bigint       not null default 0,
+    constraint uq_cal_agenda_key unique (tenant_id, key)
+);
+
+create table cal_event (
+    id              uuid          primary key,
+    tenant_id       varchar(64)   not null,
+    agenda_id       uuid          not null references cal_agenda(id) on delete cascade,
+    ical_uid        varchar(255)  not null,
+    sequence        int           not null default 0,
+    series_id       uuid          references cal_event(id) on delete cascade,  -- ngoại lệ của một chuỗi
+    original_start  timestamptz,                                  -- RECURRENCE-ID
+    all_day         boolean       not null default false,
+    start_at        timestamptz,                                  -- sự kiện có giờ
+    end_at          timestamptz,
+    start_date      date,                                         -- sự kiện cả ngày (end loại trừ)
+    end_date        date,
+    time_zone       varchar(64)   not null,
+    rrule           varchar(500),
+    rdates          jsonb,
+    exdates         jsonb,
+    business_adjust jsonb,                                        -- {"calendar":"default","adjust":"NEXT"} (3.10)
+    lunar_rule      jsonb,
+    range_start     timestamptz   not null,                       -- lần đầu
+    range_end       timestamptz,                                  -- hết lần cuối; null = vô hạn
+    title           varchar(300)  not null,
+    description     text,
+    location        varchar(300),
+    status          varchar(16)   not null default 'CONFIRMED',   -- CONFIRMED | TENTATIVE | CANCELLED
+    visibility      varchar(16)   not null default 'DEFAULT',     -- DEFAULT | PUBLIC | PRIVATE | BUSY_ONLY
+    transparency    varchar(16)   not null default 'OPAQUE',      -- OPAQUE | TRANSPARENT
+    organizer_sub   varchar(100),
+    attendees       jsonb         not null default '[]',          -- [{"sub":"u-1","role":"REQ","status":"ACCEPTED"}]
+    reminders       jsonb         not null default '[]',          -- [{"offset":"-PT15M","channel":"notification:..."}]
+    source          varchar(32)   not null default 'MANUAL',      -- MANUAL | IMPORT_ICS | API
+    attributes      jsonb         not null default '{}',
+    schema_version  int           not null default 1,
+    created_at      timestamptz   not null default now(),
+    created_by      varchar(100),
+    updated_at      timestamptz   not null default now(),
+    updated_by      varchar(100),
+    version         bigint        not null default 0,
+    constraint uq_cal_event_uid unique nulls not distinct (agenda_id, ical_uid, original_start), -- PostgreSQL 15+
+    constraint ck_cal_event_time check ((all_day and start_date is not null and end_date > start_date)
+                                     or (not all_day and start_at is not null and end_at >= start_at))
+);
+create index ix_cal_event_range on cal_event (tenant_id, agenda_id, range_start, range_end);
+create index ix_cal_event_series on cal_event (series_id) where series_id is not null;
+create index ix_cal_event_attendee on cal_event using gin (attendees jsonb_path_ops);
+
+create table cal_feed_token (
+    id            uuid         primary key,
+    tenant_id     varchar(64)  not null,
+    owner_sub     varchar(100) not null,
+    token_hash    varchar(64)  not null unique,                   -- SHA-256 hex
+    scope         jsonb        not null,                          -- {"agendas":["bgd"],"mode":"BUSY_ONLY","holidays":true}
+    expires_at    timestamptz,
+    revoked_at    timestamptz,
+    last_used_at  timestamptz,
+    created_at    timestamptz  not null default now()
+);
+
+create table cal_tenant_settings (
+    tenant_id      varchar(64)  primary key,
+    settings       jsonb        not null,                          -- 6.2
+    schema_version int          not null default 1,
+    updated_at     timestamptz  not null default now(),
+    updated_by     varchar(100),
+    version        bigint       not null default 0
+);
+```
+
+RLS tuỳ chọn như các module khác (`vyforge.calendar.rls.enabled`); `cal_holiday_pack` là dữ liệu dùng chung nên nằm ngoài
+filter `@TenantId`, đọc qua repository riêng trong `internal` (cách master-data 10.1 đã làm, có ngoại lệ ArchUnit).
+
+### 4.3 Cột JSON
+
+`cal_work_pattern.days` (`schema_version: 1`):
+
+```json
+{
+  "weeks": [
+    { "MON": [["08:00","12:00"],["13:30","17:30"]], "TUE": [["08:00","12:00"],["13:30","17:30"]],
+      "WED": [["08:00","12:00"],["13:30","17:30"]], "THU": [["08:00","12:00"],["13:30","17:30"]],
+      "FRI": [["08:00","12:00"],["13:30","17:30"]], "SAT": [["08:00","12:00"]], "SUN": [] },
+    { "MON": [["08:00","12:00"],["13:30","17:30"]], "TUE": [["08:00","12:00"],["13:30","17:30"]],
+      "WED": [["08:00","12:00"],["13:30","17:30"]], "THU": [["08:00","12:00"],["13:30","17:30"]],
+      "FRI": [["08:00","12:00"],["13:30","17:30"]], "SAT": [], "SUN": [] }
+  ],
+  "dayStartsAt": "00:00"
+}
+```
+
+- `weeks.length = cycle_weeks`. Khoảng `[from, to)`; `to ≤ from` nghĩa là qua nửa đêm (ca đêm `["22:00","06:00"]`);
+  `"24:00"` hợp lệ cho `to`. Khoảng trong một ngày không được chồng (kiểm khi lưu).
+- `dayStartsAt` (bản sau) cho doanh nghiệp tính "ngày" từ 06:00.
+
+`lunar_rule`: `{"month": 1, "days": [1,2,3], "leap": "SKIP" | "USE_REGULAR", "includeLastDayOfPrevYear": true}` (đóng
+cửa từ 30 Tết tới mùng 3).
+
+### 4.4 Quy mô, retention, partition
+
+| Bảng | Ước lượng (10.000 tenant) | Retention |
+|---|---|---|
+| `cal_calendar`, `cal_work_pattern`, `cal_exception`, `cal_assignment` | ~5 lịch, ~50 ngoại lệ/năm mỗi tenant → < 1 triệu dòng | Giữ (cần để giải thích hạn cũ) |
+| `cal_revision` | ~100/tenant/năm | 5 năm (`vyforge.calendar.retention.revisions`) |
+| `cal_reminder` | Phụ thuộc collaboration/workflow: có thể 10–50 triệu/năm | `FIRED`/`CANCELLED`/`FAILED` xoá sau 90 ngày (job `@ClusterScheduled` xoá theo lô 5.000) |
+| `cal_event` | ~1.000 sự kiện/tenant/năm | Giữ; tenant offboarding xoá theo tenant |
+| `cal_tick_*` | ~số lịch × stream | — |
+
+Không partition ở bản đầu. `cal_reminder` có index một phần theo trạng thái và purge theo lô; nếu vượt 100 triệu dòng
+thì partition theo `created_at` tháng (đánh giá lại ở bản sau, giống `vyforge_task`).
+
+### 4.5 Tiến hoá schema
+
+- JSON có `schema_version`; bộ đọc hỗ trợ bản hiện tại và bản trước, nâng cấp khi ghi.
+- Kind/enum mới (vd. `NationalDayKind` mới) thêm ở code; giá trị lạ đọc từ nguồn ngoài → bỏ qua ngày đó kèm metric
+  `vyforge.calendar.national.unknown_kind` (không sập).
+- Pack đọc `format` 1 và bản trước (quy tắc của master-data 4.4).
+- `CompiledCalendar` không lưu DB, đổi cấu trúc chỉ cần đổi khoá cache (`compilerVersion` là một phần của khoá).
+
+---
+
+## 5. API
+
+### 5.1 Java
+
+```java
+package com.vyforge.platform.calendar.api;
+
+/** Điểm vào. Mọi phương thức chạy trong TenantContext hiện tại. */
+public interface BusinessCalendars {
+    BusinessCalendar get(String key);                                  // CalendarNotFoundException
+    BusinessCalendar defaultCalendar();                                // tự tạo 'default' nếu tenant chưa có
+    BusinessCalendar forSubject(SubjectRef subject, LocalDate asOf);   // user → đơn vị → mặc định (CalendarResolver)
+    default BusinessCalendar forSubject(SubjectRef subject) { return forSubject(subject, LocalDate.now(clock())); }
+    List<CalendarSummary> list();
+    Clock clock();
+}
+
+/** Một lịch đã gắn tenant + key. Bất biến về nghĩa: mọi kết quả kèm version dữ liệu đã dùng. */
+public interface BusinessCalendar {
+    String key();
+    ZoneId zone();
+    CalendarVersion version();
+
+    // Hỏi
+    boolean isWorkingDay(LocalDate date);
+    boolean isWorkingTime(Instant at);
+    DayInfo day(LocalDate date);                                       // kind, intervals, holiday name, lunar, provisional
+    List<DayInfo> days(LocalDate from, LocalDate toExclusive);         // ≤ 731 ngày
+    List<TimeRange> workingIntervals(Instant from, Instant toExclusive);
+    LocalDate nextWorkingDay(LocalDate date);                          // ngày làm việc > date
+    LocalDate previousWorkingDay(LocalDate date);
+    Instant nextWorkingTime(Instant at);                               // at nếu đang trong giờ làm
+    LocalDate adjust(LocalDate date, Adjustment adjustment);           // NONE | NEXT_WORKING_DAY | PREVIOUS_WORKING_DAY | MODIFIED_FOLLOWING
+
+    // Tính
+    Deadline addBusinessDays(Instant from, int days, DayCountRule rule, CalcOptions options);
+    default Deadline addBusinessDays(Instant from, int days) { return addBusinessDays(from, days, DayCountRule.SAME_TIME, CalcOptions.DEFAULT); }
+    LocalDate addBusinessDays(LocalDate from, int days);               // ngày thuần, không tính ngày bắt đầu
+    Deadline addBusinessDuration(Instant from, Duration workingTime, CalcOptions options);
+    Deadline add(Instant from, BusinessDuration duration, CalcOptions options);   // "2bd", "4bh", "-4bh", "P2D"
+    Deadline addCalendarDays(Instant from, int days, boolean rollForwardToWorkingDay); // BLDS Điều 148
+    Duration businessDurationBetween(Instant from, Instant to);       // âm nếu to < from
+    int businessDaysBetween(LocalDate fromExclusive, LocalDate toInclusive);
+}
+
+public record Deadline(Instant at, CalendarVersion version, boolean provisional) {}
+public record CalcOptions(UnknownYearPolicy unknownYear) {               // PREDICT | CONSERVATIVE
+    public static final CalcOptions DEFAULT = new CalcOptions(UnknownYearPolicy.PREDICT);
+    public static final CalcOptions CONSERVATIVE = new CalcOptions(UnknownYearPolicy.CONSERVATIVE);
+}
+public record CalendarVersion(String key, long revision, @Nullable String nationalCode,
+                              @Nullable String nationalDataset, @Nullable String optionsHash) {
+    public String asString();                                            // "default@r12+VN@2026.10.09"
+    public static CalendarVersion parse(String s);
+}
+public record DayInfo(LocalDate date, DayKind kind,                     // WORKING | WEEKEND | HOLIDAY | COMPENSATORY |
+                                                                         // SWAPPED_OFF | MAKEUP_WORKING | TENANT_CLOSED | TENANT_OPEN
+                      List<LocalTimeRange> intervals, @Nullable LocalizedText label, @Nullable String holidayCode,
+                      @Nullable LocalDate swappedWith, LunarDate lunar, boolean provisional, Source source) {}
+public record DayCountRule(StartRule start, EndRule endAt) {
+    public static final DayCountRule LEGAL, SAME_TIME;
+    public static DayCountRule cutoff(LocalTime cutoff);
+}
+public record BusinessDuration(long amount, Unit unit) {                // BUSINESS_DAYS | BUSINESS_HOURS | BUSINESS_MINUTES | CALENDAR (Duration/Period)
+    public static BusinessDuration parse(String text);                  // BusinessDurationFormatException
+    public String format();
+}
+
+/** SLA có tạm dừng (3.4). Thuần, caller lưu JSON. */
+public record SlaTimer(BusinessDuration budget, List<Segment> segments) {
+    public SlaTimer start(Instant at); public SlaTimer pause(Instant at); public SlaTimer resume(Instant at);
+    public Duration elapsed(BusinessCalendar cal, Instant now);
+    public Optional<Instant> dueAt(BusinessCalendar cal);               // empty khi đang dừng
+    public boolean breached(BusinessCalendar cal, Instant now);
+}
+
+/** Âm lịch Việt Nam (UTC+7). */
+public interface LunarCalendar {
+    LunarDate toLunar(LocalDate solar);
+    LocalDate toSolar(int lunarYear, int month, int day, boolean leapMonth); // LunarDateInvalidException
+    Optional<Integer> leapMonth(int lunarYear);
+    CanChi canChi(LunarDate date);                                       // năm/tháng/ngày: "Bính Ngọ", "Canh Dần"…
+    LocalDate tet(int lunarYear);                                        // mồng 1 tháng Giêng
+}
+public record LunarDate(int year, int month, int day, boolean leap) {}
+
+/** Dữ liệu quốc gia đã hợp nhất (đọc). */
+public interface NationalHolidays {
+    List<NationalDay> days(String code, LocalDate from, LocalDate toExclusive);
+    YearStatus status(String code, int year);                          // OFFICIAL | PROVISIONAL | MISSING
+    List<OptionGroup> optionGroups(String code, int year);
+    Set<String> codes();
+}
+
+/** Nhắc việc. */
+public interface Reminders {
+    ReminderRef schedule(ReminderRequest request);                      // trong transaction của caller; idempotent theo key
+    void reschedule(String idempotencyKey, Instant newAnchor);          // vd. hạn đổi
+    void cancel(String idempotencyKey);
+    int cancelBySubject(String subjectVrn);
+    Optional<ReminderView> find(String idempotencyKey);
+}
+public record ReminderRequest(String subjectVrn, String kind, String idempotencyKey,
+                              @Nullable Instant at,                     // hoặc anchor + offset
+                              @Nullable Instant anchor, @Nullable BusinessDuration offset,
+                              @Nullable String calendarKey,             // null = forSubject(owner) hoặc mặc định
+                              @Nullable String rrule, @Nullable Instant until,
+                              @Nullable String ownerSub, String channel, Map<String, Object> payload) {}
+
+/** Lịch chạy theo ngày làm việc cho automation, export, báo cáo. */
+public interface CalendarSchedules {
+    ScheduleRef register(String owner, String calendarKey, ScheduleSpec spec);   // idempotent theo (owner, spec.id)
+    void unregister(String owner, String specId);
+    List<Instant> preview(String calendarKey, ScheduleSpec spec, Instant from, int count);
+}
+public sealed interface ScheduleSpec {
+    String id();
+    record Rrule(String id, String rrule, LocalTime at, Adjustment adjust) implements ScheduleSpec {}
+    record NthBusinessDay(String id, int n, Period period, LocalTime at) implements ScheduleSpec {} // n=1 đầu, -1 cuối; MONTH|QUARTER|YEAR|WEEK
+    record EveryBusinessDay(String id, LocalTime at) implements ScheduleSpec {}
+}
+
+/** Sổ lịch. */
+public interface Agendas {
+    AgendaView create(AgendaCreate cmd);
+    EventView createEvent(String agendaKey, EventInput input);
+    EventView updateEvent(UUID eventId, EventInput input, EditScope scope, long expectedVersion);  // THIS | THIS_AND_FOLLOWING | ALL
+    void deleteEvent(UUID eventId, EditScope scope, @Nullable Instant occurrence);
+    List<Occurrence> occurrences(OccurrenceQuery query);                // đã mở rộng, đã lọc quyền, gồm contributor
+    ImportPreview previewIcs(String agendaKey, InputStream ics);
+    ImportResult importIcs(String agendaKey, UUID previewId);
+    void exportIcs(IcsExportRequest request, OutputStream out);
+}
+
+/** Quản trị (admin REST dùng lại). */
+public interface CalendarAdmin {
+    CalendarDetail create(CalendarCreate cmd);
+    CalendarDetail update(String key, CalendarUpdate cmd, long expectedVersion);
+    void archive(String key);
+    CalendarDetail putPattern(String key, WorkPatternInput pattern);     // validFrom ≥ hôm nay trừ khi có quyền sửa quá khứ
+    ExceptionView addException(String key, ExceptionInput input);
+    void removeException(String key, UUID exceptionId);
+    void chooseOption(String key, String optionGroup, String option, @Nullable String note);
+    void assign(String key, SubjectRef subject, LocalDate validFrom, @Nullable LocalDate validTo);
+    ImpactReport previewImpact(String key, CalendarChange change);       // "đổi này dời bao nhiêu hạn đang mở" (6.1 ImpactProbe)
+}
+```
+
+`SubjectRef` = `(type, id)`: `user/<sub>`, `org-unit/<id>`, `resource/<id>`, `tenant`.
+
+### 5.2 REST (OpenAPI phác thảo)
+
+Route gateway `/api/v1/calendar/**` (platform-services 5.1, `strip-prefix: false`).
+
+```yaml
+# Công khai cho frontend (BFF, token người dùng)
+GET  /calendars                                   # danh sách lịch tenant (key, tên, zone)            calendar:calendar:List
+GET  /calendars/{key}/days?from&to                # DayInfo[] (≤ 731 ngày) — date picker, lịch tháng      calendar:calendar:Get
+GET  /calendars/{key}/business-hours?from&to      # khoảng làm việc (cho FullCalendar businessHours)     calendar:calendar:Get
+POST /calendars/{key}:compute                     # {op: addBusinessDays|add|between|adjust|isWorkingTime, args…}
+                                                  #  → {result, version, provisional}                     calendar:calendar:Get
+GET  /calendars/{key}/holidays.ics?years=2026,2027                                                         calendar:calendar:Get
+GET  /national/{code}/days?year=2027              # ngày quốc gia + trạng thái + nguồn văn bản           (đăng nhập)
+GET  /lunar/convert?date=2026-11-24 | ?lunar=2027-01-01&leap=false                                        (đăng nhập)
+POST /recurrence:preview                          # {rrule, start, tz, businessAdjust?, lunarRule?, count≤50} → instants + mô tả vi/en
+GET  /agendas                                     # agenda người xem được                                calendar:agenda:List
+GET  /occurrences?agendas=a,b&sources=todo,workflow&from&to   # FullCalendar eventSources                calendar:event:Read
+POST /agendas/{key}/events                        # EventInput                                           calendar:event:Create
+PATCH /events/{id}?scope=THIS|THIS_AND_FOLLOWING|ALL&occurrence=   (If-Match: version)                   calendar:event:Update
+DELETE /events/{id}?scope&occurrence                                                                      calendar:event:Delete
+POST /agendas/{key}/imports  (multipart .ics)  → preview;  POST /agendas/{key}/imports/{id}:commit         calendar:event:Create
+GET  /agendas/{key}.ics                                                                                   calendar:event:Read
+POST /feeds                                       # tạo link đăng ký → {url (hiện 1 lần), id}            calendar:feed:Create
+DELETE /feeds/{id}                                                                                        calendar:feed:Revoke
+GET  /feeds/{token}.ics                           # public-paths; rate limit 60/phút/token; ETag
+
+# Quản trị (admin MFE, trang /admin của app)
+GET  /admin/info                                  # {module: calendar, version, apiVersion: 1, capabilities, mode}
+GET|POST /admin/calendars;  GET|PATCH|DELETE /admin/calendars/{key}
+PUT  /admin/calendars/{key}/patterns/{validFrom}; DELETE …                                               calendar:calendar:Update
+GET|POST /admin/calendars/{key}/exceptions; DELETE /admin/calendars/{key}/exceptions/{id}                 calendar:exception:Edit
+POST /admin/calendars/{key}/exceptions:import     # .ics/.csv ngày nghỉ                                  calendar:exception:Edit
+GET  /admin/calendars/{key}/national-options?year;  PUT /admin/calendars/{key}/national-options/{group}   calendar:option:Choose
+POST /admin/calendars/{key}:impact                # xem trước ảnh hưởng của một thay đổi                calendar:calendar:Update
+GET  /admin/calendars/{key}/revisions                                                                     calendar:calendar:Get
+GET|POST|DELETE /admin/assignments                                                                        calendar:assignment:Edit
+GET  /admin/reminders?status&subject&kind;  POST /admin/reminders/{id}:retry|:cancel                      calendar:reminder:*
+GET  /admin/schedules                             # đăng ký tick/ScheduleSpec, watermark, lỗi            calendar:schedule:List
+GET|PUT /admin/settings                                                                                   calendar:settings:*
+# Người vận hành (tenant vận hành, MFA)
+GET  /admin/national                              # mã lịch, năm, trạng thái, nguồn (pack/master-data)   calendar:national:Read
+POST /admin/national/packs                        # nhập pack (chỉ khi không có master-data)            calendar:national:Import
+POST /admin/national/{code}/drafts/{year}         # sinh nháp theo âm lịch (chỉ khi không có master-data) calendar:national:Import
+
+# Nội bộ (mode=remote; gateway chặn)
+GET  /internal/snapshots/calendars?keys&years     # định nghĩa đã hợp nhất + ngày quốc gia (ETag)
+GET  /internal/snapshots/national/{code}?years
+POST /internal/reminders, DELETE /internal/reminders/{key}   # Reminders ở remote (Idempotency-Key bắt buộc)
+PUT  /internal/schedules/{owner}                  # đăng ký ScheduleSpec của app
+```
+
+Lỗi (Problem Details, `platform-errors*.properties` vi/en): `calendar.not_found`, `calendar.key_conflict`,
+`calendar.parent_cycle`, `calendar.pattern_overlap`, `calendar.pattern_invalid_time`, `calendar.past_change_forbidden`,
+`calendar.option_unknown`, `calendar.horizon_exceeded`, `calendar.range_too_large`, `calendar.recurrence_invalid`,
+`calendar.recurrence_too_many`, `calendar.lunar_out_of_range`, `calendar.lunar_invalid`, `calendar.ics_invalid`,
+`calendar.ics_too_large`, `calendar.pack.signature_invalid`, `calendar.pack.managed_by_master_data`,
+`calendar.feed.revoked`, `calendar.event.version_conflict`, `calendar.dependency_unavailable`.
+
+### 5.3 Event công khai
+
+Mọi event là `TenantAwareEvent`, `schemaVersion: 1`; ra Kafka (`@Externalized("vyforge.calendar::#{tenantId()}")`)
+khi `vyforge.calendar.events.externalize=true`.
+
+| Event | Khi | Payload |
+|---|---|---|
+| `BusinessCalendarChanged` | Lịch đổi (mẫu, ngoại lệ, phương án, lịch cha, dữ liệu quốc gia) | `key`, `revision`, `previousRevision`, `cause` (`PATTERN`, `EXCEPTION`, `OPTION`, `PARENT`, `NATIONAL_DATA`), `affectedFrom`, `affectedTo`, `version` |
+| `NationalOptionPending` | Còn nhóm phương án chưa chọn và ngày đầu ≤ 45 ngày | `key`, `optionGroup`, `firstDate`, `options[]`, `default` |
+| `ReminderDue` | Tới giờ nhắc | `reminderId`, `subjectVrn`, `kind`, `occurrence`, `fireAt`, `ownerSub`, `payload` |
+| `ReminderFailed` | Kênh lỗi hết lượt | `reminderId`, `subjectVrn`, `kind`, `lastError` (đã che) |
+| `BusinessDayStarted` / `BusinessDayEnded` | Đầu khoảng làm việc đầu tiên / cuối khoảng cuối của ngày làm việc | `key`, `date`, `at` |
+| `BusinessPeriodStarted` | Ngày làm việc đầu tiên của tuần/tháng/quý/năm | `key`, `period`, `date` |
+| `ScheduleFired` | Mốc của `ScheduleSpec` đã đăng ký | `owner`, `specId`, `key`, `scheduledAt`, `firedAt` |
+| `TickGapDetected` | App tắt quá hạn bù | `key`, `stream`, `from`, `to` |
+| `CalendarEventChanged` | Sự kiện sổ lịch tạo/sửa/huỷ | `agendaKey`, `eventId`, `icalUid`, `change` (`CREATED`, `UPDATED`, `CANCELLED`), `attendeeSubs[]` (để notification gửi lời mời), `start` |
+| `NationalDataStale` | Sau ngày `expect-next-year-by` mà năm sau chưa `OFFICIAL` | `code`, `year`, `status` |
+
+Xoá cache giữa replica/app: Valkey `vyforge:calendar:changed` `{tenant, key, revision}` và
+`vyforge:calendar:national-changed` `{code, datasetVersion}` (giống features, master-data).
+
+### 5.4 Package frontend `@vyforge/calendar` (platform-web)
+
+| Entry | Nội dung |
+|---|---|
+| `@vyforge/calendar/server` | `createCalendarClient({ baseUrl, getAccessToken })` (server-only, qua `@vyforge/api-client`): `days`, `compute`, `occurrences`, event CRUD, `previewRecurrence`, `lunar` |
+| `@vyforge/calendar` (component, `@vyforge/ui`) | `<WorkCalendarMonth>` (lưới tháng tô ngày làm việc/nghỉ/làm bù, chú thích, ngày âm, nguồn văn bản khi hover); `<BusinessDatePicker>` (vô hiệu ngày nghỉ theo `DayInfo[]`, hiện ngày âm, tên ngày lễ, cảnh báo `provisional`); `<DeadlinePreview>` ("Hạn: 17:00 thứ Tư 25/11/2026 — 2 ngày làm việc, bỏ qua 24/11 Ngày Văn hoá Việt Nam"); `<AgendaCalendar>` (FullCalendar 7.1.3: `daygrid`, `timegrid`, `list`, `interaction`; `eventSources` gọi Server Action; `businessHours` từ API; locale vi/en); `<EventEditor>`; `<RecurrenceEditor>` (sinh RRULE, mô tả và 5 lần kế tiếp lấy từ `POST /recurrence:preview`); `<LunarDateBadge>` |
+| `@vyforge/calendar/react` | Hook client: `useCalendarDays(key, month, { action })` (cache theo tháng), `useDeadline(...)` |
+| `@vyforge/calendar/admin` | Component quản trị (9a.3) |
+| `@vyforge/calendar/messages` | i18n vi/en (tên thứ, ngày lễ, can chi, mô tả RRULE) |
+
+Peer dependency: `@fullcalendar/core|react|daygrid|timegrid|list|interaction` 7.1.3 (MIT). Không dùng plugin premium.
+Không gọi API từ trình duyệt trực tiếp: dữ liệu qua Server Component/Server Action (BFF, ADR-0006), như master-data 5.4.
