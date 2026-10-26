@@ -18,6 +18,18 @@ trường. Admin cần tự cấu hình qua admin console.
 
 ## Quyết định
 
+### 0. Mặc định tắt
+
+Mọi IdP mở rộng **mặc định tắt**; cài auth server mới không có thêm bề mặt đăng nhập nào:
+
+- **SAML, LDAP, Zalo, OIDC** chỉ hoạt động khi có cấu hình trong database **và** cấu hình đó đã bật. IdP mới tạo luôn ở
+  trạng thái tắt; không có IdP nào thì không có nút đăng nhập, `/saml2/authenticate/*` và `/oauth2/authorization/*`
+  không chuyển đi đâu, form mật khẩu không gọi LDAP.
+- **Passkey** bật bằng cờ `vyforge.account.idp.passkey.enabled` (biến `AUTH_PASSKEY_ENABLED`), mặc định `false`; chỉ
+  profile `local` bật sẵn. Tắt thì không đăng ký filter WebAuthn (endpoint `/webauthn/**`, `/login/webauthn` không tồn
+  tại) và trang đăng nhập/tài khoản không hiện passkey.
+- Test `IdpDefaultsTests` giữ trạng thái này.
+
 ### 1. Thứ tự ưu tiên và rủi ro
 
 | Thứ tự | Tính năng | Lý do | Rủi ro chính → cách giảm |
