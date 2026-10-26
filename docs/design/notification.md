@@ -1721,12 +1721,22 @@ gồm ba phần. Mỗi phần cài hay bỏ riêng được. Khách hàng không
 Cho app nghiệp vụ (người dùng cuối): client server-only, Server Action, `NotificationBell`, `InboxList`,
 `PreferencesForm`, hook realtime (`subscribe` do app truyền vào), helper Web Push. Không chứa màn hình quản trị.
 
-### 11.3 Admin microfrontend `@vyforge/notifications-admin`
+### 11.3 Admin microfrontend (theo `docs/design/platform-services.md`, D1–D10)
 
-Build và deploy riêng, gắn vào shell `platform-admin` lúc chạy. Kỹ thuật MFE do forge-37 chốt trong
-`docs/design/platform-services.md`; module không tự chọn. **Trong lúc chờ, component admin nằm ở
-`@vyforge/notifications/admin`** (dùng `@vyforge/ui`, i18n vi/en, client gọi API admin); khi kỹ thuật đã chốt chỉ còn
-bọc thành MFE và viết manifest.
+Kỹ thuật đã chốt ở platform-services: **Next.js Multi-Zones**, zone `notification-admin` với `basePath` `/m/notification`,
+cùng origin với shell `platform-admin`, khung giao diện `@vyforge/admin-shell`, gắn vào shell lúc chạy qua registry
+(`ADMIN_MODULES`) và manifest.
+
+| Phần | Ở đâu | Ai làm |
+|---|---|---|
+| Component quản trị | `@vyforge/notifications/admin` (platform-web). Nhận dữ liệu và Server Action qua props, nhận `can` để ẩn nút, không tự đọc cookie hay env | Module này (đã làm ở 0.1.0) |
+| Client API quản trị | `createNotificationAdminClient()` trong cùng subpath, gồm `info()` | Module này |
+| Endpoint `GET /api/v1/notifications/admin/info` | Backend: `{module, version, apiVersion: 1, capabilities, mode}`; `capabilities` gồm `channel.*`, `provider.*`, `zns`, `push.webpush`, `digest`, `attachments`, `realtime`, `admin`, `tenant-providers` để MFE ẩn màn hình không dùng được | Module này (đã làm) |
+| App zone `platform-admin/apps/notification-admin` | Route, trang, Server Action ghép từ component; `admin.manifest.ts`; dựng bằng `pnpm create-admin-zone notification` | Làm khi forge-37 xong template zone |
+| Đăng nhập, khung giao diện, CSP, cấu hình zone, registry | `@vyforge/admin-shell` | forge-37 |
+
+Một image MFE phục vụ cả người vận hành và tenant admin; chế độ lấy theo token (D6). Component không giả định quyền xuyên
+tenant.
 
 Màn hình, quyền và API:
 
@@ -1743,23 +1753,44 @@ Màn hình, quyền và API:
 | Tuỳ chọn của một người nhận (CSKH), mặc định của tenant | `notification:preference:Get`, `:Update` | `GET/PUT /admin/recipients/{id}/preferences`, `PUT /admin/defaults/preferences` | Có | Có |
 | Gửi thông báo hệ thống | `notification:message:Send` | `POST /admin/send` | Có | Có |
 
-Phác thảo manifest (hợp đồng với shell; trường cuối cùng theo chuẩn forge-37 chốt):
+Manifest (`contract: 1`, platform-services mục 5.2):
 
-```json
-{
-  "module": "notifications",
-  "version": "0.1.0",
-  "route": "/notifications",
-  "apiBase": "/api/v1/notifications/admin",
-  "menu": [
-    { "id": "overview", "label": { "vi": "Thông báo", "en": "Notifications" }, "icon": "bell", "path": "/" },
-    { "id": "messages", "label": { "vi": "Tin đã gửi", "en": "Messages" }, "path": "/messages", "permission": "notification:message:List" },
-    { "id": "templates", "label": { "vi": "Template", "en": "Templates" }, "path": "/templates", "permission": "notification:template:List" },
-    { "id": "providers", "label": { "vi": "Nhà cung cấp", "en": "Providers" }, "path": "/providers", "permission": "notification:provider:List" },
-    { "id": "suppressions", "label": { "vi": "Địa chỉ bị chặn", "en": "Suppressions" }, "path": "/suppressions", "permission": "notification:suppression:List" }
+```ts
+// platform-admin/apps/notification-admin/admin.manifest.ts
+export default defineAdminManifest({
+  contract: 1,
+  name: 'notification',
+  version: pkg.version,
+  title: { vi: 'Thông báo', en: 'Notifications' },
+  icon: 'bell',
+  order: 100,
+  audiences: ['operator', 'tenant'],
+  minPermission: { anyOf: [{ action: 'notification:type:List', resource: 'vrn:notification:type/*' },
+                           { action: 'notification:message:List', resource: 'vrn:notification:message/*' }] },
+  entitlement: 'admin.notification',
+  api: { base: '/api/v1/notifications', requires: '>=0.13.0 <1.0.0' },
+  menu: [
+    { id: 'overview', path: '/', title: { vi: 'Tổng quan', en: 'Overview' },
+      permission: { action: 'notification:stats:Get', resource: 'vrn:notification:stats/*' } },
+    { id: 'types', path: '/types', title: { vi: 'Loại thông báo', en: 'Types' },
+      permission: { action: 'notification:type:List', resource: 'vrn:notification:type/*' } },
+    { id: 'templates', path: '/templates', title: { vi: 'Mẫu', en: 'Templates' },
+      permission: { action: 'notification:template:List', resource: 'vrn:notification:template/*' } },
+    { id: 'providers', path: '/providers', title: { vi: 'Nhà cung cấp', en: 'Providers' },
+      permission: { action: 'notification:provider:List', resource: 'vrn:notification:provider/*' } },
+    { id: 'messages', path: '/messages', title: { vi: 'Nhật ký gửi', en: 'Message log' },
+      permission: { action: 'notification:message:List', resource: 'vrn:notification:message/*' } },
+    { id: 'suppressions', path: '/suppressions', title: { vi: 'Địa chỉ bị chặn', en: 'Suppressions' },
+      permission: { action: 'notification:suppression:List', resource: 'vrn:notification:suppression/*' } },
+    { id: 'platform-defaults', path: '/platform', title: { vi: 'Mặc định platform', en: 'Platform defaults' }, audience: 'operator' },
   ],
-  "requiredPermission": "notification:message:List",
-  "audiences": ["tenant-admin", "operator"]
-}
+  health: '/api/health',
+});
 ```
+
+Component đã có trong `@vyforge/notifications/admin`: `DeliveryStatsTable`, `NotificationTypeTable`, `TemplateMatrix`,
+`TemplateEditor`, `LayoutEditor`, `ProviderSettings`, `ExternalTemplateTable`, `MessageLog`, `MessageTimeline`,
+`SuppressionTable`, `AdminSendForm`, `StatusBadge`; `PreferencesForm` (từ `@vyforge/notifications/ui`) dùng được cho
+CSKH. Còn để sau: `NotificationTypeForm`, `PlatformDefaultsForm`, `TaskQueueTable` (cần `TaskAdmin` qua REST),
+chế độ `remote` của starter và `PUT /internal/catalogs/{service}` (platform-services mục 6.8).
 
