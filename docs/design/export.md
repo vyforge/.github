@@ -1832,6 +1832,23 @@ export default defineAdminManifest({
 Giao diện dùng `@vyforge/ui`, i18n vi/en (`exportMessages`), gọi API qua `@vyforge/api-client` bằng token của người dùng
 (không có quyền xuyên tenant trong bản cho tenant admin).
 
+
+## 12. Ghi chú triển khai (0.13.0)
+
+Những điểm bản triển khai đầu khác hoặc cụ thể hơn thiết kế ở trên:
+
+| Chỗ | Thiết kế | Triển khai | Lý do |
+|---|---|---|---|
+| Action catalog (8.1) | `export:job:List/Get/Cancel/Retry/Download` cho job của mình | Người tạo luôn thao tác được job của mình; action nghiệp vụ của definition được kiểm lại lúc job chạy và lúc tải. Catalog chỉ có `export:job:ListAll`, `ManageAll`, `DownloadAll`, `export:schedule:Manage`, `ListAll`, `export:template:Manage`, `Publish`, `export:config:Get`, `Update` | Bớt policy phải cấp cho mọi người dùng; quyền thật nằm ở action của definition |
+| API quản trị | `/api/v1/export-admin/**` | `<base>/export/admin/**` (`info`, `definitions`, `config`, `templates`) | Hợp đồng platform-services 5.1 (`/api/v1/<route>/admin/**`) |
+| Tiền tố API | Cố định `/api/v1` | `vyforge.export.api.base-path` | Export nhúng trong nhiều app sau gateway (D10) |
+| `export.run` | Chạy tiếp từ cursor khi cùng pod | Chạy lại từ đầu khi task bị giao lại | Đơn giản và đúng; export là đọc |
+| Ký số từ xa | Trạng thái `AWAITING_SIGNATURE` + `poll` | Chỉ ký đồng bộ (`DocumentSigner.sign`); trạng thái đã có trong máy trạng thái | Adapter nhà cung cấp làm khi có dự án (9.4) |
+| Engine `xlsx-template` (JXLS), `gotenberg` | Có sẵn | Chưa làm; thêm qua SPI `ReportEngine` | Ưu tiên `html-pdf`; POI/JXLS là phụ thuộc nặng |
+| Định dạng `jsonl` | Có | Có | |
+| `SecretCipher` | Bean bắt buộc | Lấy khi cần | App không dùng secret thì không phải cấu hình khoá |
+| Externalize event ra Kafka | `vyforge.export.events.externalize` | Chưa có cờ; dự án dùng cấu hình externalization của Spring Modulith | Không ép phụ thuộc Modulith |
+
 ---
 
 ## Phụ lục A: quy ước áp dụng
