@@ -120,7 +120,7 @@ Các service dùng chung. Mỗi service có một repo và một image OCI, đ�
 | `platform-gateway` | Spring Cloud Gateway: kiểm JWT và `aud`, định tuyến, rate limit; không phân quyền (ADR-0010) |
 | `platform-auth-admin` | Console quản trị (Next.js) cho tài khoản, client, role |
 
-Kế hoạch thêm, gộp, đổi tên và bỏ module đến cuối 2027 nằm ở [MODULE_PLAN.md](MODULE_PLAN.md) (đang chờ duyệt). Kế hoạch đó gồm cả việc đưa CI/CD và registry ra khỏi GitHub.
+Kế hoạch thêm, gộp, đổi tên và bỏ module đến cuối 2027 nằm ở [MODULE_PLAN.md](MODULE_PLAN.md). Kế hoạch đó gồm cả việc đưa CI/CD và registry ra khỏi GitHub.
 
 ## Delivery
 

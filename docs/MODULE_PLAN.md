@@ -1,7 +1,8 @@
 # Quy hoạch module Vyforge (Q4/2026 – Q4/2027)
 
-> **Trạng thái: đề xuất, chờ duyệt.** Sau khi được duyệt, phần quyết định ở đây sẽ được ghi thành ADR-0013
-> (danh mục repo và module, version và nâng cấp), và các quy tắc ở mục 7 sẽ được đưa vào [ARCHITECTURE.md](ARCHITECTURE.md).
+> **Trạng thái: định hướng đã thống nhất (26/10/2026).** Các câu hỏi ở mục "Cần chủ sở hữu quyết định" vẫn còn mở.
+> Phần quyết định sẽ được ghi thành ADR-0013 (danh mục repo và module, version và nâng cấp). Các quy tắc ở mục 7 chỉ
+> đưa vào [ARCHITECTURE.md](ARCHITECTURE.md) sau khi chốt.
 
 Tài liệu này chốt hệ sinh thái Vyforge gồm những module nào: cái nào giữ, gộp, đổi tên, bỏ, cái nào thêm mới, và làm
 theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo nghiên cứu:
