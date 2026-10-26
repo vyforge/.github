@@ -553,13 +553,15 @@ tham số nằm trong `data_job.params`):
   (mặc định 2 phút) rồi ghi checkpoint và `enqueue` task kế tiếp cho cùng job **trong cùng transaction của chunk cuối**. Nhờ
   vậy task không bao giờ giữ khoá lâu, job lớn của tenant A nhường chỗ cho job nhỏ của tenant B giữa các lát, và deploy giữa
   chừng chỉ mất tối đa một lát.
-- **Task dài `export.run`.** Không chia lát được vì file tạm nằm trên đĩa của một pod. Queue `export` cấu hình
-  `locked_until` đủ dài (mặc định 30 phút) và giới hạn `max-export-duration` (mặc định 25 phút; vượt thì `FAILED
-  export.too_slow` và gợi ý thu hẹp bộ lọc). Nếu `DurableTaskQueue` có API gia hạn khoá trong lúc chạy (heartbeat) thì
-  handler gia hạn ở mỗi checkpoint; điểm này cần chốt với forge-35 (mục 10.2, Q6).
+- **Task dài `export.run`.** Không chia lát được vì file tạm nằm trên đĩa của một pod. Queue `export` đặt `lock-duration`
+  ngắn (2 phút) và handler gọi `TaskContext.extendLock(...)` ở mỗi checkpoint (đã chốt với forge-35, Q6): pod chết thì việc
+  được giao lại sau tối đa 2 phút, job dài vẫn giữ được khoá. Giới hạn `max-export-duration` (mặc định 2 giờ; vượt thì
+  `FAILED export.too_slow` và gợi ý thu hẹp bộ lọc) chặn job chạy vô hạn.
 - **Lỗi.** Handler tự phân loại: lỗi vĩnh viễn (4xx, mất quyền, vượt giới hạn) → ghi `data_job FAILED` và trả về thành công
-  để queue không retry vô ích; lỗi tạm thời → ghi `RETRY_WAIT` rồi ném lỗi để queue retry theo backoff.
-- **Đối soát** (`@ClusterScheduled(name = "export-reconcile", fixedDelay = "1m")`): `data_job` chưa ở trạng thái cuối mà task
+  để queue không retry vô ích; lỗi tạm thời → nếu `TaskContext.attempt() >= maxAttempts()` (Q7) thì ghi `FAILED` ngay, không
+  thì ghi `RETRY_WAIT` rồi ném lỗi để queue retry theo backoff.
+- **Đối soát** (`@ClusterScheduled(name = "export-reconcile", fixedDelay = "1m")`, lưới an toàn cho trường hợp pod chết đúng
+  lần thử cuối hoặc vận hành huỷ việc qua API của queue): `data_job` chưa ở trạng thái cuối mà task
   tương ứng đã `DEAD`/`CANCELLED` (vd. pod chết đủ `max_attempts` lần, hoặc vận hành huỷ qua API quản trị của queue) →
   `FAILED job.task_dead`. Nhờ vậy trạng thái người dùng thấy không bao giờ treo.
 - **Huỷ.** `QUEUED`: huỷ task qua `DurableTaskQueue.cancel` và đặt `CANCELLED` ngay. Đang chạy: đặt `cancel_requested`,
@@ -1476,7 +1478,7 @@ vyforge:
       chunk-size: 1000               # export: dòng mỗi trang; import: 500
       slice-max-chunks: 50           # import/report batch: số chunk mỗi lát task
       slice-max-duration: 2m
-      max-export-duration: 25m       # export.run là một task; phải ngắn hơn khoá của queue
+      max-export-duration: 2h        # export.run là một task dài, gia hạn khoá ở mỗi checkpoint
       max-running-per-user: 2
       temp-dir: ${java.io.tmpdir}/vyforge-export
       temp-dir-max-bytes: 10GB       # vượt thì job mới chờ
@@ -1504,7 +1506,7 @@ vyforge:
           max-per-tenant: 2          # K15
           max-attempts: 3
           backoff: { initial: 10s, multiplier: 2, max: 10m, jitter: 0.2 }
-          lock-duration: 30m         # đủ cho export.run
+          lock-duration: 2m          # export.run gọi extendLock ở mỗi checkpoint
 ```
 
 ---
@@ -1707,14 +1709,16 @@ Xuất dữ liệu ra file là **xử lý dữ liệu cá nhân** và làm dữ 
 | Mọi việc bất đồng bộ qua outbox hoặc job | `DataJobProgressed` không qua outbox | Tiến độ là thông tin tạm, mất một lần cập nhật không sao; đưa vào outbox sẽ ghi hàng nghìn dòng `event_publication` cho mỗi job |
 | Phụ thuộc `-files`, `-notification`, `-realtime` | Không phụ thuộc code; dùng port `ResultStore` + event | Các module đó chưa merge (brief yêu cầu); adapter nối thêm sau |
 | JPA entity + `TenantEntity` | `JdbcClient` với `tenantId` tường minh | Không ép dự án dùng JPA (giống `-audit`, `-scheduling`); đọc staging theo lô và batch insert cần SQL riêng |
-| Việc dài chạy qua `DurableTaskQueue` | `export.run` là một task dài (tới 25 phút), không chia lát | File tạm của writer nằm trên một pod; chia lát phải ghi file nhiều phần lên kho rồi ghép (để bản sau nếu cần). Các việc khác đều chia lát |
+| Việc dài chạy qua `DurableTaskQueue` | `export.run` là một task dài (tới 2 giờ, gia hạn khoá bằng `extendLock`), không chia lát | File tạm của writer nằm trên một pod; chia lát phải ghi file nhiều phần lên kho rồi ghép (để bản sau nếu cần). Các việc khác đều chia lát |
 
 Ba khối dùng chung của quy ước mục 5 (`SecretCipher`, `DurableTaskQueue`, `StarterSchemaMigrator`) được dùng đúng như quy ước,
 không lệch.
 
 ### 10.2 Quyết định cần người dùng chọn
 
-Trong lúc chờ, thiết kế đi theo phương án đầu tiên của mỗi dòng (an toàn, đơn giản).
+**Đã chốt (27/10):** Q1–Q5 giữ phương án mặc định; Q1 ghi vào ADR là cần pháp chế xác nhận. Q6, Q7: forge-35 thêm
+`lock-duration` theo queue, `TaskContext.extendLock` và `attempt`/`maxAttempts` vào `DurableTaskQueue`; `export.run` dùng
+cả ba (3.5).
 
 | # | Câu hỏi | Phương án mặc định | Phương án khác |
 |---|---|---|---|
