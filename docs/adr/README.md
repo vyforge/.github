@@ -20,3 +20,4 @@ Mẫu: `NNNN-tieu-de.md` với các mục **Trạng thái · Bối cảnh · Quy
 - [ADR-0012: IdP mở rộng — passkey, SAML 2.0, LDAP/AD, Zalo — cấu hình trong database](0012-idp-extensions.md)
 - [ADR-0014: CI/CD và registry trung lập với nền tảng git](0014-neutral-ci-cd.md)
 - [ADR-0015: Tenant ở tầng dữ liệu, `platform-core` và mặc định cho lời gọi ra ngoài](0015-tenant-data-isolation-platform-core.md)
+- [ADR-0022: Cơ cấu tổ chức dùng chung](0022-shared-organization-structure.md)
