@@ -66,7 +66,7 @@
 | A8 | **Hành động chạy với danh tính dịch vụ của luật, quyền theo người publish.** Khi publish, người publish phải có quyền IAM mà từng hành động yêu cầu (`requiredPermissions(params)`). Mỗi lần chạy kiểm lại tài khoản người publish còn hoạt động; mất quyền thì luật `SUSPENDED`. Audit ghi actor `automation:<ruleKey>` thay mặt `<sub>` | Tenant admin không dùng luật để vượt quyền của chính mình (Directus chạy flow theo `accountability`); không cần lưu token người dùng |
 | A9 | **Trigger lấy từ catalog có khai báo.** Event phải có `@AutomationEvent` hoặc được `AutomationTriggerCatalog` khai báo (key, nhãn vi/en, JSON Schema, mức dữ liệu cá nhân, ví dụ). Event không khai báo không dùng được | Tenant chỉ thấy event ổn định, có schema; đổi tên event nội bộ không làm vỡ luật. Giống `WebhookEventCatalog` |
 | A10 | **Thay đổi bản ghi qua `RecordAdapter` + `@AutomationRecord`.** App khai báo loại bản ghi tự động hoá được (trường, nhãn, kiểu, trường ghi được). Starter có listener Hibernate tính trường thay đổi cho entity có `@AutomationRecord`; app không dùng JPA thì gọi `RecordChanges.publish(...)` | Học `trigger_field_ids` của Odoo (chỉ chạy khi trường được theo dõi đổi). Không cho luật đọc/ghi bảng tuỳ ý |
-| A11 | **Lịch theo ngày làm việc dùng `calendar`** (`CalendarSchedules`, `ScheduleFired`). Không có calendar thì dùng cron 5 trường (`CronExpression` của Spring) theo múi giờ tenant, chạy bằng `@ClusterScheduled` có watermark | "Ngày làm việc đầu tiên của tháng, Tết thì dời" là nhu cầu thật (calendar K9). Không tự viết lịch thứ hai |
+| A11 | **Lịch theo ngày làm việc dùng `calendar`** (`CalendarSchedules`, `ScheduleFired`). Không có calendar thì dùng cron 5 trường theo múi giờ tenant (thêm trường giây `0` rồi parse bằng `CronExpression` 6 trường của Spring), chạy bằng `@ClusterScheduled` có watermark | "Ngày làm việc đầu tiên của tháng, Tết thì dời" là nhu cầu thật (calendar K9). Không tự viết lịch thứ hai |
 | A12 | **Chạy thử không có tác dụng phụ.** `simulate` đánh giá điều kiện, dựng tham số và gọi `AutomationAction.preview` (mặc định chỉ mô tả). Chạy thử được trên payload mẫu, trên 20 event/bản ghi gần nhất (khi có log) hoặc trên một bản ghi chọn tay | Tenant thấy luật sẽ làm gì trước khi bật; n8n và Zapier đều có chế độ thử |
 | A13 | **Log mọi lần chạy khớp điều kiện; lần không khớp chỉ đếm.** Bảng `aut_run` partition theo tháng; lần điều kiện sai chỉ tăng bộ đếm ngày, trừ khi bật "ghi chi tiết" cho luật trong tối đa 24 giờ. Bản chụp dữ liệu bị xoá sau 7 ngày, run giữ 30 ngày (lỗi 90 ngày) | Luật "khi bản ghi được sửa" có thể khớp trigger hàng triệu lần/ngày nhưng khớp điều kiện rất ít. Giảm lưu PII |
 | A14 | **Giới hạn thương mại qua `features`:** `module.automation`, `admin.automation`, giới hạn `automation.rules` (số luật đang bật) và hạn mức `automation.runs` (lần chạy/tháng, `consume`). Vượt hạn mức thì run `THROTTLED`, không mất event (chờ chu kỳ sau hoặc admin chạy lại) | Bán theo gói như Zapier (task) và Jira (lần chạy theo gói); `licensing` kẹp trần (licensing mục 3.10) |
@@ -591,7 +591,7 @@ erDiagram
   aut_rule ||--o{ aut_rule_stat : "đếm theo ngày"
   aut_rule ||--o{ aut_assign_cursor : "vòng tròn"
   aut_run ||--o{ aut_run_step : "gồm"
-  aut_settings ||--|| aut_rule : "giới hạn tenant"
+  aut_rule ||--o| aut_schedule_state : "cron dự phòng"
 
   aut_rule {
     uuid id PK
@@ -830,6 +830,17 @@ create table aut_trigger_sample (                          -- 20 payload gần n
   payload       jsonb        not null,                     -- đã che
   primary key (tenant_id, trigger_type, trigger_key, captured_at)
 );
+
+create table aut_schedule_state (                          -- chỉ dùng khi không có calendar (cron dự phòng)
+  tenant_id     varchar(64)  not null,
+  rule_id       uuid         not null,
+  cron          varchar(100) not null,
+  zone          varchar(64)  not null,
+  last_fired_at timestamptz,                               -- watermark: bù tối đa một lần lỡ khi app tắt
+  next_fire_at  timestamptz  not null,
+  primary key (tenant_id, rule_id)
+);
+create index ix_aut_schedule_due on aut_schedule_state (next_fire_at);
 
 create table aut_settings (
   tenant_id            varchar(64) primary key,
@@ -1086,3 +1097,631 @@ Server-only client qua `@vyforge/api-client`, component dùng `@vyforge/ui` và 
 | `@vyforge/automation/messages` | `vi.json`, `en.json` |
 
 Không đánh giá CEL ở trình duyệt (không cần thư viện CEL JS): mọi kiểm và chạy thử gọi server.
+
+---
+
+## 6. Mở rộng
+
+### 6.1 `platform-expression`: CEL dùng chung
+
+```java
+package com.vyforge.platform.expression;
+
+/** Biên dịch và đánh giá biểu thức có sandbox. Bean singleton; môi trường dựng một lần, cache theo khoá ngữ cảnh. */
+public interface Expressions {
+    CompiledExpression compile(String source, ExpressionContext context, Class<?> expectedType); // ném ExpressionException(vị trí)
+    Object evaluate(CompiledExpression expression, Map<String, Object> variables);              // giới hạn bước
+    EvaluationTrace trace(CompiledExpression expression, Map<String, Object> variables);       // giá trị từng vế (chạy thử)
+    Template template(String source, ExpressionContext context);                               // "Đơn {{ record.code }}"
+}
+
+/** Ngữ cảnh biên dịch: tên biến → kiểu. Kiểu struct sinh từ JSON Schema (SchemaTypes.fromJsonSchema). */
+public record ExpressionContext(String key, Map<String, ExpressionType> variables, Set<String> functionGroups) {}
+
+/** Giới hạn mặc định; người vận hành chỉnh qua vyforge.expression.limits.*. */
+public record ExpressionLimits(
+        int maxSourceLength,        // 4.096 ký tự
+        int maxAstNodes,            // 500 (CelOptions.maxParseExpressionNodeCount)
+        int maxRecursionDepth,      // 32 (maxParseRecursionDepth)
+        int maxComprehensionIterations, // 1.000 (comprehensionMaxIterations)
+        int maxEvaluationSteps,     // 10.000 (đếm bằng CelEvaluationListener, vượt thì huỷ)
+        int maxRegexProgramSize,    // 100 (maxRegexProgramSize)
+        int maxResultSize) {}       // chuỗi/list kết quả ≤ 64 KB
+
+/** Hàm thêm. Module đăng ký bean; hàm khai kiểu để kiểm lúc biên dịch. Hàm phải thuần (không I/O) hoặc đọc qua cache. */
+public interface ExpressionFunctions {
+    String group();                                        // "core", "calendar", "privacy", "org"
+    List<CelFunctionDecl> declarations();
+    List<CelFunctionBinding> bindings();
+    default boolean deterministic() { return true; }       // false → không dùng trong prefilter
+}
+```
+
+- Workflow (W6) đổi `ConditionFunctions` thành dùng `ExpressionFunctions` (giữ tên cũ làm alias một bản). Thay đổi ở
+  workflow chỉ là import, vì workflow chưa có code (Q1).
+- Hàm có I/O (`businessDaysBetween` gọi calendar, `hasConsent` gọi privacy-dsr, `inGroup` gọi IAM) chạy qua cache theo
+  run (một lần mỗi tham số mỗi run) và có timeout tổng 2 s cho mỗi lần đánh giá.
+
+### 6.2 SPI của automation
+
+```java
+package com.vyforge.platform.automation.spi;
+
+/** Một loại hành động. Module cài bean; type() là khoá trong DSL ("notification.send"). */
+public interface AutomationAction {
+    String type();
+    LocalizedText label();
+    JsonNode paramsSchema();                                   // JSON Schema; trường có "x-expression": true nhận $expr / {{ }}
+    default JsonNode outputsSchema() { return EMPTY_OBJECT; } // để hành động sau dùng steps.<id>.<field>
+    default Set<String> requiredCapabilities() { return Set.of(); }
+    /** Quyền IAM người publish phải có (A8), tính từ params tĩnh. */
+    List<RequiredPermission> requiredPermissions(JsonNode params);
+    /** Kiểm thêm khi publish (vd. type thông báo có cho phép automation dùng không). */
+    default void validate(JsonNode params, ValidationContext ctx) {}
+    /** Mô tả không tác dụng phụ cho chạy thử. */
+    default ActionPreview preview(ActionContext ctx) { return ActionPreview.describe(type(), ctx.params()); }
+    /** Chạy. Phải idempotent theo ctx.idempotencyKey(). Không ném exception cho lỗi nghiệp vụ: trả Failed. */
+    ActionResult execute(ActionContext ctx);
+}
+
+public interface ActionContext {
+    UUID runId(); String actionId(); String idempotencyKey();      // automation:<runId>:<actionId>
+    JsonNode params();                                              // đã dựng ($expr, {{ }})
+    @Nullable EntityRef subject();
+    RuleRef rule();                                                 // key, version, ownerSub
+    AutomationChain chain();
+    Map<String, Object> steps();                                    // output các hành động trước
+}
+
+public sealed interface ActionResult {
+    record Completed(Map<String, Object> outputs) implements ActionResult {}
+    record Failed(String code, String message, boolean retryable) implements ActionResult {}
+    record Skipped(String reason) implements ActionResult {}
+}
+
+/** Cầu nối tới loại bản ghi của app: đọc (RECORD_DATE, MANUAL, chạy thử) và ghi (record.update, record.assign). */
+public interface RecordAdapter {
+    String recordType();                                            // "crm:order"
+    RecordTypeDefinition definition();                              // trường, kiểu, nhãn, writable, dateFields
+    Optional<Map<String, Object>> load(String id);                  // trong TenantContext; null nếu đã xoá
+    boolean canView(String sub, String id);                         // lọc SubjectRunList, chạy thử theo bản ghi
+    default UpdateResult update(String id, Map<String, Object> changes, UpdateOptions options) {
+        throw new UnsupportedOperationException();                  // chỉ trường writable; qua service của app (kiểm nghiệp vụ)
+    }
+    default Stream<RecordDateHit> scan(String dateField, Instant from, Instant to) { return Stream.empty(); } // backfill
+}
+
+/** Catalog khai bằng code (ngoài annotation): event của thư viện bên thứ ba, event remote. */
+public interface AutomationTriggerCatalog {
+    Collection<EventTriggerDefinition> events();
+    default Collection<RecordTypeDefinition> recordTypes() { return List.of(); }
+}
+
+/** Chiến lược chọn người cho todo.create và record.assign. */
+public interface AssigneeStrategy {
+    String type();                                                  // DIRECT | FIELD | ROUND_ROBIN | LEAST_OPEN | GROUP_POOL
+    JsonNode configSchema();
+    Optional<String> choose(AssigneeContext ctx, JsonNode config);  // sub; rỗng → hành động Failed(no_assignee)
+}
+
+/** Hook quanh run (Ordered). before* trả Veto để chặn; after* chỉ quan sát. */
+public interface AutomationInterceptor extends Ordered {
+    default Decision beforeRun(RunContext ctx) { return Decision.proceed(); }
+    default Decision beforeAction(RunContext ctx, ActionContext action) { return Decision.proceed(); }
+    default void afterAction(RunContext ctx, ActionContext action, ActionResult result) {}
+    default void afterRun(RunContext ctx, RunOutcome outcome) {}
+}
+```
+
+**`RecordAdapter` mặc định cho JPA:** `JpaRecordAdapter` tự dựng cho mỗi entity `@AutomationRecord` (đọc bằng
+`EntityManager.find`, trường theo `@AutomationField`). `update` mặc định **không bật**: app phải đăng ký
+`RecordUpdater<Order>` gọi service nghiệp vụ của mình, để kiểm tra nghiệp vụ, `@Version`, audit chạy như khi người dùng
+sửa. Có `RecordUpdater.direct()` cho bảng đơn giản (gán field qua setter, lưu, có `@Version`).
+
+### 6.3 Hành động có sẵn
+
+Mỗi hành động nằm ở `..integration.<module>`, bật khi có class và bean của module đó. `admin/info` liệt kê hành động có.
+
+| `type` | Module | Tham số chính | Quyền người publish cần | Ghi chú |
+|---|---|---|---|---|
+| `notification.send` | notification | `type` (type có `automation: allowed` trong YAML của notification, hoặc type chung `automation.message`), `to[]` (`user`, `group`, `field`, `email`, `phone`, `role-in-record`), `data` (map, có `$expr`), `channels` (thu hẹp), `scheduledAt`, `urgency` | `notification:message:Send` trên type | `idempotencyKey`, `correlationKey = automation:<ruleKey>:<subject>`. Type `automation.message` có `subject`, `body` (văn bản thuần ≤ 2.000 ký tự, không HTML), `link`; template Liquid của type này do tenant soạn ở notification. Category `PROMOTIONAL` theo luật của notification (giờ gửi, opt-in, nhãn [QC]) |
+| `webhook.emit` | webhooks | `payload` (map), `orderingKey` | `webhooks:message:Publish` | Event type cố định `automation.rule` (khai trong `WebhookEventCatalog` của automation), channel `automation:<ruleKey>`; endpoint của tenant chọn nhận channel đó. Ký, retry, chống SSRF do webhooks lo |
+| `todo.create` | collaboration | `subject`, `todoType`, `title` (`{{ }}`), `note`, `assignee` (strategy), `due` (`{days}`, `{businessDays}`, `{at: $expr}`), `remind` | `collaboration:todo:Create` | Hạn theo ngày làm việc qua `TodoDueCalculator` (calendar) |
+| `comment.post` | collaboration | `subject`, `body` (văn bản), `visibility` (`INTERNAL`) | `collaboration:comment:Create` | Ghi bằng `Comments.asSystem` với tác giả "Tự động hoá: <tên luật>" |
+| `record.update` | app (`RecordAdapter`) | `subject` (mặc định subject của run), `set` (map trường → giá trị/`$expr`), `expectedVersion` (tuỳ chọn) | Quyền `Update` của loại bản ghi (`crm:order:Update`) | Chỉ trường `writable`; custom-fields: trường `attributes.<code>` qua adapter của custom-fields khi có |
+| `record.assign` | app + collaboration (tuỳ chọn) | `field` (trường người phụ trách, `writable`), `strategy`, `pool` (người/nhóm) | như `record.update` | Frappe Assignment Rule: `ROUND_ROBIN` (`aut_assign_cursor`), `LEAST_OPEN` (đếm todo mở qua collaboration), `FIELD`, `GROUP_POOL` |
+| `workflow.start` | workflow | `definitionKey`, `subject`, `businessKey`, `variables` | `workflow:instance:Start` | `Workflow.start`; `idempotency` theo run; trùng hồ sơ đang chạy thì `Skipped(already_running)` |
+| `export.start` | export | `definitionKey`, `filter` (JSON theo `ExportDefinition`), `format`, `notify` (người nhận link) | `export:job:Create` trên definition | Export gửi `export.completed` qua notification (export đã có) |
+| `automation.stop` | lõi | `reason` | — | Dừng các hành động còn lại (dùng với `when`) |
+| `automation.log` | lõi | `message` (`{{ }}`) | — | Ghi một dòng vào step (gỡ lỗi luật) |
+
+**Không có** hành động: gọi HTTP tuỳ ý, gửi email tới địa chỉ do payload inbound cung cấp mà không qua notification,
+xoá bản ghi, đổi quyền IAM, chạy SQL.
+
+### 6.4 Port tới module khác (automation sở hữu interface)
+
+```java
+package com.vyforge.platform.automation.port;
+
+/** calendar: lịch chạy và mốc theo ngày làm việc. */
+public interface AutomationScheduler {
+    void register(String ruleId, ScheduleDefinition schedule);      // calendar: CalendarSchedules.register(owner="automation", …)
+    void unregister(String ruleId);
+    List<Instant> preview(ScheduleDefinition schedule, Instant from, int count);
+    Instant shift(Instant anchor, Offset offset, @Nullable String calendarKey); // ±d, ±bd, ±bh
+}
+
+/** features: giới hạn và hạn mức (A14). */
+public interface AutomationEntitlements {
+    boolean moduleEnabled();                                        // module.automation
+    void checkActiveRules(long newTotal);                           // automation.rules
+    QuotaDecision consumeRun(String idempotencyKey);                // automation.runs
+}
+
+/** IAM: người publish còn hoạt động, có quyền. */
+public interface PrincipalDirectory {
+    boolean isActive(String sub);
+    boolean isAllowed(String sub, String action, String resource);  // Authz cho principal khác người gọi
+    Set<String> membersOf(String group);
+}
+```
+
+| Port | Adapter (khi có) | Vắng module thì |
+|---|---|---|
+| `AutomationScheduler` | `CalendarAutomationScheduler`: `CalendarSchedules.register("automation", calendarKey, spec)`, nghe `ScheduleFired{owner=automation, specId=ruleId}`; `shift` dùng `BusinessCalendar` | `CronAutomationScheduler`: cron 5 trường (thêm giây `0`, parse bằng `org.springframework.scheduling.support.CronExpression`) theo múi giờ tenant, tick mỗi phút bằng `@ClusterScheduled`, watermark ở `aut_schedule_state` (bù lần lỡ khi app tắt, tối đa 1 lần); `bd`/`bh` bị từ chối khi publish |
+| `AutomationEntitlements` | `FeaturesAutomationEntitlements` (`Entitlements.require/checkLimit/consume`) | Không giới hạn thương mại; vẫn có giới hạn kỹ thuật (mục 7) |
+| `PrincipalDirectory` | `IamPrincipalDirectory` (`IamStore` khi `-authz` local; API nội bộ iam-server khi remote) | Bắt buộc có `-authz` để publish (không có thì chỉ người vận hành dùng luật cấu hình qua YAML) |
+| Hàm `hasConsent` | `PrivacyConsentFunctions` (privacy-dsr `Consents`) | Hàm không đăng ký; luật dùng nó không publish được |
+| Hàm `inUnit`, `managerOf` | `OrganizationFunctions` (organization) | Không đăng ký |
+| Trường tuỳ biến | `CustomFieldsRecordExtension` (custom-fields, đang thiết kế): thêm `attributes.<code>` vào `RecordTypeDefinition` và cho ghi | Không có trường tuỳ biến trong trình dựng |
+
+### 6.5 Cấu hình theo tenant
+
+| Mức | Ở đâu | Ví dụ |
+|---|---|---|
+| Platform (mặc định, trần) | `vyforge.automation.*` | `limits.max-depth: 5` (trần 10), `limits.tenant-runs-per-minute: 600`, `retention.succeeded: P30D` |
+| Gói | `features` | `automation.rules: 10`, `automation.runs: 5000/tháng` |
+| Tenant | `aut_settings` (`/admin/settings`) | Giảm tần suất, đổi retention trong khoảng cho phép, nhóm nhận báo lỗi |
+| Luật | `options` trong DSL | `cooldown`, `maxRunsPerMinute` (≤ tenant), `runAt` cho `RECORD_DATE`, `debug` |
+| Mẫu của app | `META-INF/vyforge/automation/templates/*.yml` | Luật mẫu tenant cài và sửa; app nâng mẫu lên version mới thì luật đã cài **không** tự đổi, trình dựng hiện "có bản mẫu mới" |
+
+### 6.6 Ví dụ: thêm hành động "tạo phiếu chi" (app kế toán)
+
+```java
+@Component
+class CreatePaymentVoucherAction implements AutomationAction {
+    private final VoucherService vouchers;
+
+    public String type() { return "finance.voucher.create"; }
+    public LocalizedText label() { return LocalizedText.of("vi", "Tạo phiếu chi", "en", "Create payment voucher"); }
+    public JsonNode paramsSchema() { return Schemas.load("automation/finance-voucher.schema.json"); }
+    public List<RequiredPermission> requiredPermissions(JsonNode p) {
+        return List.of(RequiredPermission.of("finance:voucher:Create", "vrn:finance:voucher/*"));
+    }
+    public ActionResult execute(ActionContext ctx) {
+        var cmd = Json.convert(ctx.params(), CreateVoucher.class);
+        try {
+            var v = vouchers.create(cmd, ctx.idempotencyKey());               // service tự kiểm nghiệp vụ, idempotent
+            return new ActionResult.Completed(Map.of("voucherId", v.id(), "number", v.number()));
+        } catch (BudgetExceededException e) {
+            return new ActionResult.Failed("finance.budget_exceeded", e.getMessage(), false);
+        }
+    }
+}
+```
+
+Hành động mới hiện trong trình dựng (form tham số dựng từ `paramsSchema` bằng `SchemaForm` của `@vyforge/forms/renderer`
+qua `ResourceForm` của admin-kit). Không phải sửa lõi.
+
+### 6.7 Ví dụ: event của app thành trigger
+
+```java
+@AutomationEvent(value = "inventory.stock.low", label = "automation.event.inventory.stock.low",
+                 subject = "'inventory:item/' + itemId")
+public record StockLow(String tenantId, UUID itemId, String sku, String warehouse, int onHand, int minimum)
+        implements TenantAwareEvent {}
+
+events.publishEvent(new StockLow(...));     // listener BEFORE_COMMIT của automation tự bắt
+```
+
+Luật K11: trigger `EVENT inventory.stock.low`, điều kiện `event.warehouse == 'HN-01'`, `cooldown: {per: subject,
+duration: PT24H}`, hành động `notification.send` + `webhook.emit`.
+
+### 6.8 Ví dụ: hook chặn hành động ngoài giờ cho tenant ngân hàng
+
+```java
+@Component
+class BankingHoursInterceptor implements AutomationInterceptor {
+    public Decision beforeAction(RunContext run, ActionContext a) {
+        if (a.rule().tags().contains("customer-facing") && !bankingHours.isOpen(run.now())) {
+            return Decision.defer(bankingHours.nextOpen(run.now()));   // run RETRYING với runAt
+        }
+        return Decision.proceed();
+    }
+    public int getOrder() { return 100; }
+}
+```
+
+---
+
+## 7. Vận hành
+
+### 7.1 Cấu hình chính
+
+```yaml
+vyforge:
+  automation:
+    enabled: true
+    mode: embedded                    # embedded | remote
+    schema.migrate: true
+    queue:
+      name: automation
+      concurrency: 8                  # worker đồng thời mỗi instance
+      tenant-concurrency: 4           # tối đa mỗi tenant (DurableTaskQueue)
+      max-attempts: 5
+      backoff: { initial: PT30S, max: PT30M, multiplier: 3, jitter: 0.2 }
+    limits:
+      max-depth: 5                    # trần tenant: 10
+      tenant-runs-per-minute: 600
+      rule-runs-per-minute: 60
+      subject-runs-per-minute: 20
+      max-actions-per-rule: 10
+      max-active-rules: 500           # trần kỹ thuật, ngoài giới hạn gói
+      loop-suspend-threshold: 3       # LOOP trong 10 phút → SUSPENDED
+      failure-suspend-threshold: 20
+      action-timeout: PT30S
+      run-timeout: PT2M
+    expression:                       # chuyển cho platform-expression
+      max-evaluation-steps: 10000
+      io-timeout: PT2S
+    retention:
+      succeeded: P30D
+      failed: P90D
+      input: P7D
+      samples: P7D
+    inbound:
+      enabled: false                  # bật theo bản triển khai
+      max-body: 256KB
+      requests-per-minute: 120        # mỗi endpoint
+      clock-skew: PT5M
+    record-changes:
+      enabled: true                   # Hibernate listener cho @AutomationRecord
+      max-snapshot-size: 64KB         # bản ghi lớn hơn: chỉ giữ trường @AutomationField
+    events:
+      externalize: false
+      remote-topics: []               # mode remote/platform-services: topic Kafka chứa event @AutomationEvent
+```
+
+### 7.2 Metric (Micrometer)
+
+| Metric | Loại | Tag |
+|---|---|---|
+| `vyforge.automation.trigger.matched` | counter | `trigger_type`, `outcome` (`enqueued`, `prefiltered`, `loop`, `no_rule`) |
+| `vyforge.automation.run` | counter | `status`, `trigger_type` |
+| `vyforge.automation.run.duration` | timer (histogram) | `status` |
+| `vyforge.automation.run.lag` | timer | thời gian từ sự kiện tới lúc bắt đầu chạy |
+| `vyforge.automation.action` | counter | `type`, `status` |
+| `vyforge.automation.action.duration` | timer | `type` |
+| `vyforge.automation.expression.duration` | timer | `phase` (`compile`, `evaluate`) |
+| `vyforge.automation.expression.limit_exceeded` | counter | `limit` |
+| `vyforge.automation.rules.active` | gauge | — (không gắn tag tenant: cardinality) |
+| `vyforge.automation.timers.pending` | gauge | — |
+| `vyforge.automation.inbound` | counter | `outcome` (`accepted`, `bad_signature`, `throttled`, `invalid`) |
+| `vyforge.automation.suspended` | counter | `reason` |
+
+Không gắn tag `tenant` hay `rule` vào metric (cardinality); số liệu theo tenant/luật ở `aut_rule_stat`. Span OTel:
+`automation.run` (thuộc tính `automation.rule.key`, `automation.run.id`, `automation.chain.depth`), span con cho từng
+hành động; liên kết (span link) với span của transaction nguồn. Log có `tenant`, `runId`, `ruleKey`, `chainId`.
+
+### 7.3 Alert gợi ý (PrometheusRule trong `platform-observability`)
+
+| Alert | Điều kiện | Mức |
+|---|---|---|
+| `AutomationRunLagHigh` | p95 `run.lag` > 2 phút trong 10 phút | warning; > 10 phút critical |
+| `AutomationFailureRateHigh` | `run{status=FAILED}` / tổng > 10 % trong 15 phút | warning |
+| `AutomationLoopSpike` | `trigger.matched{outcome=loop}` > 100/5 phút | warning |
+| `AutomationQueueBacklog` | `vyforge.task.backlog{queue=automation}` > 10.000 | critical |
+| `AutomationExpressionLimit` | `expression.limit_exceeded` > 0 kéo dài 30 phút | info (luật viết kém) |
+
+### 7.4 Chế độ lỗi
+
+| Sự cố | Hành vi |
+|---|---|
+| Database chậm | Listener chỉ insert `aut_run` + task (2 câu lệnh) trong tx nghiệp vụ; luật nặng không làm chậm thêm |
+| Hàng đợi tồn | Worker giới hạn theo tenant, một tenant ồn không chặn tenant khác; `run.lag` báo động |
+| Redis (rate limit) mất | `-ratelimit` chuyển bộ đếm trong bộ nhớ theo instance (giới hạn lỏng hơn), log cảnh báo |
+| Module hành động lỗi kéo dài | Retry rồi `FAILED`; luật tự `SUSPENDED` khi chuỗi lỗi vượt ngưỡng; người vận hành chạy lại hàng loạt khi phục hồi |
+| Deploy giữa lúc chạy | Task được trả về; hành động đã `COMPLETED` không chạy lại (idempotency) |
+| Catalog đổi khi deploy (event bị bỏ) | Luật liên quan `SUSPENDED` (`trigger_unavailable`), báo admin |
+| calendar tắt khi luật dùng `bd` | Luật `SUSPENDED` (`capability_missing`) lúc khởi động |
+
+### 7.5 Giới hạn tải và dung lượng
+
+- Mục tiêu: 200 run/giây mỗi instance (hành động nội bộ), độ trễ p95 từ commit tới bắt đầu chạy < 5 giây.
+- Chi phí trong transaction nghiệp vụ: tra `RuleIndex` (bộ nhớ, O(1)) + nếu khớp: một insert `aut_run`, một insert
+  `vyforge_task`. Không khớp: không chạm DB.
+- `RuleIndex`: cache theo tenant (Caffeine, tối đa 10.000 tenant, hết hạn 10 phút), xoá khi
+  `AutomationRulePublished`/`StatusChanged` trên instance phát event. Instance khác: nghe topic `automation-events` khi
+  bật externalize, nếu không thì kiểm `max(updated_at)` của `aut_rule` theo tenant mỗi 30 giây (một truy vấn có index).
+  Luật mới vì vậy có hiệu lực trên mọi instance trong tối đa 30 giây.
+- Bản ghi sửa hàng loạt (import 100.000 dòng): `RecordChangeListener` gom theo transaction; nếu một transaction sinh
+  > 1.000 run cho cùng luật thì ghi một run `THROTTLED` tổng hợp (`status_reason = bulk_change`) thay vì 100.000 run, và
+  admin thấy cảnh báo. App đánh dấu thao tác hàng loạt bằng `AutomationSuppression.during(() -> …)` nếu không muốn kích
+  hoạt luật (vd. migration dữ liệu).
+
+---
+
+## 8. Bảo mật và tuân thủ
+
+### 8.1 Phân quyền (action catalog `automation:*`)
+
+| Action | Resource | Ai |
+|---|---|---|
+| `automation:rule:List`, `automation:rule:Get` | `vrn:automation:rule/*`, `vrn:automation:rule/<key>` | Tenant admin, người được giao quản lý luật |
+| `automation:rule:Create`, `automation:rule:Update`, `automation:rule:Delete` | như trên | Tenant admin |
+| `automation:rule:Publish`, `automation:rule:Enable`, `automation:rule:Disable` | như trên | Tenant admin (tách để có người soạn, người duyệt) |
+| `automation:rule:Simulate` | như trên | Người soạn |
+| `automation:rule:Execute` | `vrn:automation:rule/<key>` | Người dùng cuối cho luật `MANUAL` (cộng với quyền xem bản ghi) |
+| `automation:rule:TransferOwnership` | như trên | Tenant admin |
+| `automation:inbound:Manage` | `vrn:automation:rule/<key>` | Tenant admin; cần MFA (secret) |
+| `automation:run:List`, `automation:run:Get` | `vrn:automation:run/*` | Tenant admin, người soạn |
+| `automation:run:Retry`, `automation:run:Cancel` | như trên | Tenant admin |
+| `automation:template:List`, `automation:template:Install` | `vrn:automation:template/*` | Tenant admin |
+| `automation:settings:Get`, `automation:settings:Update` | `vrn:automation:settings` | Tenant admin; người vận hành sửa trần |
+| `automation:stats:Get` | `vrn:automation:*` | Tenant admin |
+
+**Quyền của luật (A8):** lúc publish, với mỗi hành động gọi `requiredPermissions(params)` và kiểm
+`Authz.check(action, resource)` cho người publish. Thiếu thì `automation.permission_missing` liệt kê quyền thiếu. Lúc
+chạy, `PrincipalDirectory.isActive(ownerSub)` (cache 5 phút) và kiểm lại quyền một lần mỗi 24 giờ cho mỗi luật (cache),
+mất quyền thì `SUSPENDED`. Hành động gọi module bằng danh tính dịch vụ trong tenant (`RequestContext` actor
+`automation:<ruleKey>`, `onBehalfOf = ownerSub`), audit ghi cả hai.
+
+**Đọc dữ liệu qua luật:** trình dựng chỉ hiện event/loại bản ghi mà người soạn có quyền đọc (`requiredReadPermission` khai
+trong catalog). Chạy thử theo bản ghi chọn tay dùng `RecordAdapter.canView`.
+
+### 8.2 Sandbox biểu thức
+
+- CEL không có vòng lặp vô hạn, không có tác dụng phụ; thêm giới hạn của §6.1 (kích thước, độ sâu, số vòng
+  comprehension, số bước, regex RE2 có giới hạn kích thước). Hàm tuỳ biến phải thuần hoặc đọc qua cache có timeout.
+- Không có hàm reflection, không gọi bean, không đọc biến môi trường (khác Flowable JUEL, Odoo `safe_eval` có môi trường
+  Python, Directus `FLOWS_ENV_ALLOW_LIST`).
+- Template `{{ }}` chỉ nội suy chuỗi đã escape theo ngữ cảnh đích (văn bản thuần); không render HTML. Nội dung email/ZNS có
+  định dạng do template của notification lo.
+
+### 8.3 Ra ngoài hệ thống, webhook gọi vào
+
+- Không có HTTP tuỳ ý (A16). `webhook.emit` dùng endpoint tenant đã đăng ký ở webhooks (kiểm SSRF, ký, retry).
+- Inbound: token 32 byte ngẫu nhiên (chỉ lưu sha256), HMAC-SHA256 với secret mã hoá bằng `SecretCipher`, kiểm thời gian
+  (±5 phút) và chống phát lại (lưu `(endpoint, signature)` 10 phút), giới hạn kích thước, rate limit theo endpoint và
+  theo IP (`-ratelimit`), payload kiểm theo JSON Schema tenant khai. Tắt mặc định ở mức bản triển khai
+  (`inbound.enabled`), bật thêm theo gói (`automation.inbound` trong features).
+- Gateway: `/api/v1/automation/hooks/**` là đường public duy nhất, không cần token, có rate limit riêng.
+
+### 8.4 Dữ liệu cá nhân (Luật 91/2025/QH15, NĐ 356/2025/NĐ-CP, cùng hiệu lực 01/01/2026)
+
+| Dữ liệu | Loại | Xử lý |
+|---|---|---|
+| `aut_run.input` (bản chụp event/bản ghi), `aut_trigger_sample.payload` | Có thể chứa PII, kể cả nhạy cảm | Che theo `@PersonalData` của record/entity khi lưu (`LogSafeJson`); trường `SENSITIVE` không lưu (thay bằng `"[sensitive]"`), chỉ có trong bộ nhớ lúc đánh giá; xoá sau 7 ngày |
+| `aut_run_step.params` (người nhận, nội dung) | PII (số điện thoại, email, tên) | Che (`0912***678`); nội dung đầy đủ nằm ở module đích (notification giữ theo retention của nó) |
+| `owner_sub`, `manual_by`, `created_by` | Định danh gián tiếp | Cần cho trách nhiệm giải trình (A8); thay bằng nhãn ẩn danh khi xoá tài khoản sau thời hạn audit |
+| Định nghĩa luật | Có thể chứa số điện thoại/email cố định do tenant nhập | Cảnh báo trong trình dựng khi hằng số giống PII; khuyến nghị dùng nhóm/trường |
+
+- **Mục đích xử lý:** automation chỉ xử lý dữ liệu theo mục đích của module nguồn (hợp đồng, CSKH). Luật gửi tin
+  marketing (category `PROMOTIONAL` của notification) phải có điều kiện `hasConsent(subject, 'marketing')` khi có
+  privacy-dsr: trình dựng **bắt buộc** khi hành động là `notification.send` với type thuộc category quảng cáo (K10).
+  notification còn kiểm opt-in và giờ gửi (NĐ 91/2020/NĐ-CP về chống tin nhắn rác, theo thiết kế notification K7).
+- **Xử lý tự động:** luật chỉ chạy hành động vận hành (gửi tin, tạo việc, cập nhật trường). Luật dùng để ra quyết định có
+  ảnh hưởng đáng kể tới chủ thể (từ chối khoản vay, khoá tài khoản) là trách nhiệm của app; mẫu luật loại này có ghi chú
+  yêu cầu người xem lại **(cần pháp chế của khách xác nhận cách áp dụng điều khoản về xử lý tự động của Luật 91/2025,
+  chưa kiểm chứng toàn văn)**.
+- **Quyền của chủ thể:** `AutomationPersonalDataEraser` (SPI `PersonalDataEraser` của `-privacy`) xoá `input`,
+  `params` của run có `subject` hoặc giá trị khớp chủ thể, huỷ `aut_timer` của bản ghi bị xoá; xuất dữ liệu: liệt kê run
+  liên quan tới bản ghi của chủ thể.
+- **Nhật ký xử lý:** mỗi run là bằng chứng "hệ thống đã làm gì với bản ghi nào, theo luật nào, ai cấu hình" (phục vụ đánh
+  giá tác động và trả lời khiếu nại).
+
+### 8.5 Rủi ro khác
+
+| Rủi ro | Biện pháp |
+|---|---|
+| Luật gửi hàng loạt tin nhắn do điều kiện sai (thiệt hại tiền SMS/ZNS) | Chạy thử bắt buộc trước lần publish đầu (UI); `rule-runs-per-minute`; notification có hạn mức theo tenant; luật mới có "giai đoạn quan sát" tuỳ chọn 24 giờ ở chế độ `dryRun` ghi log mà không chạy hành động |
+| Vượt quyền qua luật | A8 |
+| Lộ dữ liệu qua webhook | Chỉ endpoint đã đăng ký; mức PII của event hiện trong trình dựng; event `SENSITIVE` không cho `webhook.emit` toàn payload, chỉ trường chọn |
+| Tenant A thấy luật/run của tenant B | `TenantEntity`, truy vấn JDBC có `tenant_id`, ArchUnit `TENANT_ISOLATION`, test cách ly |
+| DoS qua inbound | Rate limit, kích thước, tắt mặc định |
+| Luật chạy sau khi tenant bị tạm ngưng | Worker kiểm trạng thái tenant (API trạng thái tenant của iam-server / tenant-lifecycle, cache 1 phút) trước khi chạy; tenant `SUSPENDED` thì run `CANCELLED` |
+
+---
+
+## 9. Kế hoạch triển khai
+
+### 9.1 Phần code và thứ tự
+
+| # | Phần | Repo | Phụ thuộc | Test |
+|---|---|---|---|---|
+| 1 | `platform-expression`: `Expressions`, `ExpressionLimits`, `SchemaTypes` (JSON Schema → `StructType`), `Template`, hàm `core` (`money`, `fold`, `daysBetween`, `date`, `format`, `changed`), đếm bước bằng `CelEvaluationListener` | platform-java | `dev.cel:cel` 0.14.0, `platform-core` | Unit: kiểu sai báo vị trí; vượt từng giới hạn; tiếng Việt (`fold('Đà Nẵng') == 'da nang'` khớp `VietnameseText`); không truy cập được class Java; property-based cho template escape |
+| 2 | Starter khung: auto-config, `StarterSchemaMigrator` (V1), entity, repository, `aut_*` JDBC, mã lỗi vi/en, action catalog IAM | platform-java | 1, 0.12.1 | Testcontainers PostgreSQL: migration, partition, cách ly tenant |
+| 3 | Catalog: `@AutomationEvent`, `@AutomationRecord`, `@AutomationField`, `AutomationTriggerCatalog`, schema sinh từ record | platform-java | 2 | Unit: schema từ record (Money, enum, Instant, lồng nhau); trùng key báo lỗi khởi động |
+| 4 | `RuleService`: DSL v1 + JSON Schema, biên dịch, prefilter, version, publish, bật/tắt, `RuleIndex` | platform-java | 1–3 | Unit + Testcontainers: version bất biến, optimistic lock, index đúng sau publish |
+| 5 | Trigger `EVENT` + `RECORD` (listener `BEFORE_COMMIT`, Hibernate `PostInsert/PostUpdate/PostDelete` gom theo tx), `TriggerMatcher`, `LoopGuard`, `AutomationChain` (`ScopedValue`) | platform-java | 4, `-scheduling` | Testcontainers: rollback không có run; vòng A↔B dừng; độ sâu 6 → `LOOP`; import 10.000 dòng → một run tổng hợp |
+| 6 | `RuleRunner`: queue `automation`, guard tần suất (`-ratelimit`), hạn mức (port), đánh giá, dựng tham số, chạy hành động, retry tiếp tục từ bước lỗi, `aut_run_step`, `aut_rule_stat` | platform-java | 5 | Testcontainers: crash giữa hai hành động không chạy lại hành động 1; `THROTTLED`; `SUSPENDED` theo ngưỡng |
+| 7 | Hành động lõi (`automation.stop`, `automation.log`) và tích hợp: `notification.send`, `webhook.emit`, `todo.create`, `comment.post`, `record.update`, `record.assign`, `workflow.start`, `export.start` | platform-java | 6, module tương ứng (optional) | Mỗi tích hợp: test với starter thật trong Testcontainers khi module đã có; contract test với stub khi chưa |
+| 8 | `SCHEDULE` (calendar adapter + cron dự phòng), `RECORD_DATE` (`DateTriggerScheduler`, `aut_timer`, backfill), `MANUAL`, `INBOUND` | platform-java | 6, calendar (optional) | `Clock` giả: Tết dời ngày; đổi `endDate` dời hẹn; xoá bản ghi huỷ hẹn; anniversary 29/02; HMAC, replay, clock skew |
+| 9 | Chạy thử (`simulate`, `trace`, `aut_trigger_sample`) | platform-java | 6 | Không tác dụng phụ (mock hành động không được gọi `execute`) |
+| 10 | REST admin + user + internal, OpenAPI, `admin/info`, `TaskAdminEndpoint`, `ModuleAuditEndpoint` | platform-java | 4–9 | MockMvc + contract test OpenAPI; quyền từng endpoint |
+| 11 | Privacy: che snapshot, eraser, retention jobs | platform-java | 6 | Testcontainers: SENSITIVE không lưu; xoá theo chủ thể |
+| 12 | `@vyforge/automation`: client, `RunRuleMenu`, `SubjectRunList`, `/expression` (`CelEditor`, `ConditionBuilder`, `TemplateInput`) | platform-web | 10 | Vitest + Testing Library; round-trip cây ↔ CEL cho mọi toán tử |
+| 13 | `@vyforge/automation/admin`: danh sách, trình dựng, chạy thử, lịch sử, version, mẫu, cài đặt, sử dụng | platform-web | 12, admin-kit 0.1 | Vitest; Playwright trong zone |
+| 14 | `automation-admin` zone + manifest (`pnpm create-admin-zone automation`) | platform-admin | 13, forge-37 L1 | e2e: menu theo quyền, tenant admin không thấy mục `operator` |
+| 15 | platform-services: bật module, `mode: remote` (event qua Kafka `remote-topics`, `RecordAdapter` remote qua `/internal/automation/records` của app có ký) | platform-java | 10 | Testcontainers Kafka: event remote → run; trả lỗi khi app không phản hồi |
+| 16 | README, ADR (mục trong ADR-0020 hoặc ADR riêng "automation ECA + platform-expression"), mẫu luật cho template-spring-boot | .github, platform-java | — | — |
+
+### 9.2 Test chính (ngoài bảng trên)
+
+- **Kịch bản K1–K20** thành test tích hợp có tên theo kịch bản (`K05_overdueInvoice_tagDoesNotRetrigger`).
+- **Cách ly tenant:** luật tenant A không bao giờ khớp event tenant B (kể cả qua Kafka với header sai).
+- **Tương thích ngược DSL:** bộ file DSL mẫu của mọi version, nâng cấp và biên dịch được.
+- **Hiệu năng:** JMH cho `RuleIndex.lookup` và đánh giá CEL điển hình (< 50 µs); Gatling/k6 200 run/giây/instance.
+- **ArchUnit:** chỉ `..expression..` import `dev.cel..`; `integration.<m>` có `@ConditionalOnBean`; lõi không import
+  module ứng dụng.
+
+### 9.3 Điểm nối chốt với module khác
+
+| Module | Hướng | Hợp đồng |
+|---|---|---|
+| workflow | automation → workflow; workflow đổi sang `platform-expression` | `Workflow.start`; event `WorkflowStarted`, `WorkflowCompleted` khai `@AutomationEvent("workflow.started"/"workflow.completed")` trong workflow (annotation nằm ở `platform-automation-api`, xem dưới) |
+| calendar | automation dùng | `CalendarSchedules.register(owner="automation")`, `ScheduleFired`, `BusinessCalendar` (calendar mục 6 dòng automation) |
+| forms | forms phát, automation nghe | `FormSubmitted` → `forms.submission.created`, `SubmissionStatusChanged` → `forms.submission.status-changed` (forms mục 11) |
+| collaboration | automation gọi | `Todos.create`, `Comments.asSystem`, `TodoAssignmentStrategy` (collaboration mục 6) |
+| notification | automation gọi | `Notifications.send`; type chung `automation.message`, `automation.rule.suspended` khai ở `META-INF/vyforge/notification/types/automation.yml`; type của app thêm `automation: allowed` |
+| webhooks | automation gọi | `WebhookPublisher.publish("automation.rule", …)`; catalog của automation |
+| features / licensing | automation dùng | `module.automation`, `admin.automation`, `automation.rules`, `automation.runs`, `automation.inbound` (thêm vào `ServicesFeatureCatalog`) |
+| ops-console | ops-console phát | `TaskQueueResumed` có `@AutomationEvent` khi `tenantId ≠ '*'` (ops-console mục 5) |
+| custom-fields | custom-fields cài extension | `RecordTypeExtension` thêm trường `attributes.<code>` |
+| -scheduling | đề xuất | `TaskContextPropagator` (Q3) |
+
+**Tránh phụ thuộc ngược:** module khác cần đánh dấu event bằng `@AutomationEvent` mà không kéo cả starter. Annotation và
+`AutomationTriggerCatalog` đặt trong artifact rất nhỏ **`platform-automation-api`** (chỉ annotation + record, không
+Spring), module khác thêm dạng `optional`. Không có starter automation thì annotation vô hại.
+
+### 9.4 Để bản sau
+
+- Nhánh `if/else` và `for each` trong một luật; hành động `ai.run` (use case của ai).
+- Trigger theo truy vấn định kỳ (danh sách bản ghi khớp bộ lọc mỗi sáng).
+- "Giai đoạn quan sát" tự động (chạy `dryRun` N ngày rồi gợi ý bật).
+- Hành động gọi API ngoài qua connector có cấu hình sẵn (đi cùng `api-access`/`webhooks` nâng cấp).
+- Thống kê ước tính chi phí (số tin nhắn dự kiến) trước khi bật.
+
+---
+
+## 10. Đóng gói và triển khai độc lập
+
+Theo module-conventions mục 6 và `platform-services.md` (D1–D10, mục 4.11–4.12, 5.1–5.2).
+
+### 10.1 Backend
+
+| Cách chạy | Cách làm | Khi nào |
+|---|---|---|
+| **Nhúng** (`mode: embedded`, mặc định) | App thêm `platform-starter-automation`. Bảng `aut_*` trong database của app; listener bắt event và thay đổi bản ghi trong cùng transaction; `record.update` gọi service của app | Một app (phổ biến nhất) |
+| **Trong `platform-services`** | Bật `automation` (`SERVICES_MODULES=…,automation`). Luật dùng event từ nhiều app: event `@AutomationEvent` được `@Externalized` ra Kafka, server đọc các topic trong `events.remote-topics` (consumer idempotent `ProcessedMessages`, chuỗi qua header). App thêm `platform-automation-client` (phần nhỏ của starter ở `mode: remote`): đăng ký catalog lúc khởi động (`PUT /internal/catalogs/{service}`), đẩy `RecordChange` qua outbox, mở `POST /api/v1/<app>/internal/automation/records/{type}/{id}:load|update` có client credentials để server đọc/ghi bản ghi | Khách có nhiều app và muốn luật xuyên app ("đơn ở CRM đã giao → tạo phiếu xuất ở kho") |
+| **Chạy riêng** | Cùng image `platform-services`, chỉ bật `automation` | Tải lớn hoặc cách ly |
+
+Ở `remote`, trigger `RECORD` đến chậm hơn (qua outbox + Kafka) và `prefilter` chạy ở app trước khi gửi (chỉ gửi thay đổi
+của loại bản ghi có luật, danh sách lấy từ `GET /internal/subscriptions` cache 1 phút).
+
+Route gateway: `/api/v1/automation/**` → app nhúng hoặc `platform-services`; `/api/v1/automation/hooks/**` public có rate
+limit riêng; còn lại cần token. Entitlement `module.automation`, `admin.automation`.
+
+**Không phụ thuộc cứng module khác.** Bắt buộc: `platform-core`, `-web`, `-security`, `-jpa` (`StarterSchemaMigrator`),
+`-scheduling` (`DurableTaskQueue`, `@ClusterScheduled`), `-messaging` (`TenantAwareEvent`), `-privacy`, `-authz`,
+`platform-expression`, `platform-automation-api`, `networknt` json-schema-validator (đã dùng ở workflow/forms). Tuỳ chọn
+(`<optional>true</optional>`, nối qua `integration.<module>` + `@ConditionalOnBean`): notification, webhooks,
+collaboration, workflow, export, calendar, features, privacy-dsr, organization, custom-fields, `-ratelimit` (không có
+thì giới hạn tần suất trong bộ nhớ), `-audit`.
+
+### 10.2 Package frontend `@vyforge/automation`
+
+Như mục 5.4: `RunRuleMenu`, `SubjectRunList` cho app nghiệp vụ; `/expression` cho trình soạn biểu thức (workflow dùng
+lại). Không chứa màn hình quản trị ngoài subpath `/admin`.
+
+### 10.3 Admin microfrontend `@vyforge/automation-admin` (`/m/automation`)
+
+App `platform-admin/apps/automation-admin`, dựng bằng `pnpm create-admin-zone automation`. Component ở
+`@vyforge/automation/admin`, nhận dữ liệu và Server Action qua props, nhận `can`. Khung, đăng nhập, CSP, registry thuộc
+`@vyforge/admin-shell`; bảng, bộ lọc, form, việc nền, audit dùng `@vyforge/admin-kit`. Nhóm: `O` = người vận hành,
+`T` = tenant admin (và người vận hành đang xem tenant đó), `O+T` = cả hai.
+
+| Màn hình | Nhóm | Action | API | Component |
+|---|---|---|---|---|
+| Tổng quan: luật đang bật, lần chạy hôm nay/tháng, lỗi, luật bị tạm dừng, hạn mức | O+T | `automation:stats:Get` | `/admin/usage`, `/admin/rules?status=SUSPENDED`, `/admin/runs?status=FAILED` | `AutomationOverview`, `UsageMeter` |
+| Danh sách luật: lọc trạng thái, trigger, tag, chủ; bật/tắt nhanh; thao tác hàng loạt | O+T | `automation:rule:List/Enable/Disable` | `/admin/rules` | `RuleTable` (`DataTable` của admin-kit) |
+| Trình dựng luật: chọn trigger (catalog có tìm kiếm, mô tả, mức PII), trường theo dõi, điều kiện (trình dựng cây ↔ CEL nâng cao), hành động (form theo `paramsSchema`, chèn biến), tuỳ chọn (cooldown, tần suất, giờ chạy), xem YAML | O+T | `automation:rule:Create/Update` | `/admin/rules[/{key}]`, `/admin/catalog/*`, `/admin/expressions:check` | `RuleBuilder`, `TriggerPicker`, `ConditionBuilder`, `CelEditor`, `ActionList`, `ActionParamsForm` (`ResourceForm` + `SchemaForm`), `TemplateInput`, `RuleYamlView` |
+| Chạy thử: mẫu, 20 sự kiện gần nhất, chọn bản ghi; xem từng vế điều kiện, tham số, preview hành động | O+T | `automation:rule:Simulate` | `/admin/rules/{key}/simulate` | `SimulationPanel`, `ConditionTrace` |
+| Publish (ghi chú thay đổi, xem khác biệt với bản đang chạy), lịch sử version, khôi phục | O+T | `automation:rule:Publish` | `/publish`, `/versions[/{n}[/restore]]` | `PublishDialog`, `VersionHistory`, `VersionDiff` |
+| Lịch sử chạy: lọc luật, trạng thái, bản ghi, thời gian; chi tiết run (dữ liệu vào đã che, từng bước, chuỗi nhân quả); chạy lại, huỷ, hàng loạt | O+T | `automation:run:List/Get/Retry/Cancel` | `/admin/runs[/{id}]`, `/admin/runs/bulk/{op}` | `RunTable` (cursor), `RunDetail`, `ChainView`, `BulkBar` |
+| Thống kê luật: biểu đồ theo ngày (khớp, điều kiện sai, thành công, lỗi, bị bóp) | O+T | `automation:stats:Get` | `/admin/rules/{key}/stats` | `RuleStatsChart` |
+| Mẫu luật: thư viện mẫu theo app/capability, cài | O+T | `automation:template:List/Install` | `/admin/templates` | `TemplateGallery` |
+| Webhook gọi vào: tạo, xem URL, xoay secret, thu hồi, mẫu code ký | O+T | `automation:inbound:Manage` | `/admin/rules/{key}/inbound` | `InboundEndpointPanel`, `SecretField` (admin-kit) |
+| Cài đặt tenant: tần suất, retention, nhóm nhận báo lỗi, kiểu báo | O+T | `automation:settings:Get/Update` | `/admin/settings` | `AutomationSettingsForm` |
+| Việc nền queue `automation` | O | `automation:run:Retry` | `/admin/tasks/**` | `TaskMonitor` (admin-kit) |
+| Trần platform (độ sâu, tần suất, inbound bật/tắt) theo tenant | O | `automation:settings:Update` | `/admin/settings?scope=platform` | `PlatformLimitsForm` |
+| Nhật ký thay đổi luật, cài đặt | O+T | `automation:rule:Get` | `/admin/audit` | `AuditTimeline` (admin-kit) |
+
+Manifest (`contract: 1`, platform-services §5.2):
+
+```ts
+// apps/automation-admin/admin.manifest.ts
+import { defineAdminManifest } from '@vyforge/admin-shell/manifest';
+import pkg from './package.json' with { type: 'json' };
+
+export default defineAdminManifest({
+  contract: 1,
+  name: 'automation',
+  version: pkg.version,
+  title: { vi: 'Tự động hoá', en: 'Automation' },
+  icon: 'zap',
+  order: 310,
+  audiences: ['operator', 'tenant'],
+  minPermission: { action: 'automation:rule:List', resource: 'vrn:automation:rule/*' },
+  entitlement: 'admin.automation',
+  api: { base: '/api/v1/automation', requires: '>=0.13.0 <1.0.0' },
+  menu: [
+    { id: 'overview',  path: '/',          title: { vi: 'Tổng quan', en: 'Overview' },
+      permission: { action: 'automation:stats:Get', resource: 'vrn:automation:*' } },
+    { id: 'rules',     path: '/rules',     title: { vi: 'Luật', en: 'Rules' },
+      permission: { action: 'automation:rule:List', resource: 'vrn:automation:rule/*' } },
+    { id: 'runs',      path: '/runs',      title: { vi: 'Lịch sử chạy', en: 'Run history' },
+      permission: { action: 'automation:run:List', resource: 'vrn:automation:run/*' } },
+    { id: 'templates', path: '/templates', title: { vi: 'Mẫu luật', en: 'Templates' },
+      permission: { action: 'automation:template:List', resource: 'vrn:automation:template/*' } },
+    { id: 'settings',  path: '/settings',  title: { vi: 'Cài đặt', en: 'Settings' },
+      permission: { action: 'automation:settings:Get', resource: 'vrn:automation:settings' } },
+    { id: 'tasks',     path: '/tasks',     title: { vi: 'Việc nền', en: 'Background tasks' }, audience: 'operator',
+      permission: { action: 'automation:run:Retry', resource: 'vrn:automation:run/*' } },
+  ],
+  health: '/api/health',
+});
+```
+
+`icon: 'zap'` phải nằm trong danh sách icon cho phép của shell (lucide có `zap`); nếu không thì dùng `workflow`.
+
+**Nút "Chạy luật" và danh sách run trên bản ghi không nằm trong admin MFE.** Chúng ở app nghiệp vụ qua
+`@vyforge/automation` (người dùng cuối, quyền `automation:rule:Execute` + quyền xem bản ghi).
+
+---
+
+## 11. Lệch quy ước và quyết định
+
+### 11.1 Lệch quy ước
+
+| # | Quy ước | Thiết kế này | Lý do |
+|---|---|---|---|
+| L1 | Bảng runtime là `TenantEntity` | `aut_run`, `aut_run_step`, `aut_rule_stat`, `aut_timer`, `aut_trigger_sample`, `aut_cooldown` dùng JDBC với `tenant_id` tường minh | Partition, ghi lô, upsert đếm; giống workflow L3, notification L1. Có test cách ly |
+| L2 | Mỗi module là một starter | Thêm hai artifact nhỏ: `platform-expression` (thư viện CEL dùng chung) và `platform-automation-api` (annotation) | Tránh hai sandbox CEL lệch nhau; cho module khác đánh dấu event mà không phụ thuộc starter |
+| L3 | Module không đòi thay đổi khối dùng chung | Đề xuất `TaskContextPropagator` cho `-scheduling` (Q3) | Mang chuỗi chống vòng lặp qua việc nền; có phương án dự phòng khi chưa có |
+| L4 | Không khoá cứng enum trong DB | Không lệch | — |
+
+### 11.2 Quyết định đã tự chốt (đổi được khi duyệt)
+
+1. **Chạy sau commit, bất đồng bộ**, không có luật chặn giao dịch (A2).
+2. **CEL là ngôn ngữ duy nhất**, kể cả cho giá trị tham số và chuỗi `{{ }}`; không JSONLogic, không Liquid trong luật (A3,
+   A4).
+3. **Không gọi HTTP tuỳ ý**; ra ngoài qua `webhooks` (A16).
+4. **Quyền của luật = quyền của người publish**, chạy bằng danh tính dịch vụ, kiểm lại định kỳ (A8).
+5. **Không lưu run có điều kiện sai** trừ khi bật ghi chi tiết (A13).
+6. **Mặc định giới hạn:** độ sâu 5 (trần 10), 60 run/phút/luật, 600 run/phút/tenant, 10 hành động/luật, giữ log 30/90
+   ngày, bản chụp dữ liệu 7 ngày.
+7. **Mốc thời gian theo bản ghi bằng hẹn giờ từng bản ghi**, không quét định kỳ; không áp dụng ngược khi bật luật, trừ khi
+   chọn "lên lịch cho bản ghi hiện có".
+8. **Mặc định nhúng**, chạy được ở `platform-services` cho luật xuyên app (A15).
+9. **Luật mẫu do app giao** là bản sao khi cài, không tự cập nhật theo mẫu mới.
+
+### 11.3 Cần người dùng chọn
+
+| # | Câu hỏi | Đề xuất | Phương án khác |
+|---|---|---|---|
+| Q1 | Tách thư viện `platform-expression` dùng chung cho workflow, automation (và forms sau này)? | Có (workflow chưa code nên đổi rẻ) | Mỗi module tự cấu hình CEL (hai sandbox, hai bộ hàm) |
+| Q2 | Trigger `INBOUND` (webhook gọi vào) có trong 0.13.0? | Có, tắt mặc định ở mức bản triển khai và theo gói | Để 0.14.0, khi `api-access` có connector |
+| Q3 | Thêm `TaskContextPropagator` vào `-scheduling` (0.13.0) để chuỗi chống vòng lặp đi qua việc nền? | Có (thay đổi nhỏ, ích cho cả trace/MDC) | Không: chỉ chống vòng lặp trong cùng thread + giới hạn tần suất |
+| Q4 | Giới hạn mặc định theo gói (features): Cơ bản 10 luật / 5.000 lần chạy/tháng; Chuyên nghiệp 100 / 100.000; Doanh nghiệp không giới hạn luật / 1.000.000 | Như đề xuất, người vận hành chỉnh trong catalog | Không giới hạn số lần chạy, chỉ giới hạn số luật |
+| Q5 | Bắt buộc chạy thử trước lần publish đầu tiên của một luật? | Có (UI chặn nút publish cho tới khi chạy thử ít nhất một mẫu) | Chỉ khuyến nghị |
