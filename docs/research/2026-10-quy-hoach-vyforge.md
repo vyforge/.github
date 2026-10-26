@@ -1,10 +1,10 @@
 # Quy hoạch vyforge: danh mục module và lộ trình (Q4/2026 – Q4/2027)
 
-*Báo cáo nghiên cứu, 26/10/2026. Phạm vi gồm mọi repo trong `~/forge`. Bằng chứng trích theo `repo/file:dòng` hoặc số đo
+*Báo cáo nghiên cứu, 26/10/2026. Phạm vi gồm mọi repo của org vyforge. Bằng chứng trích theo `repo/file:dòng` hoặc số đo
 lấy trực tiếp từ mã nguồn (số dòng `src/main`, grep). Version của OSS hạ tầng kiểm qua GitHub Releases API ngày
 26/10/2026. Chỗ nào chưa kiểm chứng được thì ghi rõ.*
 
-Báo cáo song song [`2026-10-module-thong-dung.md`](2026-10-module-thong-dung.md) (nhánh `docs/research-common-modules`)
+Báo cáo song song [`2026-10-module-thong-dung.md`](2026-10-module-thong-dung.md)
 phân tích sâu từng module ứng dụng: thư viện, license, ước lượng công sức. Tài liệu này dùng kết quả đó để **chốt danh mục
 module của cả hệ sinh thái**: cái nào giữ, cái nào gộp, tách, bỏ hoặc thêm mới, kèm lộ trình theo quý.
 
@@ -39,7 +39,7 @@ Nguyên tắc ra quyết định:
    đủ lý do.
 2. Chỉ tạo **repo riêng** khi cần image riêng, quyền truy cập riêng (code bảo mật) hoặc vòng đời riêng.
 3. Đội có một người nên phải **bớt đơn vị phải release** ở chỗ nào được.
-4. Mọi module mới là **lớp mỏng trên OSS** (theo tab 5). Engine thì không tự viết.
+4. Mọi module mới là **lớp mỏng trên OSS** (theo báo cáo module thông dụng). Engine thì không tự viết.
 
 ### 1a. Module hiện có
 
@@ -68,7 +68,7 @@ Nguyên tắc ra quyết định:
 | `platform-starter-web` | 1436/726 | **GIỮ** | Problem Details, request id, `RestClient`: mọi service dùng | — |
 | `platform-starter-security` | 576/510 | **GIỮ**; **không tách** `TokenExchangeClient` | `TokenExchangeClient` chỉ có 141 dòng và đã là tuỳ chọn: chỉ bật khi có `spring-security-oauth2-client` (`PlatformSecurityAutoConfiguration.java:103-128`). Tách ra sẽ thêm một artifact phải release mà không bớt được phụ thuộc nào | Đổi tên trong ADR-0010 cho khớp code (`TokenExchangeInterceptor` → `TokenExchangeClient#interceptor`) · Q4/2026 |
 | `platform-starter-jpa` | 253/126 | **GIỮ**, mở rộng | Nhỏ nhưng là ranh giới phụ thuộc (JPA, Flyway) | Thêm `LocalizedText`, `@SoftDeletable`, `unaccent` + trigram, converter mã hoá cột. Đưa `AesGcmKeyCipher` của auth-server lên đây · Q1/2027 |
-| `platform-starter-messaging` | 529/331 | **GIỮ** | Nền của notification, webhooks, payment (tab 5) | — |
+| `platform-starter-messaging` | 529/331 | **GIỮ** | Nền của notification, webhooks, payment | — |
 | `platform-starter-observability` | 104/86 | **GIỮ** | Ít dòng nhưng mang phụ thuộc OpenTelemetry; gateway và mọi service đều dùng | Thêm quy ước tên metric khớp chart `platform-observability` · Q1/2027 |
 | `platform-starter-authz` | 4103/1503 | **GIỮ** một artifact; **sửa phụ thuộc** | Không tách được rõ ràng: app ở chế độ `local` cần cả engine lẫn API quản trị. Nhưng `spring-boot-starter-jdbc` đang không optional (`pom.xml:29`), khiến service chế độ `remote` bị kéo theo DataSource | Đặt `jdbc` thành optional; nạp migration bằng Flyway (`classpath:db/migration/iam`) thay cho copy tay `iam.sql`; thêm metric · Q4/2026 – Q1/2027 |
 | `platform-starter-audit` | 719/363 | **GIỮ riêng, không gộp vào authz** | `platform-auth-server` dùng `-audit` (`PlatformAuditStore.java`) mà **không** dùng authz. Gộp sẽ kéo IAM vào auth-server. Hiện có **hai bảng audit**: `audit_log` của starter và `iam_audit_log` (`iam.sql:74-85`) | Hợp nhất: khi có cả hai starter, authz phát event và `-audit` ghi lại; bỏ `iam_audit_log` ở bản 1.0. Không thêm phụ thuộc authz → audit, để tránh vòng phụ thuộc (audit đã phụ thuộc tuỳ chọn vào authz cho `AuditLogController`) · Q2/2027 |
@@ -85,12 +85,12 @@ Nguyên tắc ra quyết định:
 | `auth` | 357 | **GIỮ**; **tách core** khi có mobile | Hiện gắn với Better Auth và Next.js. Mobile cần phần dùng chung (đọc claim, `can()`) mà không kéo Next theo | Tách entry `@vyforge/auth/core` (cùng package, không tạo package mới) · Q3/2027, cùng `template-expo` |
 | `i18n` | 136 | **GIỮ** | Dùng ở mọi app, mobile dùng lại phần messages | — |
 | `iam` | 1347 | **GIỮ** (không tách thành app riêng) | Là thư viện UI. `template-nextjs` (`use_iam`) và `platform-admin` dùng lại; app riêng cho IAM sẽ thành console thứ hai | — |
-| `query` | 80 | **GIỮ** riêng | Hiện chưa app nào dùng: không có trong `platform-auth-admin/package.json` và `template-nextjs/template/package.json.jinja`. Nhưng đây là nơi đặt code **phía client** (TanStack, `useEventStream`, inbox thông báo theo tab 5). Gộp vào `api-client` (server-only) sẽ trộn bundle server và client | Thêm `useEventStream` (Q2/2027); `@vyforge/notifications` dùng nó |
+| `query` | 80 | **GIỮ** riêng | Hiện chưa app nào dùng: không có trong `platform-auth-admin/package.json` và `template-nextjs/template/package.json.jinja`. Nhưng đây là nơi đặt code **phía client** (TanStack, `useEventStream`, inbox thông báo). Gộp vào `api-client` (server-only) sẽ trộn bundle server và client | Thêm `useEventStream` (Q2/2027); `@vyforge/notifications` dùng nó |
 | `server` | 117 | **GIỮ** riêng | Cả hai app hiện có đều dùng (`createEnv`, `healthRoute`); không phụ thuộc React | Thêm logger JSON và OTel cho Next · Q1/2027 |
 
 ### 1b. Module mới cần thêm
 
-Chi tiết thư viện, license và công sức nằm ở báo cáo tab 5 (mục 3 và mục 6). Bảng dưới chốt tên, loại, quý và phụ thuộc.
+Chi tiết thư viện, license và công sức nằm ở báo cáo [module thông dụng](2026-10-module-thong-dung.md) (mục 3 và mục 6). Bảng dưới chốt tên, loại, quý và phụ thuộc.
 
 | Module đề xuất | Loại | Bài toán | Tự viết / OSS | Ưu tiên · quý | Phụ thuộc |
 |---|---|---|---|---|---|
@@ -101,7 +101,7 @@ Chi tiết thư viện, license và công sức nằm ở báo cáo tab 5 (mục
 | `platform-starter-files` + `@vyforge/files` | thư viện + package | Upload/download qua presigned URL, quét virus, ảnh | **AWS SDK v2 S3**; SeaweedFS khi chạy local; ClamAV tuỳ chọn. Không dùng MinIO (đã archive) | P0 · Q4/2026 – Q1/2027 | `-web`, `-authz`, `-messaging` |
 | `template-infra` | template (repo mới) | Repo `<du-an>-infra`: Argo CD app, values cho chart `app`, overlay dev/staging/prod, ESO | Argo CD **3.5.6**, Kargo **1.12.4**, ESO **2.14.0** | P0 · Q4/2026 – Q1/2027 | chart `app`, `gitops-bump` |
 | `platform-infra` | repo GitOps (mới) | Triển khai chính các service nền tảng (auth, iam, gateway, admin) và các operator dùng chung | Sinh từ `template-infra`; CloudNativePG **1.30.1** + Barman Cloud Plugin | P0 · Q1/2027 | `template-infra` |
-| `platform-observability` | chart | OTel Collector + LGTM, dashboard và alert theo SLO đóng gói sẵn | Grafana/Loki/Tempo/Mimir, Alloy, Sloth (theo tab 5) | P0 · Q1/2027 | `-observability` |
+| `platform-observability` | chart | OTel Collector + LGTM, dashboard và alert theo SLO đóng gói sẵn | Grafana/Loki/Tempo/Mimir, Alloy, Sloth (theo báo cáo module thông dụng) | P0 · Q1/2027 | `-observability` |
 | `platform-starter-export` | thư viện | Xuất Excel/PDF lớn chạy bất đồng bộ, có link presigned | FastExcel/POI, OpenHTMLtoPDF (LGPL, cần pháp chế duyệt) | P1 · Q1/2027 | `-scheduling`, `-files`, `-notification` |
 | `platform-starter-webhooks` | thư viện | Gửi webhook ra ngoài có ký HMAC, retry, idempotent | **Standard Webhooks** (Java) | P1 · Q1/2027 | `-messaging`, `-jpa` |
 | `platform-starter-features` + `@vyforge/features` | thư viện + package | Feature flag theo tenant hoặc gói dịch vụ | **OpenFeature** SDK + **flagd** | P1 · Q1/2027 | `-security` |
@@ -123,7 +123,7 @@ cần module code: dùng ESO + OpenBao 2.7.1 hoặc secret manager của cloud, 
 |---|---|---|
 | Máy chủ thông báo riêng (`platform-notification-server`), hoặc tự host Novu | `-notification` chạy trong app, dùng outbox | Thêm một service phải trực on-call cho một nhu cầu mà outbox + adapter đã giải được. Phần `enterprise/` của Novu có license thương mại |
 | Search engine riêng, hoặc chạy Elasticsearch mặc định | PostgreSQL FTS; Meilisearch hoặc OpenSearch khi có ADR | Phần lớn dự án tier 0–1 không cần |
-| Workflow engine tự viết; Camunda 8 | Flowable hoặc Temporal khi có dự án cần | Camunda 8 cần license thương mại cho production (tab 5) |
+| Workflow engine tự viết; Camunda 8 | Flowable hoặc Temporal khi có dự án cần | Camunda 8 cần license thương mại cho production |
 | Feature-flag server tự viết; Unleash tự host | flagd (OpenFeature) | Unleash server dùng AGPL; flagd chỉ đọc file hoặc ConfigMap, vận hành nhẹ |
 | Secret store tự viết; Vault | OpenBao hoặc secret manager của cloud, qua ESO | Vault đã chuyển sang BUSL-1.1 |
 | Spring Cloud Config server | Biến môi trường + ESO | Thêm một service mà không có lợi gì so với GitOps |
@@ -152,7 +152,7 @@ xoá hoặc archive.
 | CI (`.github`) | `java-ci` · `node-ci` · `container` (+ cosign) · `gitops-bump` · `maven-publish` · `npm-publish` · `helm-publish` [có] · `copier-update` · `openapi-sdk` · `load-test` [mới] |
 | Bỏ | `nextjs-ui` [bỏ] · `spring-boot-starter` [bỏ] · repo `platform-iam-server` [bỏ sau khi gộp] · bảng `iam_audit_log` [bỏ ở 1.0] · `RateLimitFilter` riêng trong gateway và auth-server [bỏ, thay bằng `-ratelimit`] |
 
-Cạnh phụ thuộc (`A -> B`: A dùng hoặc phụ thuộc B; cạnh có `(opt)` là tuỳ chọn). Phiên điều phối vẽ sơ đồ từ danh sách này.
+Cạnh phụ thuộc (`A -> B`: A dùng hoặc phụ thuộc B; cạnh có `(opt)` là tuỳ chọn). Sơ đồ trong [MODULE_PLAN.md](../MODULE_PLAN.md) vẽ từ danh sách này.
 
 ```
 # Tầng golden path
@@ -413,7 +413,7 @@ ADR-0011 (tenant và danh bạ) và ADR-0012 (IdP mở rộng) đang được vi
 | R4 | **Xây trước khi có khách hàng** (F19) | Pilot tier 1 bắt đầu Q1/2027; module P1/P2 chỉ làm khi pilot cần |
 | R5 | **Code ra nhanh hơn tốc độ review** (`platform-java` 8 minor trong 6 ngày, có commit do AI sinh; DORA 2025: AI tăng throughput nhưng giảm ổn định) | Semver nghiêm sau 1.0; đo rework rate; mỗi lỗi có test tái hiện; review bảo mật cho auth/authz |
 | R6 | **Phụ thuộc GitHub** (Packages, GHCR, attestation trên repo private) | Ký bằng cosign; mirror registry cho khách on-prem; export repo định kỳ |
-| R7 | **License OSS thay đổi** (MinIO đã archive, Vault chuyển BUSL, Camunda cần license) | Mỗi module mới đứng sau một port; thư viện và license ghi trong ADR (tab 5) |
+| R7 | **License OSS thay đổi** (MinIO đã archive, Vault chuyển BUSL, Camunda cần license) | Mỗi module mới đứng sau một port; thư viện và license ghi trong ADR |
 | R8 | **Nhịp nâng cấp của hệ sinh thái** (Boot 6 tháng, K8s khoảng 14 tháng, Keycloak không có LTS) | Rà soát hằng quý; ma trận tương thích |
 
 Sơ đồ quy hoạch: dùng danh sách cạnh ở mục **1d**. Danh sách này thay cho bản cũ.
