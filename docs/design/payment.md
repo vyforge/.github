@@ -1,9 +1,9 @@
 # Thiết kế module `payment`: thanh toán, hoàn tiền, định kỳ, sổ cái, đối soát
 
-> **Trạng thái:** bản thiết kế chờ duyệt (26/10/2026), phiên forge-33.
+> **Trạng thái:** đã duyệt (26/10/2026), phiên forge-33, kèm các chỉnh ở §11. Dùng khối chung của platform-java
+> 0.12.1 (`SecretCipher`, `StarterSchemaMigrator`, `DurableTaskQueue`; phụ lục §5 của quy ước module).
 > **Sản phẩm:** `platform-starter-payment` (platform-java 0.13.0) và `@vyforge/payment` (platform-web).
-> **ADR dự kiến:** ADR-0021 "Thanh toán nội địa" theo [MODULE_PLAN](../MODULE_PLAN.md), hoặc một mục trong ADR-0020,
-> tuỳ phiên điều phối.
+> **ADR:** mục `payment` trong ADR-0020 chung của các module P1.
 > **Đọc kèm:** [module-thong-dung §3.11](../research/2026-10-module-thong-dung.md), quy tắc B25 trong MODULE_PLAN,
 > ADR-0015 (tenant ở tầng dữ liệu).
 
@@ -73,7 +73,7 @@ Mỗi kịch bản ghi rõ khối nào của thiết kế phục vụ nó. "Hi�
 | K2 | App mobile: khách trả bằng ví MoMo hoặc ZaloPay qua deeplink; trên desktop thì quét QR | VN | `nextAction` có `redirect_url`, `deeplink`, `qr` để frontend chọn theo thiết bị | Hiện tại |
 | K3 | Đơn B2B 480 triệu trả bằng chuyển khoản VietQR. Khách gõ sai nội dung, chuyển thiếu, hoặc chuyển hai lần | VN, rất phổ biến | Adapter `sepay`/`payos`; mã đối chiếu trong nội dung CK; `amount_received` cộng dồn; trạng thái `requires_review`; bảng giao dịch chưa khớp và API ghép tay | Hiện tại |
 | K4 | Chuỗi trường học thu học phí. Mỗi cơ sở là một pháp nhân, có merchant VNPay riêng, cùng thuộc một tenant | VN | Nhiều `merchant_account` mỗi tenant; `PaymentRouter` chọn theo `attributes.branch` | Hiện tại |
-| K5 | SaaS thu phí tháng. Khách liên kết ví ZaloPay/MoMo để tự trừ, hoặc mỗi kỳ nhận email kèm link/QR | VN | `Mandate` + `PaymentSchedule` (`auto_charge` / `pay_link`); event `PaymentScheduleDue` cho module notification | Khung hiện tại; tự trừ qua ZaloPay AgreementPay / MoMo token ở 0.14 |
+| K5 | SaaS thu phí tháng. Khách liên kết ví ZaloPay/MoMo để tự trừ, hoặc mỗi kỳ nhận email kèm link/QR | VN | `Mandate` + `PaymentSchedule` (`auto_charge` / `pay_link`); event `PaymentScheduleDue` cho module notification | Hiện tại: `pay_link`; tự trừ qua Stripe, cổng VN có API công khai theo §9.1 |
 | K6 | Khách trả lại một món trong đơn ba món (hoàn một phần), sau đó huỷ cả đơn (hoàn nốt) | Chung | `Refund` nhiều lần; ràng buộc tổng hoàn ≤ đã nhận; sổ cái | Hiện tại |
 | K7 | Đơn trả bằng chuyển khoản cần hoàn tiền. VietQR không có API hoàn, nên kế toán chuyển trả bằng tay | VN | Refund `mode=manual` có số tham chiếu và người xác nhận; sổ cái ghi như hoàn qua cổng | Hiện tại |
 | K8 | Khách mở hai tab và trả hai lần; hoặc IPN thành công tới sau khi intent đã hết hạn | Chung | Attempt thứ hai thành công khi intent đã `succeeded` → `requires_review` + event; chính sách `DuplicatePaymentPolicy` (mặc định: đánh dấu xem xét, tuỳ chọn tự hoàn) | Hiện tại |
@@ -87,7 +87,7 @@ Mỗi kịch bản ghi rõ khối nào của thiết kế phục vụ nó. "Hi�
 | K16 | SaaS đa tenant: tenant nhỏ chưa có hợp đồng với cổng thì dùng merchant của nhà cung cấp SaaS, tenant lớn tự cấu hình merchant riêng | Chung | Merchant mặc định của platform + chính sách `allowPlatformMerchant` | Hiện tại |
 | K17 | Ví trả trước hoặc điểm thưởng của chính merchant: nạp qua VietQR, dùng dần | Chung, có rủi ro pháp lý | Tài khoản sổ cái `liability:prepaid:<customer>` có khoá số dư | Tương lai: chỉ là mẫu hạch toán, cần pháp chế duyệt (mục 8.2) |
 | K18 | Công nợ B2B: xuất hàng ghi nợ, khách trả nhiều lần | Chung | Tài khoản `asset:receivable:<customer>`; intent gắn `reference` là hoá đơn | Tương lai |
-| K19 | Dự án quốc tế dùng Stripe: thẻ quốc tế, 3DS, Apple Pay | Quốc tế | Adapter `stripe` (Checkout Session, redirect); tiền tệ khác VND (`Money` có số mũ) | Tương lai: thêm adapter, không sửa lõi |
+| K19 | Dự án quốc tế dùng Stripe: thẻ quốc tế, 3DS, Apple Pay | Quốc tế | Adapter `stripe` (Checkout Session, redirect); tiền tệ khác VND (`Money` có số mũ) | Hiện tại |
 
 ---
 
@@ -165,11 +165,11 @@ flowchart LR
         rest["REST controllers<br/>/api/v1/payments/**"]
         notify["Notification endpoint<br/>/notify/:provider/:key<br/>/return/:provider/:key"]
         core["Lõi: state machine<br/>PaymentEngine, RefundEngine"]
-        janitor["Janitor<br/>@ClusterScheduled"]
+        janitor["Janitor<br/>DurableTaskQueue payment"]
         recon["Reconciler<br/>@ClusterScheduled perTenant"]
         sched["ScheduleRunner<br/>@ClusterScheduled"]
         ledger["Ledger<br/>PostingRules"]
-        cipher["SecretCipher<br/>AES-GCM keyring"]
+        cipher["SecretCipher<br/>(platform-core)"]
         router["PaymentRouter"]
         hooks["PaymentInterceptor chain"]
         store[("PostgreSQL<br/>payment_* · ledger_*")]
@@ -183,7 +183,7 @@ flowchart LR
         payos["payos"]
         sepay["sepay"]
         manual["manual"]
-        stripe["stripe (sau)"]
+        stripe["stripe"]
     end
 
     gw[("Cổng thanh toán")]
@@ -224,7 +224,7 @@ com.vyforge.platform.payment
 │                    MerchantAccountService, ReconciliationService; record lệnh/kết quả; Money; PaymentErrors; PaymentActions
 ├── event            Event công khai (record, TenantAwareEvent + IntegrationEvent)
 ├── spi              PaymentProvider, ProviderCapability, ProviderDescriptor, NotificationParser, StatementSource,
-│                    PaymentRouter, PaymentInterceptor, PostingRules, SecretCipher, DuplicatePaymentPolicy...
+│                    PaymentRouter, PaymentInterceptor, PostingRules, DuplicatePaymentPolicy...
 ├── ledger           LedgerService (API công khai của sổ cái), LedgerAccountRef, JournalEntry
 ├── provider.vnpay   adapter (mỗi adapter một package; chỉ phụ thuộc spi + platform-starter-web)
 ├── provider.momo / .zalopay / .payos / .sepay / .manual
@@ -237,8 +237,9 @@ Luật ArchUnit của starter: `provider..` chỉ phụ thuộc `spi..`, gốc v
 
 **Vì sao adapter nằm chung artifact.** Adapter VN chỉ là HTTP + HMAC, không kéo dependency ngoài, cùng nhịp release với lõi.
 Nguyên tắc 1 của MODULE_PLAN chỉ tách artifact khi có phụ thuộc ngoài hoặc nhịp release riêng. Mỗi adapter bật/tắt bằng
-`vyforge.payment.providers.<code>.enabled`. Adapter có dependency nặng (Stripe SDK) sẽ là artifact riêng
-`platform-payment-stripe`, đăng ký qua cùng SPI.
+`vyforge.payment.providers.<code>.enabled`. Adapter Stripe cũng nằm chung: nó gọi REST API của Stripe bằng `RestClient`
+(form-encoded), không dùng `stripe-java`, nên không kéo dependency ngoài. Adapter nào cần SDK nặng thì là artifact
+riêng, đăng ký qua cùng SPI.
 
 ### 3.3 Luồng chính: redirect + IPN (VNPay, MoMo, ZaloPay)
 
@@ -345,17 +346,25 @@ sequenceDiagram
 
 ### 3.6 Janitor (đối soát theo giao dịch)
 
-`@ClusterScheduled(name = "payment-janitor", fixedDelay = "30s")`. Một truy vấn toàn cục `@TenantExempt` lấy tối đa
-`batch-size` attempt hoặc refund có `next_check_at <= now()` theo index `(next_check_at) where status in (...)`, rồi xử lý
-từng dòng trong `TenantContext.run(tenant, ...)` với transaction riêng.
+Janitor chạy trên `DurableTaskQueue` của platform (queue `payment`), không tự quét bảng:
 
-- Lịch mặc định cho attempt `awaiting_customer`: lần đầu sau `expires_at` của cổng + 1 phút, rồi `5m, 15m, 1h, 6h, 1d`.
-- Attempt và refund `unknown`: `1m, 5m, 15m, 1h, 6h, 1d, 1d, 1d` (gần lịch UNKNOWN của Kill Bill, dày hơn ở đầu vì ví VN
-  thường có kết quả trong vài phút).
-- Cổng không có API truy vấn (SePay chỉ có webhook): attempt `awaiting_customer` hết `expires_at` thì → `expired`. Tiền về
-  muộn thì đi theo nhánh `unmatched` hoặc `late_success`.
-- Không truy vấn dồn dập: `ProviderCapability.QUERY_RATE` giới hạn số lần truy vấn mỗi phút cho từng merchant account
-  (`-ratelimit`).
+- Attempt chuyển sang `awaiting_customer` hoặc `unknown`: trong cùng transaction, enqueue việc `attempt-check` với
+  `runAt` theo lịch và khoá idempotent `attempt-check:<attemptId>`. Việc chỉ tồn tại khi transaction commit.
+- Handler truy vấn cổng. Có kết quả cuối thì chuyển trạng thái. Chưa có thì ném `RetryTaskLaterException` với khoảng
+  chờ tiếp theo của lịch. Hết lịch thì handler tự quyết `expired` hoặc `requires_review` rồi kết thúc, không để việc thành
+  `DEAD` vì một giao dịch khó.
+- Lịch mặc định cho `awaiting_customer`: lần đầu sau `expires_at` của attempt + 1 phút, rồi `5m, 15m, 1h, 6h, 1d`.
+  `unknown` (attempt và refund): `1m, 5m, 15m, 1h, 6h, 1d, 1d, 1d`, gần lịch UNKNOWN của Kill Bill nhưng dày hơn ở đầu,
+  vì ví VN thường có kết quả trong vài phút.
+- Refund bất đồng bộ (ZaloPay) hoặc `unknown`: việc `refund-check`. Đối soát: việc `recon-run`. Lịch thu: việc
+  `schedule-charge`, khoá `schedule:<id>:<period>`. Trả trùng với `AUTO_REFUND`: việc `auto-refund`.
+- Cổng không có API truy vấn (SePay chỉ có webhook): hết `expires_at` thì attempt → `expired`. Tiền về muộn thì đi theo
+  nhánh `unmatched` hoặc `late_success`.
+- Lưới an toàn: `@ClusterScheduled(name = "payment-sweep", cron = "0 */15 * * * *")` tìm attempt/refund chưa kết thúc mà
+  quá hạn, rồi enqueue lại việc kiểm tra với khoá `attempt-check:<id>:sweep:<ngày giờ>`. Trường hợp này xảy ra khi việc bị
+  huỷ tay hoặc thành `DEAD`.
+- Giới hạn đồng thời theo queue và theo tenant do `vyforge.task.queues.payment.*` quyết định. Không truy vấn dồn dập một
+  cổng.
 
 ---
 
@@ -473,7 +482,6 @@ erDiagram
         varchar status
         bigint amount
         jsonb next_action
-        timestamptz next_check_at
     }
     ledger_entry {
         uuid id PK
@@ -501,8 +509,7 @@ create table payment_merchant_account (
     status            varchar(16)  not null,              -- active | disabled
     notify_key        varchar(43)  not null unique,       -- 256 bit ngẫu nhiên, base64url; nằm trong URL IPN
     public_config     jsonb        not null default '{}', -- không bí mật: tmnCode, partnerCode, BIN + số TK, methods
-    credentials_enc   text         not null,              -- envelope của SecretCipher: v1:<kid>:<iv>:<ciphertext+tag>
-    credentials_kid   varchar(32)  not null,              -- để tìm dòng cần mã hoá lại khi xoay khoá
+    credentials_enc   text         not null,              -- SecretCipher (platform-core): v1:<kid>:…, context payment:merchant:<tenant>:<id>
     priority          int          not null default 100,
     attributes        jsonb        not null default '{}', -- vd. {"branch": "cau-giay"} cho PaymentRouter
     schema_version    int          not null default 1,    -- version của public_config theo ProviderDescriptor
@@ -575,8 +582,6 @@ create table payment_attempt (
     mandate_id         uuid,
     expires_at         timestamptz  not null,
     completed_at       timestamptz,
-    next_check_at      timestamptz,
-    check_count        int          not null default 0,
     attributes         jsonb        not null default '{}',
     created_at timestamptz not null, created_by varchar(255), updated_at timestamptz, updated_by varchar(255),
     version            bigint       not null default 0,
@@ -584,8 +589,8 @@ create table payment_attempt (
 );
 create index payment_attempt_intent_idx on payment_attempt (tenant_id, intent_id);
 create index payment_attempt_txn_idx    on payment_attempt (merchant_account_id, provider_txn_id) where provider_txn_id is not null;
-create index payment_attempt_check_idx  on payment_attempt (next_check_at)
-    where status in ('pending', 'awaiting_customer', 'unknown');           -- janitor (toàn cục)
+create index payment_attempt_open_idx   on payment_attempt (expires_at)
+    where status in ('pending', 'awaiting_customer', 'unknown');           -- lưới an toàn payment-sweep (toàn cục)
 create index payment_attempt_recon_idx  on payment_attempt (tenant_id, merchant_account_id, completed_at);
 
 create table payment_refund (
@@ -605,8 +610,6 @@ create table payment_refund (
     failure_code       varchar(64),
     provider_code      varchar(32),
     idempotency_key    varchar(255),
-    next_check_at      timestamptz,
-    check_count        int          not null default 0,
     completed_at       timestamptz,
     attributes         jsonb        not null default '{}',
     created_at timestamptz not null, created_by varchar(255), updated_at timestamptz, updated_by varchar(255),
@@ -614,7 +617,7 @@ create table payment_refund (
 );
 create unique index payment_refund_idem_uq on payment_refund (tenant_id, idempotency_key) where idempotency_key is not null;
 create index payment_refund_intent_idx on payment_refund (tenant_id, intent_id);
-create index payment_refund_check_idx  on payment_refund (next_check_at) where status in ('pending', 'processing', 'unknown');
+create index payment_refund_open_idx   on payment_refund (created_at) where status in ('pending', 'processing', 'unknown');
 
 -- Bằng chứng từ cổng: IPN, webhook, kết quả truy vấn, return. Chứng từ, giữ theo §7.5
 create table payment_provider_event (
@@ -844,8 +847,9 @@ Ghi chú về bảng:
 IPN, webhook và Return URL không có JWT. Tenant được xác định từ `notify_key` trong path. Truy vấn
 `payment_merchant_account by notify_key` là truy vấn `@TenantExempt` duy nhất ở đường vào. Chỉ sau khi **kiểm chữ ký bằng
 secret của chính merchant đó** mới mở `TenantContext.run(account.tenantId, ...)`. Đây là chỗ lệch ADR-0015 ("tenant chỉ lấy
-từ claim"), ghi ở §10. Janitor, job hết hạn và job lịch thu dùng truy vấn toàn cục `@TenantExempt` theo index của
-`next_check_at` hoặc `next_run_at`, rồi chạy từng dòng trong tenant của dòng đó.
+từ claim"), đã được duyệt và ghi trong ADR-0020. Việc nền chạy trong tenant của việc (`DurableTaskQueue`). Job hết hạn,
+`payment-sweep` và job lịch thu dùng truy vấn toàn cục `@TenantExempt` theo index của `expires_at` hoặc `next_run_at`,
+rồi enqueue hoặc chạy từng dòng trong tenant của dòng đó.
 
 ### 4.5 Sổ cái: hệ tài khoản và quy tắc hạch toán mặc định
 
@@ -901,8 +905,10 @@ TigerBeetle.
   - `attributes` là chỗ mở rộng có kiểm soát: mỗi khoá phải được đăng ký qua `AttributeDefinition` (tên, kiểu, ai được
     ghi), khoá lạ bị từ chối;
   - `metadata` thuộc app, có giới hạn kích thước như Stripe.
-- **Migration:** Flyway của riêng starter, location `classpath:META-INF/vyforge/db/payment`, bảng lịch sử riêng
-  `vyforge_payment_schema_history`, version `V1__`, `V2__`... độc lập với app (§10, quyết định D1).
+- **Migration:** `StarterSchema.of("payment")` của platform-starter-jpa: location `classpath:META-INF/vyforge/db/payment`,
+  bảng lịch sử riêng `flyway_schema_history_payment`, version `V1__`, `V2__`... độc lập với app, chạy trước
+  `EntityManagerFactory`. Tắt bằng `vyforge.payment.schema.migrate=false`; khi đó DBA chạy file gộp
+  `META-INF/vyforge/sql/payment.sql`.
 
 ---
 
@@ -1160,11 +1166,12 @@ test được bằng unit test với vector chữ ký lấy từ tài liệu, v�
 | Cổng | Methods | Query | Refund | Partial | Mandate off-session | Statement API |
 |---|---|---|---|---|---|---|
 | vnpay | `vnpay_qr`, `domestic_card`, `intl_card`, `vnpay_wallet` | ✓ `querydr` | ✓ | ✓ (`03`) | ✗ (`token_pay` cần OTP) | ✗ (file) |
-| momo | `wallet`, `domestic_card`, `intl_card` | ✓ | ✓ | ✓ | ✓ (token, 0.14) | ✗ (file) |
-| zalopay | `wallet`, `domestic_card`, `intl_card` | ✓ | ✓ (async) | ✓ (kiểm toàn văn) | ✓ (AgreementPay, 0.14) | ✗ |
+| momo | `wallet`, `domestic_card`, `intl_card` | ✓ | ✓ | ✓ | ✓ (token, khi đọc được toàn văn) | ✗ (file) |
+| zalopay | `wallet`, `domestic_card`, `intl_card` | ✓ | ✓ (async) | ✓ (kiểm toàn văn) | ✓ (AgreementPay, nếu đối chiếu được tài liệu) | ✗ |
 | payos | `bank_transfer` | ✓ | ✗ | – | ✗ | ✓ |
 | sepay | `bank_transfer` | ✗ (chỉ webhook) | ✗ | – | ✗ | ✓ (API giao dịch) |
 | manual | `cash`, `bank_transfer`, `other` | – | ✓ (tay) | ✓ | ✗ | ✗ |
+| stripe | `card` (Checkout), ví quốc tế qua Checkout | ✓ | ✓ | ✓ | ✓ (`mode=setup` + `off_session`) | ✗ (0.13) |
 
 ### 6.2 Mã kết quả chuẩn hoá
 
@@ -1195,7 +1202,6 @@ Adapter ánh xạ mã của cổng sang tập mã chung để nghiệp vụ và 
 | `UnderpaymentPolicy` | `WAIT_THEN_REVIEW` (chờ tới `expires_at` để khách chuyển bổ sung, rồi `requires_review`) | `ACCEPT_WITH_TOLERANCE(amount)` cho sai số nhỏ |
 | `TransferMemoFormat` | `VF` + base32(seq), 8 ký tự | Tiền tố riêng của tenant để SePay tách mã |
 | `PaymentReferenceDescriber` | dùng `description` | Dựng `vnp_OrderInfo`/`orderInfo` không dấu, đúng giới hạn độ dài của từng cổng |
-| `SecretCipher` | `AesGcmSecretCipher` (keyring trong cấu hình) | Adapter OpenBao Transit hoặc KMS |
 | `AttributeDefinition` | — | Đăng ký khoá `attributes` hợp lệ |
 
 ### 6.4 Cấu hình theo tenant
@@ -1264,10 +1270,11 @@ vyforge.payment:
     default-expiry: 30m
     max-attempts: 10
   attempt.default-expiry: 15m                      # VNPay vnp_ExpireDate, payOS expiredAt...
-  encryption:
-    active-key: k2026a
-    keys: { k2026a: ${PAYMENT_KEY_2026A} }         # 32 byte base64; giữ khoá cũ để giải mã tới khi rotate xong
-  janitor: { enabled: true, interval: 30s, batch-size: 200 }
+  sweep.cron: "0 */15 * * * *"
+vyforge.crypto:                                    # SecretCipher của platform-core
+  active-key: k2026a
+  keys: { k2026a: ${CRYPTO_KEY_2026A} }            # 32 byte base64; giữ khoá cũ để giải mã tới khi xoay xong
+vyforge.task.queues.payment: { max-attempts: 20 }  # DurableTaskQueue
   reconciliation: { cron: "0 30 6 * * *", zone: Asia/Ho_Chi_Minh, lookback: 3d }
   retention: { pii: 2y, records: 10y }
   routing.match-attributes: [branch]
@@ -1294,8 +1301,8 @@ khi cần (proxy, mock).
 | `vyforge.payment.notifications` | counter | `provider`, `kind`, `outcome` (accepted, duplicate, unmatched, bad_signature, amount_mismatch, failed) |
 | `vyforge.payment.provider.requests` | timer | `provider`, `operation` (start, query, refund...), `outcome` |
 | `vyforge.payment.refunds` | counter | `provider`, `mode`, `outcome` |
-| `vyforge.payment.janitor.backlog` | gauge | `type` (attempt, refund) |
-| `vyforge.payment.janitor.oldest.seconds` | gauge | |
+| `vyforge.task.*` (của platform) | | `queue=payment`, `kind` |
+| `vyforge.payment.open.oldest.seconds` | gauge (attempt/refund chưa kết thúc lâu nhất) | `type` |
 | `vyforge.payment.reconciliation.discrepancies` | counter | `provider`, `type` |
 | `vyforge.payment.ledger.imbalanced` | gauge (kết quả kiểm hằng đêm, phải = 0) | |
 | `vyforge.payment.review.open` | gauge | `reason` |
@@ -1311,7 +1318,7 @@ Indicator **không** nằm trong nhóm readiness: cổng VNPay sập không đư
 |---|---|---|
 | `PaymentBadSignatureSpike` | `bad_signature` > 10 trong 5 phút | warning (dò khoá hoặc cấu hình sai) |
 | `PaymentSuccessRateDrop` | tỷ lệ `succeeded` của một provider giảm > 50% so với cùng giờ 7 ngày trước | critical |
-| `PaymentJanitorBacklog` | `janitor.oldest.seconds` > 1h | warning |
+| `PaymentOpenTooLong` | `open.oldest.seconds` > 1h, hoặc việc `payment` thành `DEAD` | warning |
 | `PaymentReviewOpen` | `review.open` > 0 trong 4h | warning (kế toán phải xử lý) |
 | `PaymentReconDiscrepancy` | discrepancy mới | warning |
 | `PaymentLedgerImbalanced` | > 0 | critical (lỗi nghiêm trọng, không được xảy ra) |
@@ -1335,12 +1342,12 @@ Indicator **không** nằm trong nhóm readiness: cổng VNPay sập không đư
 
 | Chế độ | Phát hiện | Xử lý |
 |---|---|---|
-| IPN không tới (sai URL, firewall) | backlog của janitor, `notifications` = 0 | Janitor tự giải quyết; UI hiện `notifyUrl` đúng để dán lại vào cổng |
+| IPN không tới (sai URL, firewall) | backlog queue `payment`, `notifications` = 0 | Janitor tự giải quyết; UI hiện `notifyUrl` đúng để dán lại vào cổng |
 | Secret sai sau khi cổng đổi khoá | `bad_signature` tăng | Cập nhật credentials; event `failed`/`unmatched` thì bấm `reprocess` |
 | Tiền về sai nội dung | `unmatched` | Màn `UnmatchedTransfers`: ghép tay vào intent (cần quyền) hoặc hoàn tay |
 | Intent `requires_review` | gauge + event | `resolveReview`: chấp nhận, hoặc từ chối kèm hoàn |
 | Lệch đối soát | `recon_item` mở | `resolve` có ghi chú; điều chỉnh sổ cái bằng bút toán tay có quyền riêng |
-| Xoay khoá mã hoá | — | Thêm khoá mới, đặt `active-key`, job `payment-rekey` mã hoá lại theo `credentials_kid`, rồi gỡ khoá cũ |
+| Xoay khoá mã hoá | — | Thêm khoá mới vào `vyforge.crypto.keys`, đặt `active-key`; job `payment-rekey` mã hoá lại dòng có `needsRotation`, rồi gỡ khoá cũ |
 | Lộ `notify_key` / bị spam | rate limit, metric | `rotate-notify-key`, rồi cập nhật URL ở cổng |
 
 ---
@@ -1426,8 +1433,9 @@ Indicator **không** nằm trong nhóm readiness: cổng VNPay sập không đư
   - kiểm `merchant`/`partnerCode`/`tmnCode` trong payload trùng với merchant account của `notify_key`. Thiếu bước này thì
     tenant A có thể dùng IPN hợp lệ của mình để chạm vào tenant B.
 - **Đối chiếu số tiền và tiền tệ** trước mọi chuyển sang `succeeded`. Đối chiếu ở cả đường IPN lẫn đường query.
-- **Secret:** AES-256-GCM, nonce 96 bit ngẫu nhiên, AAD = `tenant_id|merchant_account_id`, nên ciphertext chép sang dòng
-  khác không giải mã được. Keyring có `kid` để xoay khoá. Secret không bao giờ xuất hiện trong log, API hay `toString()`.
+- **Secret:** `SecretCipher` của platform-core (AES-256-GCM, keyring `vyforge.crypto.*`) với context
+  `payment:merchant:<tenant>:<id>` (token của mandate: `payment:mandate:<tenant>:<id>`), nên bản mã chép sang dòng khác
+  không giải mã được. Secret không bao giờ xuất hiện trong log, API hay `toString()`.
 - **Phân quyền:** catalog `PaymentActions` (`payment:intent:*`, `payment:refund:*`, `payment:merchant:*`,
   `payment:mandate:*`, `payment:schedule:*`, `payment:event:*`, `payment:reconciliation:*`, `payment:ledger:*`). Các thao
   tác nhạy cảm (tạo/sửa merchant, hoàn tiền, ghi nhận tay, ghép tay, bút toán tay, xem payload thô) đều ghi `AuditLog`.
@@ -1446,11 +1454,11 @@ Indicator **không** nằm trong nhóm readiness: cổng VNPay sập không đư
 Thứ tự (mỗi bước có test, commit riêng):
 
 1. **Khung starter:** module `platform-starter-payment`, thêm vào `pom.xml` gốc và `platform-bom` (0.13.0-SNAPSHOT),
-   auto-configuration, properties, Flyway riêng (`V1__payment.sql` theo §4.3), `PaymentErrors` + i18n vi/en,
+   auto-configuration, properties, `StarterSchema.of("payment")` + `V1__payment.sql` (§4.3) + file gộp, `PaymentErrors` + i18n vi/en,
    `PaymentActions`.
 2. **Domain + state machine:** `Money`, bảng chuyển cho intent/attempt/refund/mandate/schedule, `TransitionService` (lịch
    sử, interceptor, event). Unit test sinh tự động cho mọi cặp chuyển.
-3. **SecretCipher** AES-GCM keyring; **MerchantAccountService**, API quản trị; `notify_key`.
+3. **MerchantAccountService** (credentials qua `SecretCipher` của platform-core), API quản trị; `notify_key`.
 4. **Sổ cái:** entity, `LedgerService`, `PostingRules` mặc định, trigger cân bằng và bất biến (Testcontainers chứng minh
    database từ chối bút toán lệch và lệnh sửa/xoá), snapshot, job kiểm toàn vẹn.
 5. **PaymentEngine:** createIntent (idempotent), startAttempt, router, cancel, expiry job, review, recordManual,
@@ -1460,12 +1468,16 @@ Thứ tự (mỗi bước có test, commit riêng):
    → `payos` (create, webhook, get, cancel) → `momo` (create captureWallet/payWithMethod, IPN, query, refund) → `zalopay`
    (create, callback, query, refund + query_refund). Mỗi adapter có test vector chữ ký và WireMock.
 8. **RefundEngine:** một phần, toàn phần, async, manual; khoá intent.
-9. **Janitor**, job hết hạn, **ScheduleRunner** (chế độ `pay_link`; `auto_charge` chạy qua SPI, chưa có adapter thật),
+9. **Janitor** trên `DurableTaskQueue`, job hết hạn, `payment-sweep`, **ScheduleRunner** (`pay_link` và `auto_charge`),
    **Reconciler** (payOS và SePay qua API; nhập CSV chung theo mapping cột).
 10. **REST controllers**, OpenAPI, `@RequiresPermission`, audit.
 11. **Metric, span, health.**
 12. **README** của starter, mục trong README gốc.
-13. **`@vyforge/payment`:** client + server actions, `PaymentMethodPicker`, `PaymentNextAction`, `PaymentQr`,
+13. **Thu định kỳ bằng token** (`auto_charge`): Stripe (lưu thẻ bằng Checkout `mode=setup`, rồi PaymentIntent
+    `off_session`); ZaloPay AgreementPay nếu đối chiếu được tài liệu công khai. VNPay `token_pay` không dùng được vì
+    vẫn cần OTP; MoMo tokenization làm khi đọc được toàn văn tài liệu.
+14. **Adapter `stripe`:** Checkout Session (redirect), webhook `Stripe-Signature`, truy vấn, refund, đa tiền tệ.
+15. **`@vyforge/payment`:** client + server actions, `PaymentMethodPicker`, `PaymentNextAction`, `PaymentQr`,
     `PaymentRedirect`, `PaymentStatus`, `PaymentResult`, `MerchantAccountForm`, `PaymentTable`, `RefundForm`,
     `UnmatchedTransfers`; i18n vi/en; Storybook story cho QR và trạng thái.
 
@@ -1487,9 +1499,9 @@ Thứ tự (mỗi bước có test, commit riêng):
 
 | Bản | Việc |
 |---|---|
-| 0.14 | Tự trừ tiền: ZaloPay AgreementPay, MoMo tokenization (cần hợp đồng và sandbox riêng); đối soát VNPay, MoMo theo file sao kê; `AUTO_REFUND` cho trả trùng; UI đối soát đầy đủ |
-| 0.15 | Adapter `stripe` (artifact riêng, Checkout Session, webhook có ký, `capture_method=manual`), đa tiền tệ |
-| Theo pilot | Ví trả trước, công nợ (sau khi pháp chế duyệt); partition bảng lớn; định tuyến theo tỷ lệ thành công; adapter OpenBao cho `SecretCipher`; module `billing` dựng trên mandate + schedule |
+| 0.14 | Phần thu bằng token chưa kịp ở 0.13 (xem báo cáo); đối soát VNPay, MoMo theo file sao kê; UI đối soát đầy đủ |
+| 0.15 | Stripe `capture_method=manual`, hosted fields (Elements) kèm CSP |
+| Theo pilot | API ví trả trước, công nợ (sau khi pháp chế duyệt; 0.13 chỉ có mẫu hạch toán); partition bảng lớn; định tuyến theo tỷ lệ thành công; module `billing` dựng trên mandate + schedule |
 
 ---
 
@@ -1499,17 +1511,28 @@ Thứ tự (mỗi bước có test, commit riêng):
 
 | Quy ước | Lệch | Lý do |
 |---|---|---|
-| Tenant chỉ lấy từ claim `tenant_id` của token (ADR-0015) | IPN/webhook/return lấy tenant từ `notify_key` của merchant account, **sau khi** kiểm chữ ký bằng secret của merchant đó | Cổng không gửi JWT. Chữ ký là bằng chứng xác thực tương đương. Tra cứu `@TenantExempt` có một chỗ duy nhất, có test |
-| Migration: `R__` hoặc dải số riêng trong lịch sử Flyway chung | Flyway riêng của starter, bảng lịch sử `vyforge_payment_schema_history`, version `V1..` | Schema payment lớn (16 bảng, trigger) và sẽ tiến hoá. `R__` buộc mọi DDL phải viết idempotent, khó cho trigger và đổi kiểu cột. Dải số riêng trong lịch sử chung gây lỗi out-of-order khi app thêm migration số nhỏ hơn. Bảng lịch sử riêng cho version độc lập và không đụng app. Phương án dự phòng nếu không duyệt: `R__` (D1) |
-| Phụ thuộc `-webhooks` để dùng tiện ích kiểm chữ ký (theo quy hoạch) | Payment tự có tiện ích HMAC nhỏ (`spi.Signatures`) | `-webhooks` đang làm song song, chưa merge. Chữ ký của mỗi cổng VN đều khác Standard Webhooks, nên phần dùng chung chỉ là HMAC + so sánh hằng thời gian. Gộp lại khi cả hai đã merge |
-| Secret mã hoá at-rest dùng tiện ích chung | `SecretCipher` (SPI) + `AesGcmSecretCipher` nằm trong payment | Platform chưa có tiện ích này; notification và webhooks cũng cần. Đề xuất nâng lên `platform-core` sau (D2) |
+| Tenant chỉ lấy từ claim `tenant_id` của token (ADR-0015) | IPN/webhook/return lấy tenant từ `notify_key` của merchant account, **sau khi** kiểm chữ ký bằng secret của merchant đó. **Đã duyệt**, ghi trong mục `payment` của ADR-0020 | Cổng không gửi JWT. Chữ ký là bằng chứng xác thực tương đương. Tra cứu `@TenantExempt` có một chỗ duy nhất, có test |
+| Phụ thuộc `-webhooks` để dùng tiện ích kiểm chữ ký (theo quy hoạch) | Payment tự có tiện ích HMAC nhỏ (`spi.Signatures`). **Đã duyệt** | Chữ ký của mỗi cổng VN đều khác Standard Webhooks, nên phần dùng chung chỉ là HMAC + so sánh hằng thời gian |
 
-### 10.2 Quyết định cần người dùng hoặc phiên điều phối chọn
+### 10.2 Quyết định đã chốt (review 26/10/2026)
 
-| # | Câu hỏi | Đề xuất (mặc định nếu không ai chọn) |
+| # | Câu hỏi | Kết quả |
 |---|---|---|
-| D1 | Cách chạy migration: Flyway riêng có bảng lịch sử riêng, hay `R__` như scheduling? | Flyway riêng. Nếu các module P1 khác cũng cần schema lớn, đây nên thành quy ước chung (ADR-0020) |
-| D2 | `SecretCipher` để trong payment, hay đưa vào `platform-core` để notification/webhooks dùng chung? | Đưa vào `platform-core` ở 0.13 nếu phiên điều phối gom được; không thì payment giữ, rồi chuyển ở 0.14 |
-| D3 | Cổng nào làm trong 0.13? | VNPay, SePay, payOS, MoMo, ZaloPay (thu, IPN, query, refund). Tự trừ tiền ở 0.14, Stripe ở 0.15 |
-| D4 | Có làm ví trả trước/công nợ không? | Không có API ở 0.13; chỉ có mẫu hạch toán. Chờ pháp chế đọc TT 22/2026 |
-| D5 | Lưu payload gốc của cổng 10 năm (đã che PII sau 2 năm) có chấp nhận được không? | Có |
+| D1 | Cách chạy migration | `StarterSchemaMigrator` chung của platform-starter-jpa, bảng lịch sử `flyway_schema_history_payment` |
+| D2 | Đặt `SecretCipher` ở đâu | Dùng `com.vyforge.platform.core.crypto.SecretCipher` của platform-core, không tự làm |
+| D3 | Cổng nào trong 0.13 | VNPay, SePay, payOS, MoMo, ZaloPay trước. Sau đó, vẫn trong 0.13: thu định kỳ bằng token với cổng có API công khai, và adapter Stripe cho thẻ quốc tế. Phần không kịp ghi trong báo cáo |
+| D4 | Ví trả trước, công nợ | Chỉ có mẫu hạch toán, không có API |
+| D5 | Lưu payload gốc 10 năm, che PII sau 2 năm | Chấp nhận |
+
+---
+
+## 11. Chỉnh sau review
+
+| Chỗ | Trước | Sau |
+|---|---|---|
+| Mã hoá secret | `SecretCipher` riêng của payment | `SecretCipher` của platform-core, context `payment:merchant:<tenant>:<id>`; bỏ cột `credentials_kid` (khoá nằm trong tiền tố bản mã, `needsRotation` cho biết dòng cần mã hoá lại) |
+| Migration | Flyway riêng tự viết | `StarterSchema.of("payment")`, `flyway_schema_history_payment`, file gộp `META-INF/vyforge/sql/payment.sql` |
+| Janitor, đối soát, lịch thu | Tự quét `next_check_at` | `DurableTaskQueue` queue `payment` (`attempt-check`, `refund-check`, `recon-run`, `schedule-charge`, `auto-refund`); bỏ cột `next_check_at`/`check_count`; thêm lưới an toàn `payment-sweep` |
+| Stripe | 0.15, artifact riêng dùng SDK | 0.13, chung starter, gọi REST bằng `RestClient` |
+| Thu bằng token | 0.14 | 0.13, theo thứ tự ở §9.1 |
+| ADR | ADR-0021 riêng | Mục `payment` trong ADR-0020 |
