@@ -1585,45 +1585,64 @@ Cho app nghiệp vụ:
 
 Package không phụ thuộc package admin.
 
-### 12.3 Admin (microfrontend `@vyforge/payment-admin`)
+### 12.3 Admin (microfrontend, theo `platform-services.md` của forge-37)
 
-Trong lúc forge-37 chốt kỹ thuật microfrontend, component admin nằm ở `@vyforge/payment/admin` (subpath), chỉ dùng
-`@vyforge/ui` và client ở 12.2. Sau đó chỉ cần bọc lại thành MFE, không phải viết lại.
+Kỹ thuật đã chốt (D1–D10 của `docs/design/platform-services.md`): Next.js Multi-Zones; zone `payment-admin` có
+`basePath` `/m/payment`; khung chung là `@vyforge/admin-shell`; gắn vào shell lúc chạy qua registry và manifest
+`contract: 1`.
 
-**Màn hình:**
+Phần việc của module payment (mục 4.12 của tài liệu đó):
 
-| Màn hình | Route (tương đối) | Quyền tối thiểu | API | Bản |
-|---|---|---|---|---|
-| Danh sách thanh toán | `/payments` | `payment:intent:List` | `GET /intents` | tenant admin, kế toán |
-| Chi tiết thanh toán (attempt, lịch sử, sổ cái, hoàn tiền, duyệt) | `/payments/:id` | `payment:intent:Get` | `GET /intents/{id}`, `/attempts`, `POST /refunds`, `/review`, `/manual-payments`, `/manual-refunds` | tenant admin, kế toán |
-| Tiền về chưa khớp | `/payments/unmatched` | `payment:event:List` + `payment:intent:Match` | `GET /provider-events?status=unmatched`, `POST /provider-events/{id}/match` | kế toán |
-| Merchant account | `/payments/merchants` | `payment:merchant:List` | `GET/POST/PATCH /merchant-accounts`, `GET /providers`, `/test`, `/rotate-notify-key` | tenant admin |
-| Chính sách | `/payments/settings` | `payment:settings:Update` | `GET/PUT /settings` | tenant admin |
-| Đối soát | `/payments/reconciliation` | `payment:reconciliation:List` | `/reconciliation/**` | kế toán |
-| Sổ cái | `/payments/ledger` | `payment:ledger:List` | `/ledger/**` | kế toán |
-| Lịch thu, liên kết | `/payments/schedules` | `payment:schedule:List` | `/schedules/**`, `/mandates` | tenant admin |
+1. **Component** trong `@vyforge/payment/admin`. Component nhận dữ liệu và Server Action qua props, nhận `can` để ẩn nút,
+   không tự đọc cookie hay biến môi trường. Cùng bộ component dùng được cho MFE của người vận hành, MFE ở chế độ tenant
+   admin, và trang `/admin` dựng sẵn trong app nghiệp vụ.
+2. **Endpoint** `GET /api/v1/payments/admin/info`. Cần đăng nhập, không cần action riêng. Trả
+   `{module: "payment", version, apiVersion: 1, capabilities, mode}`. `capabilities` gồm:
+   - cổng đang bật (`provider.vnpay`, `provider.sepay`…);
+   - tính năng tuỳ chọn: `mandate` (có cổng `MANDATE_SETUP`), `statement_api`, `platform_merchants`.
+3. **App zone** `platform-admin/apps/payment-admin` (route, trang, Server Action, `admin.manifest.ts`) dựng bằng
+   `pnpm create-admin-zone payment` khi template của forge-37 có. Đây không phải việc của 0.13.
+4. Thao tác tiền (hoàn tiền, ghi nhận tay, ghép tay, bút toán tay) yêu cầu MFA ở cả chế độ tenant: trang trong zone gọi
+   `requireStepUp()` của `@vyforge/admin-shell`. Component chỉ nhận Server Action đã bọc sẵn.
 
-**Hai bản:**
+**Màn hình** (bảng 6.6 của `platform-services.md`; O = người vận hành, T = tenant admin):
 
-- **Tenant admin:** chỉ thấy dữ liệu tenant của token (API đã giới hạn theo tenant).
-- **Người vận hành platform:** quản lý merchant mặc định của platform. Bản 0.13 cấu hình phần này bằng
-  `vyforge.payment.platform-merchants`, không có màn hình; màn hình làm cùng `platform-admin` sau.
+| Màn hình | Nhóm | Action | Component |
+|---|---|---|---|
+| Giao dịch: danh sách, chi tiết attempt, timeline | O+T | `payment:intent:List/Get` | `PaymentTable`, `PaymentDetail` |
+| Xử lý tay: đồng bộ, xem xét, ghi nhận tiền mặt/CK, ghép tiền chưa khớp | O+T | `payment:intent:Get/Review/RecordManual/Match` | `UnmatchedTransfers`, `ManualPaymentForm`, `ReviewPanel` |
+| Hoàn tiền | O+T | `payment:refund:*` | `RefundForm`, `RefundTable` |
+| Merchant: thêm cổng, kiểm khoá, xoay `notify_key`, URL dán vào cổng | O+T | `payment:merchant:*` | `MerchantAccountForm` (form dựng từ `ConfigField`), `MerchantAccountTable` |
+| Event từ cổng | O+T | `payment:event:List/GetRaw/Reprocess` | `ProviderEventTable` |
+| Đối soát | O+T | `payment:reconciliation:*` | `ReconciliationRuns`, `ReconItemResolver` |
+| Sổ cái | O+T | `payment:ledger:*` | `LedgerAccountTable`, `JournalEntryTable` |
+| Mandate, lịch thu | O+T | `payment:mandate:*`, `payment:schedule:*` | `MandateTable`, `PaymentScheduleTable` |
+| Tình trạng cổng của platform | O | `payment:merchant:List` | `ProviderHealthBoard` (bản sau, cần metric qua API) |
 
-**Manifest (hợp đồng với shell; khuôn dạng cuối theo forge-37):**
+**Manifest** (phác thảo; định nghĩa bằng `defineAdminManifest` trong zone):
 
-```json
-{
-  "module": "payment",
-  "version": "0.13.0",
-  "route": "/payments",
-  "apiBase": "/api/v1/payments",
-  "menu": [
-    { "label": { "vi": "Thanh toán", "en": "Payments" }, "path": "/payments", "permission": "payment:intent:List" },
-    { "label": { "vi": "Đối soát", "en": "Reconciliation" }, "path": "/payments/reconciliation", "permission": "payment:reconciliation:List" },
-    { "label": { "vi": "Merchant", "en": "Merchants" }, "path": "/payments/merchants", "permission": "payment:merchant:List" }
+```ts
+defineAdminManifest({
+  contract: 1, name: 'payment', title: { vi: 'Thanh toán', en: 'Payments' }, icon: 'credit-card', order: 300,
+  audiences: ['operator', 'tenant'],
+  minPermission: { anyOf: [{ action: 'payment:intent:List', resource: 'vrn:payment:intent/*' }] },
+  entitlement: 'admin.payment',
+  api: { base: '/api/v1/payments', requires: '>=0.13.0 <1.0.0' },
+  menu: [
+    { id: 'payments', path: '/payments', title: { vi: 'Giao dịch', en: 'Payments' },
+      permission: { action: 'payment:intent:List', resource: 'vrn:payment:intent/*' } },
+    { id: 'unmatched', path: '/unmatched', title: { vi: 'Tiền về chưa khớp', en: 'Unmatched transfers' },
+      permission: { action: 'payment:event:List', resource: 'vrn:payment:event/*' } },
+    { id: 'merchants', path: '/merchants', title: { vi: 'Cổng thanh toán', en: 'Merchant accounts' },
+      permission: { action: 'payment:merchant:List', resource: 'vrn:payment:merchant/*' } },
+    { id: 'reconciliation', path: '/reconciliation', title: { vi: 'Đối soát', en: 'Reconciliation' },
+      permission: { action: 'payment:reconciliation:List', resource: 'vrn:payment:merchant/*' } },
+    { id: 'ledger', path: '/ledger', title: { vi: 'Sổ cái', en: 'Ledger' },
+      permission: { action: 'payment:ledger:List', resource: 'vrn:payment:ledger/*' } },
   ],
-  "minPermission": "payment:intent:List"
-}
+});
 ```
 
-i18n vi/en nằm trong package. Shell chỉ cấp phiên đăng nhập, token và locale.
+**Chế độ `remote`** (D8): app gọi payment ở `platform-services` qua cùng interface Java. 0.13 chỉ có chế độ nhúng; chế
+độ `remote` là việc tiếp theo, ghi trong báo cáo. Khi payment chạy ở `platform-services`, app nhận kết quả qua topic
+Kafka `payment-events` (`@Externalized`) thay vì listener trong JVM.
