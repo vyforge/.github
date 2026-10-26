@@ -12,6 +12,20 @@ theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo 
 - [Quy hoạch danh mục module và lộ trình](research/2026-10-quy-hoach-vyforge.md): bằng chứng trong code cho từng quyết
   định, kiến trúc runtime đích, rủi ro.
 
+## Tiến độ (cập nhật 26/10/2026)
+
+| Việc | Trạng thái |
+|---|---|
+| Archive `nextjs-ui`, `spring-boot-starter` | Xong (archive, chưa xoá) |
+| Đổi tên `platform-auth-admin` → `platform-admin` | Xong |
+| Tạo `platform-ci` (vyforge-ci 0.1, ci-toolbox), `template-infra`, `platform-infra` | Đã tạo repo; `platform-ci` v0.1.0 đã đẩy lên |
+| `platform-core`, tenant ở tầng dữ liệu, mặc định `RestClient` (ADR-0015) | Xong, platform-java 0.10.0 |
+| `-privacy` (tối thiểu), `-scheduling`, `-ratelimit` | Xong, platform-java 0.11.0 |
+| Tenant, danh bạ, IdP mở rộng, quản trị theo tenant | Xong (ADR-0011, ADR-0012) |
+| CI/CD trung lập (ADR-0014) | ADR và `platform-ci` xong; đang chuyển từng repo |
+| Chuyển `platform-iam-server` vào `platform-java` | Đang làm |
+| `template-infra`, `platform-infra`, chart `platform-observability`, `platform-policies` | Đang làm |
+
 ## Tóm tắt quyết định
 
 | Quyết định | Nội dung |

@@ -118,7 +118,7 @@ Các service dùng chung. Mỗi service có một repo và một image OCI, đ�
 | `platform-auth-server` | Identity provider OIDC: đăng nhập, MFA, Google/Microsoft, token exchange RFC 8693 (ADR-0008) |
 | `platform-iam-server` | IAM tập trung: lưu policy và group, API nội bộ cho chế độ `remote`, phát event xoá cache qua Redis (ADR-0010) |
 | `platform-gateway` | Spring Cloud Gateway: kiểm JWT và `aud`, định tuyến, rate limit; không phân quyền (ADR-0010) |
-| `platform-auth-admin` | Console quản trị (Next.js) cho tài khoản, client, role |
+| `platform-admin` | Console cho người vận hành platform (Next.js): tài khoản, client, role, tenant, IdP, phân quyền (IAM). Trước đây là `platform-auth-admin` |
 
 Kế hoạch thêm, gộp, đổi tên và bỏ module đến cuối 2027 nằm ở [MODULE_PLAN.md](MODULE_PLAN.md). Kế hoạch đó gồm cả việc đưa CI/CD và registry ra khỏi GitHub.
 
