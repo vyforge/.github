@@ -26,6 +26,7 @@
 8. [Bảo mật và tuân thủ](#8-bảo-mật-và-tuân-thủ)
 9. [Kế hoạch triển khai](#9-kế-hoạch-triển-khai)
 10. [Lệch quy ước và quyết định cần người dùng chọn](#10-lệch-quy-ước-và-quyết-định-cần-người-dùng-chọn)
+11. [Đóng gói và triển khai độc lập](#11-đóng-gói-và-triển-khai-độc-lập)
 
 ---
 
@@ -1729,6 +1730,83 @@ cả ba (3.5).
 | Q5 | Người nhận báo cáo định kỳ | Chỉ user/group trong tenant | Cho phép email ngoài (cần quyền riêng, bản sau) |
 | Q6 | (Cho forge-35) `DurableTaskQueue` có cho handler **gia hạn khoá** khi đang chạy, và có cho đặt `lock-duration` theo queue không | Thiết kế chỉ cần `lock-duration` theo queue (30 phút cho `export`); nếu có gia hạn khoá thì `export.run` gia hạn ở mỗi checkpoint và hạ `lock-duration` xuống 2 phút | Không có cả hai: `export.run` buộc phải chia lát (ghi nhiều phần rồi ghép) |
 | Q7 | (Cho forge-35) `TaskContext` có cho biết lần thử hiện tại/`max_attempts` không | Không cần: đối soát `DEAD` → `FAILED` chạy mỗi phút | Có thì handler ghi `FAILED` ngay ở lần thử cuối, không chờ đối soát |
+
+---
+
+## 11. Đóng gói và triển khai độc lập
+
+> Thêm 26/10 theo quy ước mục 6 (yêu cầu của người dùng: mỗi module triển khai độc lập, khu quản trị là admin
+> microfrontend riêng). Kỹ thuật microfrontend do forge-37 chốt trong `docs/design/platform-services.md`; module này chỉ
+> mô tả hợp đồng.
+
+Module export có ba phần, mỗi phần cài hay bỏ riêng được:
+
+| Phần | Artifact | Khi nào cài |
+|---|---|---|
+| Backend | `platform-starter-export` (Maven) | App có màn hình xuất/nhập/in chứng từ |
+| Frontend nghiệp vụ | `@vyforge/export` (npm): client, `ExportButton`, `JobsTable`/`JobStatus`, `ImportWizard` | App Next.js có các màn hình đó |
+| Admin MFE | `@vyforge/export-admin` (build và deploy riêng, gắn vào shell `platform-admin` lúc chạy) | Khách hàng cần quản trị cấu hình, mẫu báo cáo, lịch, việc của mọi người |
+
+### 11.1 Backend: ba cách chạy
+
+| Cách | Hợp với | Ghi chú |
+|---|---|---|
+| **Starter nhúng vào app** (mặc định) | Mọi app có dữ liệu cần xuất/nhập | `ExportDefinition`, `ImportDefinition`, `ReportDataProvider` là code của app và đọc/ghi dữ liệu của app trong cùng transaction, nên module **phải** chạy trong app sở hữu dữ liệu (B6: không service nào đọc chéo database của service khác) |
+| **Trong `platform-services`** | Phần dùng chung không gắn dữ liệu nghiệp vụ: API quản trị mẫu báo cáo, cấu hình tenant, xem job của tenant | Chỉ khi nhiều app cùng một database của platform; còn lại mỗi app tự phục vụ API quản trị của mình. Quyết định cuối theo thiết kế `platform-services` của forge-37 |
+| **Server riêng của module** | Không đề xuất | Xem lý do ở dòng đầu. Tách tải nặng thì dùng Deployment worker riêng của cùng image (`vyforge.task.enabled=true` chỉ ở Deployment worker, mục 7.4), không cần server riêng |
+
+**Không phụ thuộc cứng vào module P1 khác.** Phụ thuộc compile chỉ gồm khối nền của platform (`platform-core`, `-web`,
+`-authz`, `-jpa`, `-scheduling`, `-messaging`); `-audit`, POI, Bouncy Castle là tuỳ chọn. Điểm nối với module khác đều là
+interface hoặc event, bật bằng `@ConditionalOnBean`/`@ConditionalOnClass`:
+
+| Module | Điểm nối | Không có module đó thì |
+|---|---|---|
+| `-files` | `ResultStore` (adapter `FilesResultStore` thêm sau, `@ConditionalOnBean` API của files) | `LocalResultStore` |
+| `-notification` | Event `DataJobCompleted`, `DataJobFailed`, `DataJobScheduleDisabled` | Chỉ có trang "Việc của tôi" |
+| `-realtime` | Event `DataJobProgressed` | Web hỏi trạng thái định kỳ (ETag) |
+| `-privacy` | Definition `privacy.subject-data` do privacy đăng ký | Không có xuất dữ liệu chủ thể |
+| `-audit` | `ExportAuditor` (bọc `AuditLog` khi có bean) | Không ghi audit (ghi log) |
+
+Tắt cả module bằng `vyforge.export.enabled=false`; tắt API quản trị riêng bằng `vyforge.export.admin-api.enabled=false`
+(app chỉ cần xuất/nhập, quản trị đặt ở nơi khác).
+
+### 11.2 Admin microfrontend `@vyforge/export-admin`
+
+Trong lúc chờ forge-37, component quản trị viết trong `@vyforge/export` dưới subpath `@vyforge/export/admin`; sau đó chỉ
+bọc lại thành MFE.
+
+**Màn hình**
+
+| Màn hình | Người vận hành (platform) | Tenant admin | Quyền (action IAM) | API |
+|---|---|---|---|---|
+| Việc của tenant: lọc, xem chi tiết, huỷ, chạy lại, tải file | Có (chọn tenant) | Có | `export:job:ListAll`, `export:job:ManageAll`, `export:job:DownloadAll` | `GET /api/v1/data-jobs?scope=tenant`, `POST …/{id}/cancel`, `…/retry`, `GET …/files/{role}` |
+| Cấu hình xuất/nhập: giới hạn, định dạng, locale, múi giờ, branding, định dạng bị chặn với dữ liệu nhạy cảm, definition tắt | Có (giá trị mặc định cấp platform chỉ xem) | Có | `export:config:Get`, `export:config:Update` | `GET/PUT /api/v1/export-admin/config` |
+| Hồ sơ ký số: tải PKCS#12, mật khẩu (chỉ ghi, không hiển thị lại), lý do, nơi ký | Không | Có | `export:config:Update` | `PUT /api/v1/export-admin/config` (`secrets`) |
+| Mẫu báo cáo: danh sách phiên bản, tải lên bản nháp, xem trước với dữ liệu thật, phát hành | Có | Có | `export:template:Manage`, `export:template:Publish` | `GET/POST /api/v1/export-admin/templates/{key}/versions`, `POST …/{v}/preview`, `POST …/{v}/publish` |
+| Lịch của tenant: xem, tắt/bật, chạy ngay, xoá | Có | Có | `export:schedule:ListAll` | `GET /api/v1/export-schedules?scope=tenant`, `PUT/DELETE …/{id}`, `POST …/{id}/run-now` |
+| Hàng đợi (backlog, việc `DEAD`) | Có | Không | quyền quản trị task của `-scheduling` | API `TaskAdmin` của `-scheduling` (forge-35) |
+
+**Manifest (hợp đồng với shell)**, dạng đề xuất, chờ forge-37 chốt định dạng:
+
+```json
+{
+  "module": "export",
+  "name": { "vi": "Xuất, nhập và báo cáo", "en": "Export, import and reports" },
+  "version": "0.13.0",
+  "route": "/export",
+  "apiBase": "/api/v1",
+  "minPermission": "export:job:ListAll",
+  "menu": [
+    { "path": "/export/jobs", "label": { "vi": "Việc xuất/nhập", "en": "Data jobs" }, "permission": "export:job:ListAll" },
+    { "path": "/export/templates", "label": { "vi": "Mẫu báo cáo", "en": "Report templates" }, "permission": "export:template:Manage" },
+    { "path": "/export/schedules", "label": { "vi": "Lịch báo cáo", "en": "Schedules" }, "permission": "export:schedule:ListAll" },
+    { "path": "/export/settings", "label": { "vi": "Cấu hình", "en": "Settings" }, "permission": "export:config:Get" }
+  ]
+}
+```
+
+Giao diện dùng `@vyforge/ui`, i18n vi/en (`exportMessages`), gọi API qua `@vyforge/api-client` bằng token của người dùng
+(không có quyền xuyên tenant trong bản cho tenant admin).
 
 ---
 
