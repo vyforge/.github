@@ -27,7 +27,7 @@ theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo 
 | Chart `platform-observability`, `platform-policies` | Xong: platform-helm-charts v0.4.0 |
 | Image đầu tiên của service | gateway 0.1.0, admin 0.1.0, auth-server 0.1.1 (0.1.0 bị chặn do Bouncy Castle 1.84), iam-server 0.12.0 |
 | Template | template-spring-boot v2.1.0, template-nextjs v2.1.0 |
-| Module P1 (notification, files, export, webhooks, features, payment, realtime) | Chờ pilot theo nguyên tắc 5 |
+| Module P1 (notification, files, export, webhooks, features, payment, realtime) | Đang nghiên cứu và thiết kế song song (`docs/design/`), sau đó triển khai ở platform-java 0.13.0 |
 
 ## Tóm tắt quyết định
 
@@ -39,7 +39,7 @@ theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo 
 | **Giữ** | Mọi starter Java và package web hiện có. `TokenExchangeClient` vẫn ở trong `-security`; `-audit` không gộp vào `-authz`. |
 | **Tách** | Repo `.github` tách thành `platform-ci` (CLI `vyforge-ci`, image `ci-toolbox`, adapter CI cho GitHub, Forgejo/Gitea, GitLab, preset Renovate) và `platform-docs` (ADR, kiến trúc, quy hoạch). Trên GitHub chỉ còn một `.github` chứa profile org. |
 | **Thêm** | Thư viện nền `platform-core` (ngữ cảnh tenant và request dùng chung, P0), 12 starter Java, 4 package web, 2 chart, 3 repo/template hạ tầng và mobile, 3 lệnh CI mới (`copier-update`, `openapi-sdk`, `load-test`). Mục 4 có danh sách đầy đủ. |
-| **Phạm vi** | Không làm hết danh sách. Một người chỉ đủ sức cho khoảng một nửa trong 5 quý (mục "Năng lực và phạm vi"). P0 chỉ còn những gì bắt buộc trước pilot: `platform-ci`, `platform-core`, `-scheduling`, `-ratelimit`, `-privacy` bản tối thiểu, quy ước tenant ở tầng dữ liệu, `template-infra`. Mọi module khác chỉ bắt đầu khi có dự án pilot cụ thể cần đến. |
+| **Phạm vi** | Làm toàn bộ danh sách P0 và P1, chạy song song nhiều luồng; mỗi module nghiên cứu và thiết kế kỹ trước khi code (nguyên tắc 5). P2 làm khi có hợp đồng hoặc yêu cầu cụ thể. |
 | **Hai nhóm quản trị** | `platform-admin` dành cho người vận hành platform. Quản trị viên của khách hàng quản lý phân quyền trong chính app nghiệp vụ, chỉ trong tenant của mình. |
 | **CI/CD trung lập** | Git server chỉ chứa code. Logic CI nằm trong `vyforge-ci`; mọi registry, token và khoá ký là tham số. Bộ on-prem tham chiếu: Forgejo + Forgejo Runner + registry của Forgejo (Maven, npm) + Harbor (image, chart) + cosign với OpenBao + Renovate self-host + Argo CD. Phải sửa 70 file trong 10 repo. |
 | **Không tự xây** | Máy chủ thông báo, search engine, workflow engine, feature-flag server, secret store, CMS, Backstage, service mesh. Mục 5 có lý do. |
@@ -53,8 +53,9 @@ theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo 
 3. Đội nhỏ thì **bớt đơn vị phải release** ở mọi chỗ có thể. Module mới đặt trong monorepo sẵn có (`platform-java`,
    `platform-web`, `platform-helm-charts`).
 4. Mỗi module mới là **lớp mỏng trên OSS**, đứng sau một port của Vyforge. Không tự viết engine.
-5. **Module P1 và P2 chỉ bắt đầu khi có một dự án pilot cụ thể cần đến.** Dự án đó phải được ghi tên trong ADR của
-   module. Không có pilot thì không làm, kể cả khi module đã có trong bảng ở mục 4.
+5. **Platform đi trước nhu cầu.** Module trong kế hoạch được nghiên cứu kỹ (thiết kế, kiến trúc, dữ liệu, khả năng mở
+   rộng cho nghiệp vụ sau này) rồi xây sẵn, không chờ dự án cần mới làm. Mỗi module có tài liệu thiết kế
+   `docs/design/<module>.md` được review trước khi code.
 6. **Git server chỉ là nơi chứa code.** CI/CD, registry, ký image và cập nhật dependency phải chạy được trên GitHub,
    GitLab hoặc Forgejo/Gitea tự dựng (mục tiếp theo).
 7. **Mọi module chứa dữ liệu đều theo cùng một quy ước tenant** (mục "Tenant ở tầng dữ liệu"). Quy ước phải có trước
@@ -86,6 +87,10 @@ Org hiện chỉ có một người làm, tức khoảng 40 tuần làm việc h
 3. **Q4/2026 chỉ khép đợt đang làm,** cộng `platform-ci` 0.1 và quy ước tenant. Không mở module mới nào khác trước khi 4 nhánh đang làm được merge.
 4. **Có người thứ hai là điều kiện** trước khi bắt đầu bất kỳ module P1 nào (rủi ro R1 trong báo cáo quy hoạch).
 5. **Mỗi quý rà lại bảng này,** so ước lượng với thời gian thực tế, rồi đẩy việc xuống quý sau thay vì làm dở nhiều việc cùng lúc.
+
+
+> **Cập nhật 26/10/2026:** chủ sở hữu bỏ cách rút gọn phạm vi ở trên. Năng lực triển khai giờ là nhiều luồng
+> chạy song song, nên toàn bộ module P1 được nghiên cứu, thiết kế và xây sẵn.
 
 ## Hai nhóm người quản trị
 
@@ -571,8 +576,7 @@ ADR, để đội nhỏ viết và duy trì nổi. Khi lệch nhau, số ADR ở
    chính thì cần bản Pro, vì bản CE giới hạn 40.000 component.
 9. Tách `.github` thành `platform-ci` và `platform-docs`.
 10. Nơi đặt git server on-prem và ai vận hành nó (Forgejo, Harbor, OpenBao cần backup và cập nhật như service nền tảng).
-11. Phạm vi rút gọn: đồng ý P0 chỉ gồm `platform-ci`, quy ước tenant, `-scheduling`, `-ratelimit`, `-privacy` bản tối
-    thiểu, `template-infra` bản tối thiểu; các module còn lại chờ pilot.
+11. ~~Phạm vi rút gọn~~: đã bỏ. Chủ sở hữu chọn xây sẵn toàn bộ module P1 (26/10/2026).
 12. Dự án pilot tier 1 là dự án nào, và khi nào có người thứ hai.
 13. Điều kiện cho auth-server: IdP mở rộng mặc định tắt, pentest trước production, template luôn chạy được với Keycloak.
 14. Dùng Valkey thay Redis cho mọi môi trường.
