@@ -1,6 +1,6 @@
 # Thiết kế: `platform-starter-features` và `@vyforge/features`
 
-- **Trạng thái:** Bản thiết kế, chờ duyệt (26/10/2026). Chưa có code.
+- **Trạng thái:** Đã duyệt 26/10/2026, đang triển khai (platform-java 0.13.0, @vyforge/features 0.1.0).
 - **Phạm vi:** feature flag (chuẩn OpenFeature) và entitlement (gói dịch vụ, giới hạn, quota, đo mức dùng, trial, grace
   period) cho app Spring Boot và Next.js của Vyforge.
 - **Nền:** platform-java 0.12.0 (`platform-core`, `-web`, `-security`, `-jpa`, `-messaging`, `-authz`, `-audit`,
@@ -48,7 +48,7 @@ là đặc thù Việt Nam.
 | 11 | Đổi giá gói Pro (thêm quyền) nhưng khách cũ giữ nguyên điều kiện cho tới khi gia hạn | Gói có version. Subscription gắn với `plan_version`. Khách mới dùng version mới; khách cũ chuyển bằng lệnh `migrate` có lịch |
 | 12 | Mùa cao điểm (11.11, Tết): tạm tắt báo cáo nặng cho tenant Free trong khung 19h–23h | Rule có điều kiện thời gian theo giờ `Asia/Ho_Chi_Minh` (`$flagd.timestamp`) kết hợp `tenant.plan == free`, hoặc hai scheduled change bật/tắt |
 | 13 | Tenant admin tự bật "giao diện mới (beta)" cho tổ chức của mình | Flag có `tenantOptIn=true`. API `/me/opt-ins` cho tenant admin ghi override của chính tenant (chỉ với flag cho phép) |
-| 14 | Ngân hàng yêu cầu mọi thay đổi cấu hình production phải có người thứ hai duyệt và lưu vết | Audit mọi thay đổi + revision đầy đủ để khôi phục. SPI `ChangeApprovalPolicy` bật luồng 4 mắt (bản sau, mục 9.4) |
+| 14 | Ngân hàng yêu cầu mọi thay đổi cấu hình production phải có người thứ hai duyệt và lưu vết | Audit mọi thay đổi + revision đầy đủ để khôi phục. Bật duyệt 4 mắt (`ChangeApprovalPolicy`, cài đặt `FourEyesApprovalPolicy`, mục 3.11): thay đổi thành *change request*, người khác người tạo duyệt mới áp |
 | 15 | Số người dùng tối đa: mời thành viên thứ 21 trên gói 20 người phải bị chặn, kể cả khi hai admin mời cùng lúc | `LIMIT` kiểm theo số thật do app đếm (`UsageGaugeProvider`) trong cùng transaction với thao tác ghi, hoặc dùng `consume`/`release` để giữ chỗ nguyên tử (mục 3.8) |
 | 16 | Nhiều backend (CRM, kho, kế toán) dùng chung flag và gói của một khách hàng | Chế độ `remote`: service đồng bộ snapshot từ service sở hữu dữ liệu, đánh giá trong app (giống `-authz` remote). Service viết bằng Go/Node dùng flagd đọc cùng snapshot qua HTTP |
 
@@ -338,7 +338,7 @@ sequenceDiagram
 
 `ff_scheduled_change` chứa một *patch* có thứ tự (`setState`, `setDefaultServe`, `setRuleServe`, `setTenantOverride`,
 `removeTenantOverride`) cùng `run_at`. Dòng này là bản ghi nghiệp vụ (hiển thị, huỷ, lịch sử). Việc *áp* patch đi qua
-`DurableTaskQueue` của `-scheduling` (mục 3.11): tạo lịch thì `enqueue` (cùng transaction) một task queue `features`, kind
+`DurableTaskQueue` của `-scheduling` (mục 3.12): tạo lịch thì `enqueue` (cùng transaction) một task queue `features`, kind
 `flag.scheduled-change`, `next_run_at = run_at`, `idempotency_key = <id lịch>`. Huỷ lịch thì huỷ task và đặt `CANCELED`.
 Handler áp patch qua đúng `FlagService` mà API dùng, nên có version, revision, audit (actor là người tạo lịch,
 `via=schedule`) và event như thay đổi tay. Lỗi tạm thời (DB, khoá) thì queue retry có backoff. Lỗi nghiệp vụ (flag đã xoá,
@@ -451,7 +451,7 @@ stateDiagram-v2
 - `changePlan` có `effective = NOW | PERIOD_END`. Nâng gói thường `NOW`, hạ gói `PERIOD_END` (lưu `pending_plan_version_id`).
   Hạ gói làm `LIMIT` thấp hơn số hiện có (đang 15 user, gói mới 10): không xoá gì, chỉ chặn tạo mới; event có
   `overLimitFeatures` để app hiển thị.
-- Mốc thời gian của subscription là task hẹn giờ trong `DurableTaskQueue` (mục 3.11): mỗi lần subscription đổi, service
+- Mốc thời gian của subscription là task hẹn giờ trong `DurableTaskQueue` (mục 3.12): mỗi lần subscription đổi, service
   `enqueue` (cùng transaction) các task `subscription.trial-ending`, `subscription.trial-expire`, `subscription.period-end`,
   `subscription.grace-expire`, `subscription.apply-pending-plan` với `next_run_at` là mốc tương ứng. Handler kiểm lại trạng
   thái và `version` của subscription trước khi chuyển; mốc đã cũ (đã gia hạn, đã huỷ) thì bỏ qua. Không có job quét định kỳ
@@ -488,7 +488,43 @@ sequenceDiagram
   E-->>S: EntitlementUnavailableException → 503 entitlement.unavailable
 ```
 
-### 3.11 Việc nền: `DurableTaskQueue` của `-scheduling`
+### 3.11 Duyệt 4 mắt (`ChangeApprovalPolicy`)
+
+Mặc định tắt. Bật để thay đổi cấu hình phải có người thứ hai duyệt (kịch bản 14, ngành ngân hàng).
+
+```java
+public interface ChangeApprovalPolicy {
+    /** Thay đổi này có phải chờ duyệt không. Gọi trong transaction, trước khi áp. */
+    ApprovalRequirement evaluate(ChangeProposal proposal);
+    /** Người này có được duyệt change request này không (ngoài quyền IAM features:change:Approve). */
+    void checkReviewer(ChangeRequest request, String reviewer);
+}
+
+public record ChangeProposal(ChangeTarget target, String key, @Nullable String tenantId, String operation,
+                             Set<String> tags, @Nullable String flagKind, String requestedBy, JsonNode payload) {}
+public enum ChangeTarget { FLAG, SEGMENT, TENANT_OVERRIDE, SCHEDULE, PLAN }
+```
+
+- **Cài đặt có sẵn `FourEyesApprovalPolicy`** (`vyforge.features.approval.enabled=true`):
+  - áp cho `target-types` (mặc định `FLAG, SEGMENT, TENANT_OVERRIDE, SCHEDULE, PLAN`), có thể chỉ áp cho flag có tag trong
+    `required-tags` (rỗng = mọi flag);
+  - người duyệt phải **khác người tạo** (`features.approval_self_review`, 403) và có quyền `features:change:Approve`;
+  - change request hết hạn sau `expires-after` (72 giờ);
+  - `emergency-kill-switch=true` (mặc định): tắt (`state=DISABLED`) một flag loại `kill_switch` được áp ngay, không chờ
+    duyệt, audit ghi `approval=bypassed-emergency` và vẫn tạo change request ở trạng thái `APPLIED` để người thứ hai xác
+    nhận sau. Ngân hàng không chấp nhận thì tắt cờ này.
+- **Luồng:** API ghi (`PATCH /flags/{key}`, override, lịch, segment, publish gói) hỏi policy. Cần duyệt → lưu
+  `ff_change_request` (`PENDING`, kèm `base_version` của đối tượng), trả **202** với change request; không đổi gì khác.
+  `POST /changes/{id}:approve` → kiểm người duyệt → áp thao tác đã lưu qua đúng service như thay đổi tay (actor ghi cả
+  người tạo và người duyệt). Đối tượng đã đổi version kể từ lúc tạo → `FAILED` (`features.change_conflict`), người tạo làm
+  lại. `:reject` (bắt buộc lý do), `:cancel` (chỉ người tạo).
+- **State machine:** `PENDING → APPROVED → APPLIED | FAILED`; `PENDING → REJECTED | CANCELED | EXPIRED`. Task
+  `change-request.expire` trên `DurableTaskQueue` đặt `EXPIRED` khi hết hạn.
+- Mọi bước ghi `AuditLog` (`features:change:{Create,Approve,Reject,Cancel}`) và event `ChangeRequestChanged`
+  (`-notification` báo người duyệt).
+- App viết policy khác (vd. hai người duyệt, người duyệt phải thuộc group `risk`) bằng bean `ChangeApprovalPolicy` riêng.
+
+### 3.12 Việc nền: `DurableTaskQueue` của `-scheduling`
 
 Theo phụ lục 5.2 của quy ước, module **không** có bảng job hay cơ chế retry riêng. Mọi việc chạy theo mốc giờ, theo từng
 tenant hoặc fan-out hàng loạt là task trong `DurableTaskQueue` (`com.vyforge.platform.scheduling.task`, bảng `vyforge_task`).
@@ -507,6 +543,7 @@ Module chỉ khai báo queue `features` và các `TaskHandler`.
 | `subscription.migrate` | Fan-out ở trên | ngay | `<subId>:migrate:<to>` | Đổi `plan_version_id`, event |
 | `grant.bulk` | API tạo grant hàng loạt (kịch bản 9) | ngay | `Idempotency-Key` của request | Fan-out: một `grant.create` mỗi tenant |
 | `grant.create` | Fan-out ở trên | ngay | `<bulkId>:<tenant>` | Tạo `ent_grant`, audit |
+| `change-request.expire` | Tạo change request (mục 3.11) | `expires_at` | `<id change request>` | `PENDING → EXPIRED` |
 
 - **Tạo task cùng transaction nghiệp vụ** (`enqueue` trong transaction), nên task chỉ có khi thay đổi đã commit, và mất
   task đồng nghĩa với thay đổi chưa xảy ra.
@@ -652,6 +689,30 @@ create table ff_change_seq (
     value  bigint      not null,
     changed_at timestamptz not null
 );
+
+create table ff_change_request (
+    id            uuid primary key,
+    target_type   varchar(32)  not null,                -- FLAG | SEGMENT | TENANT_OVERRIDE | SCHEDULE | PLAN
+    target_key    varchar(128) not null,
+    tenant_id     varchar(63),                          -- override theo tenant; null cho thay đổi chung
+    operation     varchar(32)  not null,                -- update | archive | rollback | put-override | publish…
+    payload       jsonb        not null,                -- lệnh đầy đủ, áp lại được
+    schema_version smallint    not null default 1,
+    base_version  integer,
+    status        varchar(16)  not null
+        check (status in ('PENDING', 'APPROVED', 'APPLIED', 'FAILED', 'REJECTED', 'CANCELED', 'EXPIRED')),
+    comment       varchar(1000),
+    requested_by  varchar(255) not null,
+    requested_at  timestamptz  not null,
+    reviewed_by   varchar(255),
+    reviewed_at   timestamptz,
+    review_comment varchar(1000),
+    error         varchar(1000),
+    expires_at    timestamptz  not null,
+    version       integer      not null
+);
+create index ff_change_request_pending_idx on ff_change_request (requested_at) where status = 'PENDING';
+create index ff_change_request_target_idx on ff_change_request (target_type, target_key, requested_at desc);
 
 create table ent_feature (
     key           varchar(128) primary key check (key ~ '^[a-z0-9][a-z0-9._-]{0,127}$'),
@@ -968,6 +1029,8 @@ Tất cả dưới `/api/v1/features` (khớp route `/api/v<n>/<service>/**` c�
 | `POST` | `/flags/{key}/rollback` | `flag:Update` | Về revision `v` (tạo revision mới) |
 | `GET/PUT/DELETE` | `/flags/{key}/tenants/{tenantId}` | `override:Put/Delete` | Override theo tenant |
 | `GET/POST/DELETE` | `/flags/{key}/schedules`, `/schedules/{id}` | `schedule:Create/Cancel` | |
+| `GET` | `/changes?status=&target=`, `/changes/{id}` | `change:List` | Change request (khi bật duyệt 4 mắt) |
+| `POST` | `/changes/{id}:approve`, `:reject`, `:cancel` | `change:Approve`, `change:Approve`, (người tạo) | Áp hoặc từ chối thay đổi đang chờ |
 | `POST` | `/simulate` | `flag:Simulate` | Đánh giá với context giả + định nghĩa chưa lưu; trả reason, ruleId, các bước |
 | `GET/POST/PATCH` | `/segments`, `/segments/{key}` | `segment:*` | |
 | `GET` | `/flagd/flags.json` | scope `features.sync` | Snapshot định dạng flagd cho flagd daemon (HTTP sync) và chế độ `remote` |
@@ -1021,7 +1084,7 @@ Catalog action (`FeaturesActions`, theo dạng `<service>:<resource>:<Verb>` c�
 Update,Archive,Simulate}`, `features:override:{Put,Delete}`, `features:schedule:{Create,Cancel}`,
 `features:segment:{List,Get,Create,Update}`, `features:catalog:{List,Update}`, `features:plan:{List,Get,Create,Update,
 Publish,Migrate}`, `features:subscription:{Get,GetOwn,Change}`, `features:grant:{Create,Void}`, `features:usage:{Get,Adjust}`,
-`features:optin:Put`.
+`features:optin:Put`, `features:change:{List,Approve}`.
 
 ### 5.3 Event công khai
 
@@ -1034,6 +1097,7 @@ Payload có `schemaVersion`.
 | `FlagChanged(flagKey, version, changeType, actor, via)` | Tạo, sửa, archive, rollback, áp lịch | realtime (đẩy lại flag cho client), audit ngoài |
 | `TenantFlagOverrideChanged(tenantId, flagKey, variant?, actor)` | Đặt/gỡ override, opt-in | realtime |
 | `FlagScheduledChangeFailed(flagKey, scheduleId, error)` | Lịch áp lỗi | notification (báo owner) |
+| `ChangeRequestChanged(id, targetType, targetKey, status, requestedBy, reviewedBy)` | Tạo, duyệt, từ chối, áp, hết hạn change request | notification (báo người duyệt, người tạo) |
 | `SubscriptionChanged(tenantId, subscriptionId, fromStatus, toStatus, fromPlan, toPlan, reason, overLimitFeatures)` | Mọi chuyển trạng thái/đổi gói | notification, payment, app |
 | `TrialEnding(tenantId, planKey, endsAt, daysLeft)` | Trước `trial-ending-notice` | notification |
 | `QuotaThresholdReached(tenantId, feature, thresholdPercent, used, limit, periodEnd)` | `used` qua ngưỡng | notification, app |
@@ -1054,7 +1118,7 @@ Payload có `schemaVersion`.
 
 **Điểm nối với khối dùng chung của platform-java 0.12.1 (forge-35, phụ lục 5 của quy ước):** dùng nguyên, không làm lại.
 
-- `DurableTaskQueue`/`TaskHandler` (`-scheduling`): queue `features`, các kind ở mục 3.11. Cần chốt `vyforge_task.tenant_id`
+- `DurableTaskQueue`/`TaskHandler` (`-scheduling`): queue `features`, các kind ở mục 3.12. Cần chốt `vyforge_task.tenant_id`
   có nhận null hay không (task chung).
 - `StarterSchemaMigrator` (`-jpa`): migration `META-INF/vyforge/db/features`, lịch sử `flyway_schema_history_features`.
   Starter phụ thuộc `-jpa` để có khung này (repository vẫn viết bằng `JdbcClient`).
@@ -1107,7 +1171,7 @@ Nhãn vi/en có sẵn (`featuresLabels.vi/en`), component dùng `@vyforge/ui`.
 | `TenantAttributesProvider` | Thuộc tính của tenant cho rule (cache có TTL) | Tỉnh, ngành, quy mô |
 | `FlagDefinitionSource` | Nguồn định nghĩa khác cho provider nhúng | Git |
 | `FlagChangeInterceptor` | Trước/sau khi lưu flag: kiểm thêm, từ chối, ghi chú | Bắt buộc `owner`, cấm `rollout > 50%` cho flag `kill_switch` |
-| `ChangeApprovalPolicy` | Đòi duyệt trước khi áp thay đổi (để bản sau, mục 9.4) | Ngân hàng: flag `tags` có `prod-critical` cần người thứ hai |
+| `ChangeApprovalPolicy` | Đòi duyệt trước khi áp thay đổi (mục 3.11); có sẵn `FourEyesApprovalPolicy` | Hai người duyệt; người duyệt thuộc group `risk` |
 | OpenFeature `Hook` (bean) | Mọi lần đánh giá | Hook OTel `dev.openfeature.contrib.hooks:otel` 3.3.1; hook gửi exposure sang analytics |
 | `UsageGaugeProvider` | Số hiện có của feature `LIMIT` | Đếm user, chi nhánh |
 | `CounterStore` | Nơi đếm mức dùng | OpenMeter cho tenant rất lớn |
@@ -1255,11 +1319,11 @@ lại vì DB chậm), `featuresInvalidation` (`UP` khi đang nghe Valkey, `UNKNO
 
 ### 7.6 Chế độ lỗi đã ghi ở mục 3.10. Ngoài ra
 
-- Việc theo mốc hoặc theo tenant chạy trên `DurableTaskQueue` (mục 3.11): retry có backoff, `DEAD` khi hết lượt, xem
+- Việc theo mốc hoặc theo tenant chạy trên `DurableTaskQueue` (mục 3.12): retry có backoff, `DEAD` khi hết lượt, xem
   backlog, retry, cancel bằng API quản trị của queue, metric `vyforge.task.*{queue="features"}`. Một tenant lỗi không chặn
   tenant khác vì mỗi tenant là một task.
 - Chỉ việc định kỳ toàn cục dùng `@ClusterScheduled`: `features-usage-partitions`, `features-usage-fast-flush`,
-  `features-cleanup`, và `features-reconcile` (mục 3.11).
+  `features-cleanup`, và `features-reconcile` (mục 3.12).
 - Đóng kỳ trễ (app tắt qua đêm): task `usage.period-close` đến hạn chạy ngay khi app lên lại; `features-reconcile` tạo
   task cho counter quá `period_end` mà chưa có task. `consume` sau `period_end` luôn ghi vào kỳ mới, không phụ thuộc task.
 - Đồng hồ: kỳ và hạn dùng tính theo giờ của DB (`now()`), giống `-scheduling`.
@@ -1271,6 +1335,18 @@ lại vì DB chậm), `featuresInvalidation` (`UP` khi đang nghe Valkey, `UNKNO
 **Phân quyền.** Mọi API quản trị qua `Authz.check` với catalog `features:*`. API theo tenant khác chỉ cho token của tenant
 vận hành. OFREP và `/me/*` chỉ thấy tenant của token; context từ client không ghi đè được `tenantId`, `user.*`, `tenant.*`.
 Flag không `client_visible` không bao giờ trả cho frontend (tên flag cũng có thể lộ kế hoạch sản phẩm).
+
+**Policy dựng sẵn.** Starter có hai policy trong code (không sửa, không xoá được), cấp theo role trong token **chỉ ở tenant
+vận hành** (`vyforge.features.admin.operator-tenant`):
+
+| Policy | Role (cấu hình) | Action |
+|---|---|---|
+| `vyforge:FeaturesOperator` | `vyforge.features.authz.operator-role` (`FEATURES_ADMIN`) | `features:*` |
+| `vyforge:FeaturesPlanSales` | `vyforge.features.authz.plan-sales-role` (`PLAN_SALES`) | `features:subscription:{Get,Change}`, `features:grant:Create`, và quyền đọc cần để làm việc: `features:plan:{List,Get}`, `features:catalog:List`, `features:usage:Get` |
+
+Cách áp: API của module kiểm quyền bằng `Authz.evaluate(principal, action, resource, …, additional)` với policy dựng sẵn
+là `additional`, nên vẫn qua cùng bộ đánh giá IAM: statement `Deny` trong policy của tenant thắng policy dựng sẵn, và có
+thể cấp thêm hoặc bớt bằng policy IAM thường. Không sửa `-authz`. Muốn bỏ thì đặt role rỗng.
 
 **Audit.** Mọi thay đổi flag, segment, override, lịch, catalog, gói, subscription, grant, điều chỉnh usage ghi `AuditLog`
 (action `features:*`, resource `vrn:features:flag/<key>` hoặc `vrn:features:tenant/<id>/…`) cùng transaction; thay đổi flag
@@ -1319,7 +1395,8 @@ API key OpenMeter theo tenant cho `CounterStore`) phải mã hoá bằng `Secret
 7. Subscription + state machine + task theo mốc (`subscription.*`) + `features-reconcile` + event; `PaymentReference`.
 8. Metering: `JdbcCounterStore`, dedupe, record, ngưỡng, task `usage.period-close`, grant (+ `grant.bulk`); `RedisCounterStore`
    (FAST) + flush.
-9. `@RequiresFlag`, `@RequiresEntitlement`; bridge `principal.plan` cho `-authz`; provider `file` và `remote`.
+9. Duyệt 4 mắt (`ff_change_request`, `FourEyesApprovalPolicy`, API `/changes`); policy dựng sẵn; `@RequiresFlag`,
+   `@RequiresEntitlement`; bridge `principal.plan` cho `-authz`; provider `file` và `remote`.
 10. README module, mục trong README gốc, `platform-bom`, pom gốc.
 
 platform-web, `packages/features` (`@vyforge/features` 0.1.0): client + helper + Server Action → `react` → `ui` (gate,
@@ -1353,7 +1430,7 @@ chạy song song được; Jackson 2 vẫn có trong BOM của Boot 4. Cần ki�
 
 ### 9.4 Để bản sau
 
-- Luồng duyệt 4 mắt (`ChangeApprovalPolicy` có sẵn SPI, chưa có bảng `ff_change_request` và UI).
+- Duyệt nhiều cấp (hai người duyệt trở lên) trong cài đặt có sẵn; hiện app tự viết `ChangeApprovalPolicy`.
 - Guarded rollout (tự dừng khi metric xấu), A/B có thống kê.
 - Provider `remote` cho entitlement (bản 0.13 chỉ có `remote` cho flag; entitlement ở service khác gọi API `/me/entitlements`
   hoặc dùng chung DB).
@@ -1391,6 +1468,6 @@ chạy song song được; Jackson 2 vẫn có trong BOM của Boot 4. Cần ki�
 
 Không có câu hỏi chặn triển khai. Hai điểm nên xác nhận khi duyệt:
 
-- Ai quản lý gói và subscription trong platform-admin: chỉ người vận hành platform (thiết kế hiện tại), hay thêm vai trò
-  "sales" chỉ được `subscription:Change` + `grant:Create`. Thiết kế hỗ trợ cả hai qua policy IAM, chỉ khác policy dựng sẵn.
-- Có cần `ChangeApprovalPolicy` (duyệt 4 mắt) ngay ở 0.13 cho pilot ngành ngân hàng hay không.
+Đã chốt khi duyệt (26/10/2026): làm entitlement đầy đủ; có `ChangeApprovalPolicy` + `FourEyesApprovalPolicy` (mặc định
+tắt); có policy dựng sẵn `vyforge:FeaturesPlanSales` bên cạnh `vyforge:FeaturesOperator`; ADR là một mục `features` trong
+ADR-0020 chung.
