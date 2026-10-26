@@ -26,10 +26,13 @@ module của cả hệ sinh thái**: cái nào giữ, cái nào gộp, tách, b�
     `platform-observability`, repo `platform-infra`.
   - P1 (Q1–Q2/2027): `-export`, `-payment`, `-webhooks`, `-features`, `-realtime`, chart `platform-policies`.
   - P2 (khi có dự án cần): `-ai`, `template-expo`, `-einvoice`.
+- **CI/CD và registry không phụ thuộc GitHub.** Git server chỉ là nơi chứa code. Logic CI chuyển vào CLI `vyforge-ci`
+  (repo `platform-ci`, tách từ `.github`); registry, token, khoá ký đều là tham số. Bộ on-prem tham chiếu: Forgejo,
+  Forgejo Runner, registry của Forgejo, Harbor, cosign với OpenBao, Renovate self-host (mục 8).
 - **Không tự xây:** máy chủ thông báo, search engine, workflow engine, feature-flag server, secret store, CMS, dev portal
   Backstage, service mesh, `platform-mongo-migrations`. Dùng OSS hoặc SaaS, hoặc chưa làm (mục 1c).
-- **Số repo.** Đầu kỳ có 12 repo, cuối 2027 còn 12 repo đang hoạt động: bớt 3, thêm 3 (`template-infra`, `platform-infra`,
-  `template-expo`). Không chuyển sang một monorepo duy nhất. Code đã gom theo ngôn ngữ; các service tách repo vì cần image,
+- **Số repo.** Đầu kỳ có 12 repo, cuối 2027 có 13 repo đang hoạt động: bớt 3; `.github` tách thành `platform-ci` và
+  `platform-docs`; thêm `template-infra`, `platform-infra`, `template-expo`. Không chuyển sang một monorepo duy nhất. Code đã gom theo ngôn ngữ; các service tách repo vì cần image,
   quyền truy cập và nhịp release riêng. Mức trưởng thành theo CNCF hiện ở **giữa mức 1 và mức 2** (mục 2).
 
 ## 1. Quy hoạch danh mục module: thêm, giữ, gộp, tách, bỏ
@@ -47,7 +50,7 @@ Nguyên tắc ra quyết định:
 
 | Repo | Quyết định | Lý do (bằng chứng) | Hành động · quý |
 |---|---|---|---|
-| `.github` | **GIỮ** | Workflow reusable `@v1` (7 file), preset Renovate, ADR. Là điểm phân phối chuẩn cho mọi repo | Thêm `copier-update.yml`, `openapi-sdk.yml`, `load-test.yml`; ký cosign trong `container.yml` · Q1–Q2/2027 |
+| `.github` | **TÁCH** thành `platform-ci` + `platform-docs` | 7 workflow reusable `@v1` chỉ chạy trên GitHub Actions; tên `.github` chỉ có nghĩa trên GitHub. Cả 10 repo có 70 file gắn với GitHub (mục 8) | `platform-ci`: CLI `vyforge-ci`, image `ci-toolbox`, adapter GitHub/Forgejo-Gitea/GitLab, preset Renovate (Q4/2026); `platform-docs`: ADR và tài liệu (Q1/2027). Trên GitHub chỉ giữ `.github` cho profile org |
 | `platform-java` | **GIỮ** (monorepo Java) | Reactor 10 module, release đồng bộ một version (`pom.xml:20-31`) | Nhận thêm module `platform-iam-server` và 12 starter mới (1b) · từ Q4/2026 |
 | `platform-web` | **GIỮ** (monorepo TS); **đổi cách version** | 11 package, mỗi package một version riêng (0.1.0–0.5.0). Template phải ghim 9 version khác nhau (`template-nextjs/template/package.json.jinja:34-42`) và đã lệch (`ui` 0.3.0 trong khi bản mới nhất là 0.4.0) | Release **lockstep**: mọi package cùng một version từ 1.0.0 · Q2/2027 |
 | `platform-helm-charts` | **GIỮ** | Chart `app` dùng cho mọi service. `Chart.yaml:6` ghi 0.1.0, lệch với tag v0.2.0 | Sửa version khi phát hành; thêm chart `platform-observability` (Q1/2027) và `platform-policies` (Q2/2027) |
@@ -108,7 +111,7 @@ Chi tiết thư viện, license và công sức nằm ở báo cáo [module thô
 | `platform-starter-payment` | thư viện | VNPay, MoMo, VietQR (payOS/SePay); ZaloPay sau; IPN kiểm chữ ký, đối soát | Tự viết adapter (SDK chính thức không dùng được trực tiếp) | P1 · Q1–Q2/2027 | `-webhooks`, `-scheduling`, `-audit` |
 | `platform-starter-realtime` | thư viện | SSE cho inbox thông báo, tiến độ export, trạng thái thanh toán | Spring SSE + Redis pub/sub. Chỉ dùng Centrifugo khi có >10 nghìn kết nối | P1 · Q2/2027 | `-security`, Redis |
 | `platform-policies` | chart | Kyverno: kiểm chữ ký cosign, bắt buộc digest, non-root. Chạy chế độ Audit trước, sau đó Enforce | **Kyverno 1.19.2** `ImageValidatingPolicy`, **cosign 3.1.4** | P1 · Q2/2027 (Enforce ở Q3) | `container.yml` có ký image |
-| `.github`: `copier-update.yml`, `openapi-sdk.yml`, `load-test.yml` | workflow | Đồng bộ khung Copier; sinh SDK từ OpenAPI; mẫu chạy k6 | Copier 9.19, OpenAPI Generator, k6 | P0/P1 · Q1–Q2/2027 | — |
+| `platform-ci`: `vyforge-ci copier-update`, `openapi-sdk`, `load-test` | lệnh CLI + adapter | Đồng bộ khung Copier; sinh SDK từ OpenAPI; mẫu chạy k6; chạy trên GitHub, Forgejo/Gitea, GitLab | Copier 9.19, Renovate (manager `copier`), OpenAPI Generator, k6 | P0/P1 · Q1–Q2/2027 | `ci-toolbox` |
 | `platform-starter-ai` | thư viện | Gọi LLM qua Spring AI 2.0, pgvector, chặn PII trước khi gửi ra ngoài | Spring AI (Apache-2.0) | P2 · khi có dự án | `-privacy`, `-ratelimit` |
 | `template-expo` | template (repo mới) | Golden path mobile: OIDC native app (PKCE, public client), gọi API qua gateway | **Expo SDK 58** (npm `expo@58.0.19`, React Native 0.88) | P2 · Q3/2027 | `@vyforge/auth/core`, gateway |
 | `platform-starter-einvoice`, adapter eKYC | thư viện | Hoá đơn điện tử, eKYC theo nhà cung cấp mà khách hàng đã có hợp đồng | Adapter mỏng | P2 · khi có hợp đồng | `-files`, `-audit` |
@@ -127,7 +130,7 @@ cần module code: dùng ESO + OpenBao 2.7.1 hoặc secret manager của cloud, 
 | Feature-flag server tự viết; Unleash tự host | flagd (OpenFeature) | Unleash server dùng AGPL; flagd chỉ đọc file hoặc ConfigMap, vận hành nhẹ |
 | Secret store tự viết; Vault | OpenBao hoặc secret manager của cloud, qua ESO | Vault đã chuyển sang BUSL-1.1 |
 | Spring Cloud Config server | Biến môi trường + ESO | Thêm một service mà không có lợi gì so với GitOps |
-| Backstage (trong 2027) | Site tài liệu tĩnh từ `.github/docs` + README | Chỉ đáng khi có khoảng 5 team cần self-service. Backstage 1.56 vẫn cần một người lo riêng |
+| Backstage (trong 2027) | Site tài liệu tĩnh từ `platform-docs` + README | Chỉ đáng khi có khoảng 5 team cần self-service. Backstage 1.56 vẫn cần một người lo riêng |
 | CMS nhúng trong backend, framework admin chung | Payload CMS (MIT) khi dự án cần; khối admin trong `@vyforge/ui` | Admin của mỗi dự án quá khác nhau để làm thành framework |
 | `platform-mongo-migrations` (F12) | Bỏ khỏi kế hoạch | ADR-0007 đã chọn PostgreSQL; chỉ làm lại khi một dự án MongoDB cũ thực sự gặp lỗi Mongock |
 | Gateway làm BFF (phương án B của ADR-0006) | Next.js BFF như hiện tại | Không có dự án nào yêu cầu; gateway đã nhận vai trò khác (ADR-0010) |
@@ -149,8 +152,8 @@ xoá hoặc archive.
 | Service nền tảng | `platform-auth-server` [có] · `platform-gateway` [có] · `platform-admin` [đổi tên từ `platform-auth-admin`] · `platform-iam-server` [gộp vào `platform-java`] |
 | Chart (`platform-helm-charts`) | `app` [có] · `platform-observability` [mới] · `platform-policies` [mới] |
 | GitOps / hạ tầng | `platform-infra` [mới] · `<du-an>-infra` (sinh từ `template-infra`) [mới] |
-| CI (`.github`) | `java-ci` · `node-ci` · `container` (+ cosign) · `gitops-bump` · `maven-publish` · `npm-publish` · `helm-publish` [có] · `copier-update` · `openapi-sdk` · `load-test` [mới] |
-| Bỏ | `nextjs-ui` [bỏ] · `spring-boot-starter` [bỏ] · repo `platform-iam-server` [bỏ sau khi gộp] · bảng `iam_audit_log` [bỏ ở 1.0] · `RateLimitFilter` riêng trong gateway và auth-server [bỏ, thay bằng `-ratelimit`] |
+| CI (`platform-ci`, tách từ `.github`) | lệnh `vyforge-ci`: `java-verify` · `node-verify` · `image` (+ cosign) · `gitops-bump` · `maven-publish` · `npm-publish` · `chart-publish` [có, chuyển từ workflow] · `copier-update` · `openapi-sdk` · `load-test` [mới]; adapter GitHub · Forgejo/Gitea · GitLab [mới] |
+| Bỏ | `nextjs-ui` [bỏ] · `spring-boot-starter` [bỏ] · repo `platform-iam-server` [bỏ sau khi gộp] · logic CI trong `.github` [tách sang `platform-ci`] · bảng `iam_audit_log` [bỏ ở 1.0] · `RateLimitFilter` riêng trong gateway và auth-server [bỏ, thay bằng `-ratelimit`] |
 
 Cạnh phụ thuộc (`A -> B`: A dùng hoặc phụ thuộc B; cạnh có `(opt)` là tuỳ chọn). Sơ đồ trong [MODULE_PLAN.md](../MODULE_PLAN.md) vẽ từ danh sách này.
 
@@ -220,13 +223,18 @@ platform-observability [mới] -> otel-collector/alloy ; loki ; tempo ; mimir ; 
 platform-policies [mới] -> kyverno@1.19 ; cosign@3 (khoá KMS/OpenBao)
 platform-helm-charts:app -> external-secrets (opt) ; servicemonitor (opt)
 
-# Tầng CI (.github)
-platform-java ; platform-web ; platform-helm-charts -> .github:{java-ci,node-ci,maven-publish,npm-publish,helm-publish}
-platform-auth-server ; platform-gateway ; platform-admin ; platform-java(platform-iam-server) -> .github:container ; .github:gitops-bump -> platform-infra
-.github:container -> trivy ; sbom+provenance ; cosign [mới]
-.github:copier-update [mới] -> template-{spring-boot,nextjs,infra,expo}
-.github:openapi-sdk [mới] -> openapi-generator
-.github:load-test [mới] -> k6
+# Tầng CI (platform-ci, trung lập với nền tảng git)
+adapter-github ; adapter-forgejo ; adapter-gitlab [mới] -> platform-ci:ci-toolbox [mới]
+platform-java ; platform-web ; platform-helm-charts -> platform-ci:{java-verify,node-verify,maven-publish,npm-publish,chart-publish}
+platform-auth-server ; platform-gateway ; platform-admin ; platform-java(platform-iam-server) -> platform-ci:image ; platform-ci:gitops-bump -> platform-infra
+platform-ci:image -> trivy ; syft ; buildkit-provenance ; cosign [mới] -> openbao-transit|kms
+platform-ci:{maven-publish,npm-publish} -> VYFORGE_MAVEN_URL ; VYFORGE_NPM_REGISTRY (Forgejo packages | GitHub Packages | cloud)
+platform-ci:{image,chart-publish} -> VYFORGE_OCI_REGISTRY ; VYFORGE_CHART_REPO (Harbor | GHCR | cloud)
+platform-ci:copier-update [mới] -> template-{spring-boot,nextjs,infra,expo}
+platform-ci:openapi-sdk [mới] -> openapi-generator
+platform-ci:load-test [mới] -> k6
+renovate-self-host [mới] -> forgejo|gitea|gitlab|github ; preset local>vyforge/platform-ci:renovate
+.github [bỏ, chỉ còn profile org trên GitHub] -> platform-ci ; platform-docs
 
 # Bỏ
 nextjs-ui [bỏ] -x
@@ -306,7 +314,7 @@ module mới.
   - GitHub artifact attestation **không dùng được cho repo private** nếu không có gói Enterprise Cloud
     ([GitHub docs](https://docs.github.com/de/actions/how-tos/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds));
     `container.yml:125-129` đang tắt bước này.
-  - Thay bằng ký **cosign 3.1.4** với khoá trong KMS/OpenBao. Không dùng keyless trên Rekor công khai, vì tên repo sẽ lộ
+  - Thay bằng ký **cosign 3.1.4** với khoá trong KMS/OpenBao, chạy giống nhau trên mọi nền tảng CI (mục 8). Không dùng keyless trên Rekor công khai, vì tên repo sẽ lộ
     ra log minh bạch.
   - Admission bằng **Kyverno 1.19.2** `ImageValidatingPolicy`, đã stable ở `policies.kyverno.io/v1`
     ([docs](https://kyverno.io/docs/policy-types/overview/)).
@@ -341,14 +349,14 @@ module mới.
   - Chỉ số adoption: % repo sinh bằng Copier, % theo kịp template, time-to-first-deploy dưới 1 ngày.
   - Chấm lại mức trưởng thành CNCF 6 tháng một lần.
 - **Tài liệu, hỗ trợ, SLO.**
-  - Site tài liệu tĩnh; runbook cho từng service; GitHub Discussions; office hours với dự án pilot.
+  - Site tài liệu tĩnh từ `platform-docs`; runbook cho từng service; kênh hỏi đáp trên git server đang dùng; office hours với dự án pilot.
   - On-call chỉ trong giờ hành chính cho tới khi có người thứ 2 và thứ 3.
   - SLO 28 ngày, theo [SRE Workbook](https://oreilly.com/library/view/the-site-reliability/9781492029496):
     - auth `/oauth2/token`: 99,9%
     - iam `resolve`: 99,5% (app có stale cache)
     - gateway: 99,9%, overhead p99 < 20 ms
 - **DR/BCP.** RPO/RTO theo tier (service nền tảng: 5 phút / 1 giờ). Git là nguồn sự thật để dựng lại; backup ở vùng khác;
-  bản sao offline của secret gốc; mirror GHCR và Packages cho khách on-prem; diễn tập 6 tháng một lần.
+  bản sao offline của secret gốc; registry (Harbor, registry của Forgejo) có backup và replication; diễn tập 6 tháng một lần.
 - **Tuân thủ.**
   - **Luật 91/2025/QH15** và **NĐ 356/2025/NĐ-CP** có hiệu lực từ 01/01/2026. Nghị định 356 **thay thế NĐ 13/2023**
     ([Công báo](https://congbao.chinhphu.vn/van-ban/nghi-dinh-so-356-2025-nd-cp-468371.htm),
@@ -381,27 +389,28 @@ ADR-0011 (tenant và danh bạ) và ADR-0012 (IdP mở rộng) đang được vi
 |---|---|---|
 | 0013 | Version, release, deprecation | Semver sau 1.0; dòng release theo minor của Boot; hỗ trợ 2 dòng; `platform-web` lockstep; ma trận tương thích |
 | 0014 | Nâng cấp hàng loạt | Renovate nhóm "platform", manager `copier` hoặc workflow `copier-update`, OpenRewrite/codemod, bảng fleet |
-| 0015 | Danh mục repo và module | Ghi chính thức mục 1: xoá 2 repo rỗng, gộp iam-server vào `platform-java`, đổi tên `platform-admin`, tiêu chí tạo repo hoặc artifact mới |
-| 0016 | Runtime đích | K8s managed / K3s on-prem; nâng 2 minor mỗi năm; tách cụm theo môi trường hoặc khách hàng |
-| 0017 | GitOps, môi trường, preview | Argo CD + Kargo, repo `platform-infra` và `<du-an>-infra`, preview theo PR có TTL |
-| 0018 | PostgreSQL trên K8s và migration | CloudNativePG + Barman plugin, PITR, RPO/RTO; Flyway expand/contract, dải số cho nhánh song song |
-| 0019 | Secrets | ESO 2.x + OpenBao hoặc secret manager của cloud; xoay vòng |
-| 0020 | Chuỗi cung ứng | SLSA Build L2→L3, Source L2; cosign khoá KMS; chart `platform-policies` (Kyverno) |
-| 0021 | Observability | Chart `platform-observability`, quy ước metric/log/trace |
-| 0022 | SLO, hỗ trợ, on-call | SLI/SLO cho auth, iam, gateway; error budget policy; mức phản hồi |
-| 0023 | DR/BCP | RPO/RTO, secret gốc, mirror registry, diễn tập |
-| 0024 | Bảo vệ dữ liệu cá nhân | Luật 91/2025 + NĐ 356/2025: phân định trách nhiệm platform/khách hàng; `-privacy` |
-| 0025 | Pentest | ASVS 5.0 L3/L2, tần suất, SLA sửa lỗi |
-| 0026 | Job và rate limit | ShedLock (`-scheduling`); Bucket4j + Redis (`-ratelimit`) thay cho filter riêng |
-| 0027 | Thông báo | `-notification`: kênh, outbox, ZNS, không tự host Novu |
-| 0028 | Lưu file | `-files`: S3 presigned, SeaweedFS khi local, không dùng MinIO, ClamAV |
-| 0029 | Xuất file, webhook, feature flag | `-export` (license LGPL), `-webhooks` (Standard Webhooks), `-features` (OpenFeature + flagd) |
-| 0030 | Thanh toán nội địa | `-payment`: IPN kiểm chữ ký, idempotent, đối soát |
-| 0031 | Golden path mobile | `template-expo`, OIDC native app, `@vyforge/auth/core` |
-| 0032 | Hợp nhất audit | authz ghi qua `-audit` bằng event; bỏ `iam_audit_log` |
-| 0033 | Lọc danh sách theo policy | Dịch điều kiện policy thành điều kiện truy vấn (phần còn lại của ADR-0010) |
-| 0034 | Đo lường platform | DORA 5 chỉ số, SPACE, adoption, chấm CNCF 6 tháng một lần |
-| 0035 | Owner và mức hỗ trợ | ≥ 2 owner mỗi service; quy trình nhận đóng góp ngược |
+| 0015 | Danh mục repo và module | Ghi chính thức mục 1: xoá 2 repo rỗng, gộp iam-server vào `platform-java`, đổi tên `platform-admin`, tách `.github`, tiêu chí tạo repo hoặc artifact mới |
+| 0016 | CI/CD và registry trung lập với nền tảng git | `vyforge-ci` + image `ci-toolbox`, adapter GitHub/Forgejo-Gitea/GitLab, registry và khoá ký theo tham số, bộ on-prem tham chiếu, tách `.github` thành `platform-ci` + `platform-docs` |
+| 0017 | Runtime đích | K8s managed / K3s on-prem; nâng 2 minor mỗi năm; tách cụm theo môi trường hoặc khách hàng |
+| 0018 | GitOps, môi trường, preview | Argo CD + Kargo, repo `platform-infra` và `<du-an>-infra`, preview theo PR có TTL |
+| 0019 | PostgreSQL trên K8s và migration | CloudNativePG + Barman plugin, PITR, RPO/RTO; Flyway expand/contract, dải số cho nhánh song song |
+| 0020 | Secrets | ESO 2.x + OpenBao hoặc secret manager của cloud; xoay vòng |
+| 0021 | Chuỗi cung ứng | SLSA Build L2→L3, Source L2; cosign khoá KMS; chart `platform-policies` (Kyverno) |
+| 0022 | Observability | Chart `platform-observability`, quy ước metric/log/trace |
+| 0023 | SLO, hỗ trợ, on-call | SLI/SLO cho auth, iam, gateway; error budget policy; mức phản hồi |
+| 0024 | DR/BCP | RPO/RTO, secret gốc, mirror registry, diễn tập |
+| 0025 | Bảo vệ dữ liệu cá nhân | Luật 91/2025 + NĐ 356/2025: phân định trách nhiệm platform/khách hàng; `-privacy` |
+| 0026 | Pentest | ASVS 5.0 L3/L2, tần suất, SLA sửa lỗi |
+| 0027 | Job và rate limit | ShedLock (`-scheduling`); Bucket4j + Redis (`-ratelimit`) thay cho filter riêng |
+| 0028 | Thông báo | `-notification`: kênh, outbox, ZNS, không tự host Novu |
+| 0029 | Lưu file | `-files`: S3 presigned, SeaweedFS khi local, không dùng MinIO, ClamAV |
+| 0030 | Xuất file, webhook, feature flag | `-export` (license LGPL), `-webhooks` (Standard Webhooks), `-features` (OpenFeature + flagd) |
+| 0031 | Thanh toán nội địa | `-payment`: IPN kiểm chữ ký, idempotent, đối soát |
+| 0032 | Golden path mobile | `template-expo`, OIDC native app, `@vyforge/auth/core` |
+| 0033 | Hợp nhất audit | authz ghi qua `-audit` bằng event; bỏ `iam_audit_log` |
+| 0034 | Lọc danh sách theo policy | Dịch điều kiện policy thành điều kiện truy vấn (phần còn lại của ADR-0010) |
+| 0035 | Đo lường platform | DORA 5 chỉ số, SPACE, adoption, chấm CNCF 6 tháng một lần |
+| 0036 | Owner và mức hỗ trợ | ≥ 2 owner mỗi service; quy trình nhận đóng góp ngược |
 
 ## 7. Rủi ro lớn và cách giảm
 
@@ -409,11 +418,62 @@ ADR-0011 (tenant và danh bạ) và ADR-0012 (IdP mở rộng) đang được vi
 |---|---|---|
 | R1 | **Bus factor = 1**: org có 1 thành viên; ADR-0008 đòi ≥ 2 owner | Có người thứ 2 trước Q2/2027 (điều kiện để pilot lên production); bớt đơn vị phải release (mục 1); runbook và ADR đủ để người khác tiếp quản; ưu tiên dịch vụ managed |
 | R2 | **Auth-server tự viết** chưa pentest (`README.md:8`); IdP mở rộng làm tăng bề mặt tấn công | Keycloak làm phương án B; pentest ASVS L3 trước 1.0; IdP mở rộng bật theo cờ, mặc định tắt; chưa đủ 2 owner trước 07/2027 thì dự án dùng Keycloak |
-| R3 | **Quá nhiều repo và module cho một người** | Mục 1: bỏ 3 repo, giữ số repo hoạt động ở mức 12 dù thêm năng lực; module mới đặt trong monorepo sẵn có; `platform-web` lockstep; module không có người dùng sau 2 quý thì deprecated |
+| R3 | **Quá nhiều repo và module cho một người** | Mục 1: bỏ 3 repo, giữ số repo hoạt động ở mức 13 dù thêm năng lực; module mới đặt trong monorepo sẵn có; `platform-web` lockstep; module không có người dùng sau 2 quý thì deprecated |
 | R4 | **Xây trước khi có khách hàng** (F19) | Pilot tier 1 bắt đầu Q1/2027; module P1/P2 chỉ làm khi pilot cần |
 | R5 | **Code ra nhanh hơn tốc độ review** (`platform-java` 8 minor trong 6 ngày, có commit do AI sinh; DORA 2025: AI tăng throughput nhưng giảm ổn định) | Semver nghiêm sau 1.0; đo rework rate; mỗi lỗi có test tái hiện; review bảo mật cho auth/authz |
-| R6 | **Phụ thuộc GitHub** (Packages, GHCR, attestation trên repo private) | Ký bằng cosign; mirror registry cho khách on-prem; export repo định kỳ |
+| R6 | **Phụ thuộc GitHub.** 70 file trong 10 repo ghi cứng GHCR, GitHub Packages, `PACKAGES_TOKEN`, `vyforge/.github/...@v1`, `attest-build-provenance`. Không chạy được khi khách hàng hoặc công ty muốn git và CI on-prem | Git server chỉ chứa code. Logic CI nằm trong `vyforge-ci` (image `ci-toolbox`); file CI chỉ là adapter. Registry, token, khoá ký là tham số. Bộ on-prem tham chiếu (Forgejo + Harbor + cosign/OpenBao + Renovate self-host) chạy thử với `platform-gateway` trong Q1/2027 (ADR-0016, mục 8) |
 | R7 | **License OSS thay đổi** (MinIO đã archive, Vault chuyển BUSL, Camunda cần license) | Mỗi module mới đứng sau một port; thư viện và license ghi trong ADR |
 | R8 | **Nhịp nâng cấp của hệ sinh thái** (Boot 6 tháng, K8s khoảng 14 tháng, Keycloak không có LTS) | Rà soát hằng quý; ma trận tương thích |
 
 Sơ đồ quy hoạch: dùng danh sách cạnh ở mục **1d**. Danh sách này thay cho bản cũ.
+
+## 8. Nghiên cứu: CI/CD và registry không phụ thuộc GitHub
+
+**Yêu cầu.** Git server có thể là GitHub, GitLab hoặc Forgejo/Gitea on-prem. CI/CD, registry, ký image và cập nhật
+dependency không được gắn vào GitHub.
+
+**Hiện trạng.** Lệnh grep
+`grep -rIl -E 'ghcr\.io|npm\.pkg\.github\.com|maven\.pkg\.github\.com|PACKAGES_TOKEN|vyforge/\.github/|attest-build-provenance'`
+(bỏ qua `node_modules`, `target`, `.next`) khớp **70 file trong 10 repo**. Ngoài ra có 26 file workflow GitHub Actions.
+Ví dụ:
+- `container.yml:71,106` ghi cứng `ghcr.io`.
+- `maven-publish.yml:44` ghi cứng `maven.pkg.github.com`.
+- `publishConfig.registry` nằm trong 11 file `package.json` của `platform-web`.
+- `pom.xml:29` của ba service khai báo repository GitHub Packages.
+
+Bảng sửa chi tiết theo repo nằm ở [MODULE_PLAN.md](../MODULE_PLAN.md). Máy dev hiện đã cấu hình Maven mirror qua Nexus
+trong `~/.m2/settings.xml`, nên công ty đã quen với registry tự dựng.
+
+**Công cụ đã kiểm** (version lấy từ GitHub Releases API và Codeberg API ngày 26/10/2026, license từ repo):
+
+| Công cụ | Version | License | Điểm chính |
+|---|---|---|---|
+| Forgejo | 17.0.0 (15/10/2026); **15 LTS** 15.0.10, vá đến 15/07/2027 ([LWN](https://lwn.net/Articles/1068001/), [monthly report 05/2026](https://forgejo.org/2026-05-monthly-report/)) | GPLv3+ | Package registry có Maven, npm, Container, Helm và 19 loại khác ([docs](https://forgejo.org/docs/v17.0/user/packages/)). Actions "hướng tới quen thuộc chứ không tương thích 100%". Khác biệt đã biết: image mặc định là Debian chỉ có Node; bỏ qua `permissions` và `continue-on-error` của job; OIDC bật bằng `enable-openid-connect` ([docs](https://forgejo.org/docs/v17.0/user/actions/github-actions/)). Reusable workflow xuyên repo chỉ chạy khi repo được gọi là **public** ([docs](https://forgejo.org/docs/v17.0/user/actions/reference/)) |
+| Forgejo Runner | 13.2.0 (18/09/2026) | GPLv3+ | Bản 13.0 có thay đổi phá vỡ tương thích ([release 13.1](https://forgejo.org/2026-09-runner-release-v131)) |
+| Gitea | 28.2.0 (18/10/2026); trước đó là dòng 1.27 | MIT | Package registry tương tự Forgejo ([docs](https://docs.gitea.com/usage/packages/overview/)). `GITEA_TOKEN` của Actions **không** push được package của chính repo, phải dùng PAT; `uses:` chấp nhận URL tuyệt đối ([so sánh với GitHub Actions](https://docs.gitea.com/usage/actions/comparison)) |
+| GitLab CE | (không kiểm version) | MIT (CE) | CI/CD components và catalog; từ 18.5 mỗi project có tối đa 100 component ([docs](https://docs.gitlab.com/17.5/ee/ci/components)). Có registry riêng. Nặng hơn Forgejo nhiều |
+| Woodpecker | 3.19.0 (07/10/2026) | Apache-2.0 | CI nhẹ, chạy được với Forgejo/Gitea; thêm một hệ thống phải vận hành |
+| Jenkins | weekly 2.587; LTS 2.568.3 (02/09/2026, [community.jenkins.io](https://community.jenkins.io/t/platform-sig-august-25-2026/37237)) | MIT | Trung lập nhưng tốn công vận hành plugin |
+| Tekton Pipelines / Chains | 1.17.1 / 0.29.9 | Apache-2.0 | Chains ký và sinh provenance `slsa/v1` cho TaskRun/PipelineRun, dùng khoá x509 hoặc KMS ([docs](https://tekton.dev/docs/chains/)). Cần cluster riêng cho CI |
+| Dagger | 0.21.11 (21/10/2026) | Apache-2.0 | Pipeline viết bằng code, chạy như nhau ở mọi CI, nhưng vẫn 0.x và cần engine chạy đặc quyền |
+| just / Task | 1.59.0 / 3.54.0 | CC0 / MIT | Task runner một binary |
+| Nexus Repository CE | 3.97.2 | EPL-1.0 (mã nguồn); bản CE dùng miễn phí có giới hạn | **40.000 component, 100.000 request/ngày** từ 3.87 (trước đó là 100.000/200.000); vượt ngưỡng thì dừng nhận component mới, muốn bỏ giới hạn phải mua Pro; CE không có HA ([Sonatype](https://help.sonatype.com/en/ce-onboarding.html), [bảng edition](https://help.sonatype.com/en/nexus-repository-tiers-and-feature-availability.html), [issue #883](https://github.com/sonatype/nexus-public/issues/883)) |
+| Harbor | 2.15.4 (09/10/2026); 2.14.6 (23/10/2026) | Apache-2.0, CNCF graduated | Chứa OCI image và chart; giữ chữ ký cosign/Notation như phụ kiện của artifact; có thể bắt buộc chữ ký khi pull ([docs](https://goharbor.io/docs/edge/working-with-projects/working-with-images/sign-images/)); quét Trivy tích hợp |
+| Reposilite | 3.6.4 (23/10/2026) | Apache-2.0 | Chỉ dùng cho Maven ([reposilite.com](https://reposilite.com/)) |
+| Verdaccio | 7.0.1 (25/10/2026) | MIT | Registry npm, có uplink tới npmjs |
+| cosign | 3.1.4 (20/10/2026) | Apache-2.0 | Ký bằng khoá KMS: `awskms://`, `gcpkms://`, `azurekms://`, `hashivault://` ([docs](https://docs.sigstore.dev/cosign/key_management/overview/)). Ở v3, `--tlog-upload=false` đã deprecated; muốn ký không qua Rekor thì dùng signing config không có transparency log, và khi verify cần `--insecure-ignore-tlog` ([cosign#4778](https://github.com/sigstore/cosign/issues/4778)) |
+| OpenBao | 2.7.1 | MPL-2.0 | Tương thích API Vault; cosign `hashivault://` dùng Transit engine (với OpenBao **cần chạy thử**) |
+| witness / in-toto | witness 0.12.0 | Apache-2.0 | in-toto là dự án CNCF graduated từ 04/2025 ([CNCF](https://www.cncf.io/news/2025/04/25/itops-times-cncf-announces-graduation-of-in-toto-security-framework-for-software-supply-chain-integrity/)). witness ghi attestation cho bước build, có tích hợp GitLab và GitHub, lưu trữ qua Archivista ([repo](https://github.com/in-toto/witness)) |
+| Syft / Trivy | 1.55.0 / 0.76.1 | Apache-2.0 | SBOM và quét lỗ hổng, không phụ thuộc nền tảng |
+| Renovate | 44.181.12 | AGPL-3.0 | Hỗ trợ `github`, `gitlab`, `gitea`, `forgejo`, `bitbucket`, `azure` ([docs](https://docs.renovatebot.com/modules/platform/)). Manager `copier` cần `allowScripts` khi self-host ([GitLab common-ci-tasks MR 669](https://gitlab.com/gitlab-com/gl-infra/common-ci-tasks/-/merge_requests/669)) |
+
+**Kết luận.**
+1. Chọn Forgejo 15 LTS và Forgejo Runner làm git và CI on-prem tham chiếu. Cú pháp gần với workflow hiện có, nhẹ, có LTS.
+2. Vì Forgejo không gọi được workflow xuyên repo private, logic dùng chung phải nằm trong image `ci-toolbox` và CLI
+   `vyforge-ci`, không nằm trong reusable workflow.
+3. Artifact Maven và npm của Vyforge đặt trong registry của Forgejo, vì số lượng nhỏ và không cần thêm service.
+4. Image và chart đặt trong Harbor, để có quét lỗ hổng, giữ chữ ký và replication.
+5. Không dùng Nexus CE làm registry chính vì giới hạn 40.000 component. Nexus vẫn dùng được làm proxy cache.
+6. Provenance lấy từ BuildKit, ký bằng cosign với khoá trong OpenBao hoặc KMS. Cách này cho kết quả giống nhau trên mọi
+   nền tảng CI.
+7. Chuyển sang Tekton Chains chỉ khi cần SLSA Build L3.

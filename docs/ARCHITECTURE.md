@@ -107,20 +107,20 @@ Phần dùng chung nằm trong artifact có version (Renovate tự cập nhật)
 | [`platform-web`](https://github.com/vyforge/platform-web) | `@vyforge/*` (GitHub Packages) | `tsconfig`, `eslint-config` (ranh giới B12), `prettier-config`, `ui`, `api-client` (token ở server, Problem Details → lỗi form, `createFormAction`), `auth` (Better Auth BFF, `requireRole`, `can`/`requirePermission`), `i18n` (next-intl vi/en), `test-config` (Vitest, Playwright, MSW), `iam` (giao diện quản trị IAM), `query` (TanStack Query, K6), `server` (`createEnv` Zod lúc runtime, `healthRoute`); Storybook cho `ui` |
 | [`platform-helm-charts`](https://github.com/vyforge/platform-helm-charts) | `oci://ghcr.io/vyforge/charts/app` | App chart: digest, non-root, probe, HPA, PDB, HTTPRoute/Ingress, ExternalSecret, NetworkPolicy |
 
+Caller workflow của dự án cấp `permissions: packages: read` để CI tải được các artifact này. Package npm và chart: thêm repo dự án vào *Manage Actions access* (Read) của từng package. Package Maven chỉ cấp quyền theo repo nguồn, nên repo backend cần secret `PACKAGES_TOKEN` (PAT classic, scope `read:packages`); `java-ci.yml` dùng secret này khi có (`secrets: inherit`).
+
 ## Service nền tảng
 
-Các service dùng chung, mỗi service một repo và một image trên GHCR:
+Các service dùng chung. Mỗi service có một repo và một image OCI, đẩy lên registry do tổ chức cấu hình (`VYFORGE_OCI_REGISTRY`: Harbor on-prem, GHCR hoặc registry của cloud):
 
 | Repo | Vai trò |
 |---|---|
-| [`platform-auth-server`](https://github.com/vyforge/platform-auth-server) | Identity provider OIDC: đăng nhập, MFA, Google/Microsoft, token exchange RFC 8693 (ADR-0008) |
-| [`platform-iam-server`](https://github.com/vyforge/platform-iam-server) | IAM tập trung: lưu policy và group, API nội bộ cho chế độ `remote`, phát event xoá cache qua Redis (ADR-0010) |
-| [`platform-gateway`](https://github.com/vyforge/platform-gateway) | Spring Cloud Gateway: kiểm JWT và `aud`, định tuyến, rate limit; không phân quyền (ADR-0010) |
-| [`platform-auth-admin`](https://github.com/vyforge/platform-auth-admin) | Console quản trị (Next.js) cho tài khoản, client, role |
+| `platform-auth-server` | Identity provider OIDC: đăng nhập, MFA, Google/Microsoft, token exchange RFC 8693 (ADR-0008) |
+| `platform-iam-server` | IAM tập trung: lưu policy và group, API nội bộ cho chế độ `remote`, phát event xoá cache qua Redis (ADR-0010) |
+| `platform-gateway` | Spring Cloud Gateway: kiểm JWT và `aud`, định tuyến, rate limit; không phân quyền (ADR-0010) |
+| `platform-auth-admin` | Console quản trị (Next.js) cho tài khoản, client, role |
 
-Kế hoạch thêm, gộp, đổi tên và bỏ module đến cuối 2027 nằm ở [MODULE_PLAN.md](MODULE_PLAN.md) (đang chờ duyệt).
-
-Caller workflow của dự án cấp `permissions: packages: read` để CI tải được các artifact này. Package npm và chart: thêm repo dự án vào *Manage Actions access* (Read) của từng package. Package Maven chỉ cấp quyền theo repo nguồn, nên repo backend cần secret `PACKAGES_TOKEN` (PAT classic, scope `read:packages`); `java-ci.yml` dùng secret này khi có (`secrets: inherit`).
+Kế hoạch thêm, gộp, đổi tên và bỏ module đến cuối 2027 nằm ở [MODULE_PLAN.md](MODULE_PLAN.md) (đang chờ duyệt). Kế hoạch đó gồm cả việc đưa CI/CD và registry ra khỏi GitHub.
 
 ## Delivery
 
