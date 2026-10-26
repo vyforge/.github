@@ -1745,7 +1745,7 @@ Module export có ba phần, mỗi phần cài hay bỏ riêng được:
 |---|---|---|
 | Backend | `platform-starter-export` (Maven) | App có màn hình xuất/nhập/in chứng từ |
 | Frontend nghiệp vụ | `@vyforge/export` (npm): client, `ExportButton`, `JobsTable`/`JobStatus`, `ImportWizard` | App Next.js có các màn hình đó |
-| Admin MFE | `@vyforge/export-admin` (build và deploy riêng, gắn vào shell `platform-admin` lúc chạy) | Khách hàng cần quản trị cấu hình, mẫu báo cáo, lịch, việc của mọi người |
+| Admin MFE | Component `@vyforge/export/admin` + app zone `platform-admin/apps/export-admin` (`/m/export`, build và deploy riêng, gắn vào shell lúc chạy) | Khách hàng cần quản trị cấu hình, mẫu báo cáo, lịch, việc của mọi người |
 
 ### 11.1 Backend: ba cách chạy
 
