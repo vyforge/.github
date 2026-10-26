@@ -559,14 +559,22 @@ ADR, để đội nhỏ viết và duy trì nổi. Khi lệch nhau, số ADR ở
 13. Điều kiện cho auth-server: IdP mở rộng mặc định tắt, pentest trước production, template luôn chạy được với Keycloak.
 14. Dùng Valkey thay Redis cho mọi môi trường.
 
-## Phụ lục: vì sao không tách thêm starter
+## Phụ lục: cache, resilience, tenancy, i18n do platform làm sẵn
 
-Ngoài `platform-core`, các nhu cầu sau không tách thành starter riêng:
+Bốn nhu cầu này **không thành starter riêng**, nhưng **cũng không bắt service tự làm**. Chúng nằm trong các module mà
+mọi service sinh từ template đều có sẵn (`platform-core`, `-web`, `-security`, `-jpa`, `-messaging`), và được bật bằng
+auto-configuration. Service chỉ khai báo cấu hình hoặc đặt annotation.
 
-| Nhu cầu | Đặt ở đâu | Lý do |
-|---|---|---|
-| Cache | Quy ước trong `platform-core` | Chỉ là key generator theo tenant và cấu hình TTL; không có phụ thuộc ngoài đáng kể |
-| Timeout, retry, circuit breaker | `-web` | Gắn liền với `RestClient` mà `-web` đã cấp |
-| Tenancy | `platform-core` + điểm nối trong từng starter | Một starter riêng sẽ phải phụ thuộc ngược vào jpa, messaging, scheduling |
-| i18n cho backend | `-web` (MessageSource, Problem Details vi/en đã có) | Không có phụ thuộc mới |
-| Batch | `-export` (khi có pilot cần) | Chưa có nhu cầu Spring Batch riêng |
+| Nhu cầu | Platform làm sẵn (tự bật) | Service chỉ cần | Nằm ở |
+|---|---|---|---|
+| Cache | `CacheManager` bật sẵn: Caffeine khi chạy một instance, Valkey khi có `spring.data.redis`. Key tự có tiền tố tenant. Metric hit/miss. Khởi động lỗi nếu một cache không khai báo TTL | `@Cacheable("customers")` và một dòng `vyforge.cache.caches.customers.ttl: 10m` | `platform-core` |
+| Resilience | `RestClient.Builder` và client `@HttpExchange` có sẵn connect timeout 2 giây, read timeout 10 giây. Retry chỉ cho method idempotent. Circuit breaker tự bật khi có Resilience4j trên classpath. Request id, token và tenant tự truyền sang service khác | Dùng client `@HttpExchange` như bình thường. Muốn khác mặc định thì khai báo `vyforge.http.clients.<tên>.read-timeout` | `-web`, `platform-core` |
+| Tenancy | Lấy `tenant_id` từ token vào `TenantContext`. Truyền qua `@Async`, job nền, header Kafka, lời gọi HTTP ra ngoài. `-jpa` tự thêm điều kiện lọc theo tenant. Luật ArchUnit kiểm tra entity thiếu `tenant_id` | Đánh dấu entity thuộc tenant (`@TenantScoped` hoặc kế thừa `TenantEntity`). Không đọc claim, không tự viết `where tenant_id = ?` | `platform-core`, `-security`, `-jpa`, `-messaging` |
+| i18n backend | `MessageSource` vi/en, đọc `Accept-Language`, Problem Details có `code` ổn định và message theo ngôn ngữ (đã có trong `-web`) | Thêm `messages_vi.properties` và `messages_en.properties` cho message nghiệp vụ của mình | `-web` |
+
+Lý do không tách thành artifact riêng:
+- Cả bốn đều nhỏ, không kéo theo phụ thuộc ngoài lớn, và service nào cũng cần.
+- Tách ra thì mỗi service phải khai báo thêm dependency, platform phải release thêm artifact, mà không bớt được gì.
+- Riêng tenancy: một starter riêng sẽ phải phụ thuộc ngược vào jpa, messaging và scheduling.
+
+Batch cũng không tách. Khi có pilot cần thì đặt trong `-export`.
