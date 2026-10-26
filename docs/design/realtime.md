@@ -1,6 +1,8 @@
 # Thiết kế module realtime (`platform-starter-realtime`, `@vyforge/realtime`)
 
-> **Trạng thái:** bản thiết kế chờ duyệt (26/10/2026). Nền: platform-java 0.12.0, platform-web 0.9.0. Bản triển khai
+> **Trạng thái:** đã duyệt 26/10/2026 (chỉnh khi duyệt: migration dùng `StarterSchemaMigrator`, mục 4.2; thêm mục 11
+> theo module-conventions §6 và platform-services.md). Bản triển khai ở platform-java `feat/realtime`, platform-web
+> `feat/realtime`, platform-gateway `feat/realtime-proxy`. Nền: platform-java 0.12.0, platform-web 0.9.0. Bản triển khai
 > đầu tiên nhắm `0.13.0`.
 >
 > Liên quan: [MODULE_PLAN.md](../MODULE_PLAN.md) (K15: SSE mặc định, WebSocket chỉ khi cần hai chiều),
@@ -433,7 +435,7 @@ erDiagram
     int max_connections_per_user
     int max_topics_per_connection
     int publish_rate_per_second
-    interval history_ttl
+    int history_ttl_seconds
     int history_max_events
     boolean websocket_enabled
     boolean presence_enabled
@@ -449,7 +451,7 @@ erDiagram
     varchar tenant_id PK
     varchar namespace PK
     boolean enabled
-    interval history_ttl
+    int history_ttl_seconds
     jsonb attributes
     bigint version
     timestamptz updated_at
@@ -458,21 +460,23 @@ erDiagram
   realtime_tenant_settings ||--o{ realtime_namespace_override : "tenant_id"
 ```
 
-DDL dự kiến: `classpath:META-INF/vyforge/db/realtime/R__vyforge_realtime.sql`. Migration loại lặp lại như
-scheduling, viết idempotent (`create table if not exists`, `add column if not exists`). Lý do không dùng dải số
-riêng: version cao (vd. `V1300`) nằm chung bảng lịch sử Flyway với migration của dự án, nên migration `V5` dự án thêm
-sau đó bị coi là out-of-order và Flyway từ chối. Đổi schema về sau thì sửa file `R__` theo kiểu cộng thêm (thêm cột
-nullable, thêm bảng), không đổi tên hay xoá cột; Flyway chạy lại file khi checksum đổi.
+DDL (đã chỉnh khi duyệt, theo module-conventions §5.3): migration có version
+`classpath:META-INF/vyforge/db/realtime/V1__realtime_settings.sql`, chạy bằng `StarterSchemaMigrator` của
+`platform-starter-jpa` với **bảng lịch sử riêng** `flyway_schema_history_realtime`. Migration này chạy trước
+`EntityManagerFactory` và không đụng Flyway của app. Tắt bằng `vyforge.realtime.schema.migrate=false`; file gộp cho DBA
+nằm ở `META-INF/vyforge/sql/realtime.sql`. Vì lịch sử tách riêng nên realtime đánh số `V1`, `V2`… độc lập. Đổi schema
+về sau: thêm `V2__…` theo kiểu cộng thêm (cột nullable, bảng mới). Thời gian giữ tin lưu dạng giây (`integer`), không
+dùng `interval`, để JDBC đọc ghi đơn giản.
 
 ```sql
 -- Giới hạn và tuỳ chọn realtime theo tenant. Không có dòng → dùng mặc định vyforge.realtime.defaults.*.
-create table if not exists realtime_tenant_settings (
+create table realtime_tenant_settings (
     tenant_id                  varchar(63) primary key,
     max_connections            integer      check (max_connections is null or max_connections >= 0),
     max_connections_per_user   integer      check (max_connections_per_user is null or max_connections_per_user >= 0),
     max_topics_per_connection  integer      check (max_topics_per_connection is null or max_topics_per_connection between 1 and 500),
     publish_rate_per_second    integer      check (publish_rate_per_second is null or publish_rate_per_second >= 0),
-    history_ttl                interval     check (history_ttl is null or history_ttl <= interval '1 hour'),
+    history_ttl_seconds        integer      check (history_ttl_seconds is null or history_ttl_seconds between 0 and 3600),
     history_max_events         integer      check (history_max_events is null or history_max_events between 0 and 100000),
     websocket_enabled          boolean,
     presence_enabled           boolean,
@@ -486,11 +490,11 @@ create table if not exists realtime_tenant_settings (
 );
 
 -- Tắt hoặc chỉnh một namespace cho một tenant (vd. tenant không mua gói cộng tác → tắt namespace doc).
-create table if not exists realtime_namespace_override (
+create table realtime_namespace_override (
     tenant_id    varchar(63)  not null,
     namespace    varchar(32)  not null,          -- kiểm bằng code (namespace phải được khai báo), không FK, không enum
     enabled      boolean      not null default true,
-    history_ttl  interval,
+    history_ttl_seconds  integer      check (history_ttl_seconds is null or history_ttl_seconds between 0 and 3600),
     attributes   jsonb        not null default '{}'::jsonb,
     version      bigint       not null default 0,
     updated_at   timestamptz  not null default now(),
@@ -1071,7 +1075,6 @@ Test: Vitest với `ReadableStream` giả (tin, heartbeat, đứt giữa chừng
 | Secret mã hoá at-rest trong DB | Không có secret trong DB; khoá Centrifugo là cấu hình deployment (ESO/OpenBao) | Hệ quả của dòng trên |
 | Việc gọi ra ngoài đi qua outbox | Publish realtime **không** đi qua outbox mặc định (gửi sau commit, best-effort) | Realtime là tín hiệu, mất tin thì client tự đồng bộ qua `reset`. Outbox cho mỗi tin tiến độ (S2) làm phình `event_publication`. Ai cần chắc chắn thì publish từ listener outbox (mục 3.7) |
 | State machine rõ ràng cho mọi trạng thái | Có state machine cho **kết nối** (server và client); tin không có trạng thái (không lưu bền) | Không có thực thể bền nào cần vòng đời |
-| Migration `V__` hoặc dải số riêng | Dùng `R__` idempotent | Tránh xung đột version với migration của dự án (mục 4.2) |
 | Dead-letter + API retry/cancel | Không có | Tin không lưu bền; không có gì để retry tay |
 | Hook `useEventStream` trong `@vyforge/query` (MODULE_PLAN, nghiên cứu §3.19) | Package riêng `@vyforge/realtime`, hook chính `useTopic` (giữ alias `useEventStream`); cầu nối TanStack ở `@vyforge/realtime/query` | Realtime cần cả transport, route handler server, WebSocket; nhét vào `@vyforge/query` làm package đó phình và kéo theo phụ thuộc không liên quan |
 
@@ -1088,3 +1091,103 @@ Không có câu hỏi chặn việc triển khai. Hai điểm nên xác nhận k
 
 1. Đồng ý thêm Apache HttpClient 5 vào `platform-gateway` (đổi HTTP client của toàn bộ route, cần chạy lại e2e).
 2. Ngưỡng chuyển sang Centrifugo ở mục 7.5 (20.000 kết nối hoặc 2.000 tin/giây) có hợp với quy mô pilot dự kiến không.
+
+---
+
+## 11. Đóng gói và triển khai độc lập
+
+Theo module-conventions §6 và [platform-services.md](platform-services.md) (D1–D10, §4.11–4.12, §5.1–5.2, §6.7),
+realtime gồm ba phần. Mỗi phần cài hoặc bỏ riêng được.
+
+### 11.1 Backend
+
+| Cách chạy | Cấu hình | Khi nào |
+|---|---|---|
+| Nhúng vào app (`hub`) | Thêm `platform-starter-realtime`; `vyforge.realtime.mode=hub` (mặc định) | Dự án một app |
+| Trong `platform-services` | Module `realtime` trong `vyforge.services.modules`; app nghiệp vụ chạy `vyforge.realtime.mode=publisher`, dùng cùng Valkey và cùng `vyforge.realtime.cluster` | Từ hai app trở lên: trình duyệt chỉ cần một kết nối cho mọi app (platform-services §3.4) |
+| Deployment riêng | Vẫn image `platform-services`, chỉ bật `realtime` (`platform-services-realtime`) | Nhiều kết nối, cần scale riêng |
+| Tắt hẳn | `vyforge.realtime.enabled=false` | Không bean, không migration, không endpoint |
+
+Chế độ `publisher` là "chế độ remote" của realtime. Publisher không gọi REST tới hub mà ghi thẳng vào Valkey Stream và
+pub/sub chung, nên hub chết thì publish vẫn chạy, tin vẫn nằm trong luồng để replay. Không cần API `/internal/**`.
+
+**Không phụ thuộc cứng vào module P1 nào.** Phụ thuộc bắt buộc chỉ là khối nền: `-authz` (kiểm quyền), `-security`,
+`-web`, `platform-core`. Các phụ thuộc còn lại là tuỳ chọn và có điều kiện:
+
+| Phụ thuộc | Cách nối | Không có thì |
+|---|---|---|
+| Valkey (`spring-boot-starter-data-redis`) | `@ConditionalOnBean(RedisConnectionFactory)` | Broker và trạng thái trong bộ nhớ (một replica) |
+| Kafka | `vyforge.realtime.broker=kafka` + `@ConditionalOnClass` | Không dùng |
+| `platform-starter-jpa` + DataSource | `StarterSchema` + `JdbcRealtimeSettingsProvider` | Chỉ có giới hạn mặc định, API sửa cấu hình trả 501 |
+| `platform-starter-ratelimit` | `@ConditionalOnBean(RateLimiter)` | Rate limit publish trong bộ nhớ từng replica |
+| WebSocket | `@ConditionalOnClass` + `transports.websocket.enabled` | Chỉ SSE |
+| notification, files, export, payment, features | **Không phụ thuộc theo chiều nào.** Hợp đồng là topic, type và schema ở mục 5.3. Module kia dùng `ObjectProvider<RealtimePublisher>` hoặc `@RealtimeEvent`; namespace `file`/`payment` do module đó khai báo bằng bean `TopicNamespace` có `@ConditionalOnClass` | Không có tin realtime, module kia vẫn chạy |
+
+Khi module chạy trong `platform-services`, `ModuleEntitlementFilter` (platform-services §5.4) chặn API của tenant không
+có `module.realtime`. Hub không cần biết gì về features.
+
+### 11.2 Package frontend `@vyforge/realtime`
+
+Client cho app nghiệp vụ: `RealtimeClient`, `@vyforge/realtime/react`, `@vyforge/realtime/query`,
+`@vyforge/realtime/server` (route handler BFF, vé), `@vyforge/realtime/websocket` (mục 5.5). App nào không dùng realtime
+thì không cài package này. Package không phụ thuộc package module khác (chỉ `@vyforge/ui` cho component).
+
+### 11.3 Khu quản trị (admin MFE `realtime-admin`, `/m/realtime`)
+
+Kỹ thuật đã chốt ở platform-services (Next.js Multi-Zones, `@vyforge/admin-shell`). Realtime làm phần của mình theo
+§4.12:
+
+1. **Component** ở `@vyforge/realtime/admin`: nhận dữ liệu, Server Action và `can` qua props, không tự đọc cookie hay
+   env. Nhãn vi/en có sẵn (`realtimeAdminLabels`).
+2. **Endpoint** `GET /api/v1/realtime/admin/info` (platform-services §5.1): `module`, `version`, `apiVersion: 1`,
+   `capabilities` (`transport.sse`, `transport.websocket`, `broker.<tên>`, `state.<tên>`, `presence`, `tickets`,
+   `settings.edit`, `ops.stats`), `mode` (`embedded`/`services`). MFE ẩn màn sửa cấu hình khi không có `settings.edit`.
+3. **App zone** `platform-admin/apps/realtime-admin`: dựng bằng `pnpm create-admin-zone realtime` khi forge-37 xong
+   template. Việc này để sau, không làm trong bản này.
+
+| Màn hình | Nhóm | Action IAM | API | Component |
+|---|---|---|---|---|
+| Kết nối của tenant: số kết nối, số người, theo transport; danh sách người đang kết nối | T, O | `realtime:connection:List` | `GET /admin/connections`, `GET /admin/connections/users` | `ConnectionStats`, `ConnectedUsers` |
+| Đóng kết nối của một người dùng | T, O | `realtime:connection:Disconnect` | `DELETE /admin/connections/users/{sub}` | `DisconnectUserDialog` |
+| Namespace và tuỳ chọn (history, presence, client publish, nhạy cảm, bật/tắt cho tenant) | T, O | `realtime:settings:Get` | `GET /admin/namespaces` | `NamespaceTable` |
+| Presence của một topic | T, O | Quyền subscribe topic hoặc `realtime:presence:List` | `GET /presence?topic=` | `PresenceViewer` |
+| Cấu hình tenant: giới hạn kết nối, topic, tốc độ publish, thời gian giữ tin, bật/tắt namespace | T, O | `realtime:settings:Get` / `Update` | `GET/PUT /admin/settings` (`If-Match`) | `RealtimeSettingsForm` |
+| Giám sát toàn hệ thống: kết nối theo tenant và replica, tin/giây, độ trễ giao tin, tin bị bỏ, tình trạng broker | O | `realtime:connection:List` trên `vrn:realtime:connection/platform`; token của tenant vận hành + MFA | `GET /admin/ops/stats` | `RealtimeMonitor` |
+
+T = tenant admin, O = người vận hành. Người vận hành xem tenant khác bằng "tenant đang xem" (header `X-Vyforge-Tenant`,
+platform-services §5.6). Header này do `OperatorTenantSelection` của `platform-services` xử lý. Khi realtime nhúng
+trong app, người vận hành chỉ xem được tenant của mình, trừ `ops/stats`.
+
+`/admin/ops/stats` gom thống kê **mọi replica**: mỗi hub ghi một bản tóm tắt vào kho trạng thái mỗi heartbeat (Valkey:
+`rt:<cluster>:replica:<id>`, sống 3 heartbeat). Khoá này không thuộc tenant, chỉ chứa số đếm, không chứa `sub` hay dữ
+liệu tin. Broker bộ nhớ hoặc Kafka không có Valkey thì chỉ thấy replica đang trả lời.
+
+Manifest dự kiến (hợp đồng với shell, `contract: 1`, platform-services §5.2):
+
+```ts
+export default defineAdminManifest({
+  contract: 1,
+  name: 'realtime',
+  version: pkg.version,
+  title: { vi: 'Realtime', en: 'Realtime' },
+  icon: 'radio',
+  order: 700,
+  audiences: ['operator', 'tenant'],
+  minPermission: { anyOf: [
+    { action: 'realtime:connection:List', resource: 'vrn:realtime:connection/*' },
+    { action: 'realtime:settings:Get', resource: 'vrn:realtime:settings/current' },
+  ] },
+  entitlement: 'admin.realtime',
+  api: { base: '/api/v1/realtime', requires: '>=0.13.0 <1.0.0' },
+  menu: [
+    { id: 'connections', path: '/connections', title: { vi: 'Kết nối', en: 'Connections' },
+      permission: { action: 'realtime:connection:List', resource: 'vrn:realtime:connection/*' } },
+    { id: 'namespaces', path: '/namespaces', title: { vi: 'Kênh', en: 'Namespaces' },
+      permission: { action: 'realtime:settings:Get', resource: 'vrn:realtime:settings/current' } },
+    { id: 'settings', path: '/settings', title: { vi: 'Cấu hình', en: 'Settings' },
+      permission: { action: 'realtime:settings:Get', resource: 'vrn:realtime:settings/current' } },
+    { id: 'monitor', path: '/monitor', title: { vi: 'Giám sát hệ thống', en: 'System monitor' }, audience: 'operator' },
+  ],
+});
+```
+
