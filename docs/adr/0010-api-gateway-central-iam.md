@@ -14,8 +14,8 @@ của client gọi (token đó có `aud` là service đầu tiên), và cần m�
 
 ### 1. API Gateway (`platform-gateway`) — xác thực và định tuyến, không phân quyền
 
-- Spring Cloud Gateway (biến thể Server **WebMVC**, Spring Cloud 2026.0 — dùng bản RC đến khi GA, Renovate tự nâng),
-  repo riêng, image riêng, dùng `platform-parent` và các starter như mọi service.
+- Spring Cloud Gateway (biến thể Server **WebMVC**, Spring Cloud 2025.1 — release train hỗ trợ Spring Boot 4.0/4.1;
+  2026.0 dành cho Boot 4.2), repo riêng, image riêng, dùng `platform-parent` và các starter như mọi service.
 - Gateway làm: kiểm JWT (chữ ký qua JWKS của auth server, hạn, `aud` có `platform-gateway`) cho route cần đăng nhập;
   định tuyến theo path (`/api/v1/<service>/**` hoặc cấu hình); rate limit theo `sub` (có token) hoặc IP; giới hạn kích
   thước body; gắn `X-Request-Id`/trace; trả lỗi dạng Problem Details; CORS cho client công khai.
@@ -80,7 +80,8 @@ của client gọi (token đó có `aud` là service đầu tiên), và cần m�
 - Admin quản lý quyền ở một nơi; thu hồi quyền có hiệu lực gần như ngay trên mọi replica (khi có Redis).
 - Thêm hai thành phần phải vận hành (gateway, IAM server) và một phụ thuộc lúc chạy: service `remote` cần IAM server
   để nạp quyền cho người dùng mới (đã có cache và stale cache giảm ảnh hưởng).
-- Gateway chạy Spring Cloud bản RC cho đến khi 2026.0 GA.
+- Nâng Spring Boot lên 4.2 thì nâng gateway lên Spring Cloud 2026.0 cùng lúc (Spring Cloud kiểm tra tương thích lúc
+  khởi động).
 - Dự án một backend tiếp tục dùng chế độ `local` và gọi thẳng backend; không bắt buộc gateway.
 - Chưa làm: tenant trong token (`tenant_id` do auth server phát), danh bạ người dùng cho app, lọc danh sách theo policy
   ở truy vấn — các ADR sau.
