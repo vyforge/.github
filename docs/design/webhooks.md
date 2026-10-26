@@ -2,14 +2,21 @@
 
 > **Trạng thái:** bản thiết kế chờ duyệt (26/10/2026). Thuộc nhóm module P1 trong [MODULE_PLAN.md](../MODULE_PLAN.md).
 > Tài liệu theo mục 3 của quy ước chung cho module P1. Nguồn tham khảo được kiểm ngày 26/10/2026 bằng GitHub Releases
-> API, Maven Central và trang tài liệu chính thức. Link nằm ngay tại chỗ dùng và tổng hợp ở mục 2.6.
+> API, Maven Central và trang tài liệu chính thức. Link nằm ngay tại chỗ dùng và tổng hợp ở mục 2.7.
+>
+> **Đã duyệt (26/10/2026), bản 2.** Chỉnh theo mục 5 của quy ước (khối dùng chung platform-java 0.12.1):
+> - Mã hoá secret dùng `SecretCipher` của `platform-core`. Bỏ L7 và bỏ `SecretCipher` riêng của bản 1.
+> - Migration dùng `StarterSchemaMigrator` của `-jpa`, bảng lịch sử `flyway_schema_history_webhooks` (L1 nay đã thành
+>   quy ước chung).
+> - Việc gửi **giữ hàng đợi riêng** là `webhook_delivery` + lease theo endpoint (L5), không dùng `DurableTaskQueue` của
+>   `-scheduling`. Lý do nằm ở mục 10.1 và ADR-0020 mục "webhooks".
 
 Module gồm hai artifact Java và một package web:
 
 | Artifact | Vai trò |
 |---|---|
 | `platform-starter-webhooks-inbound` | Kiểm chữ ký và chống replay cho webhook **nhận vào** (IPN thanh toán, callback của provider). Không có bảng, không gửi gì ra ngoài. `-payment` và `-notification` dùng artifact này |
-| `platform-starter-webhooks` | Webhook **gửi ra** cho khách hàng và đối tác: catalog event type, endpoint theo tenant, ký theo Standard Webhooks, hàng đợi gửi bền vững trên PostgreSQL, retry, DLQ, replay, nhật ký, chống SSRF, mTLS, API quản trị. Phụ thuộc artifact inbound để dùng chung phần ký |
+| `platform-starter-webhooks` | Webhook **gửi ra** cho khách hàng và đối tác: catalog event type, endpoint theo tenant, ký theo Standard Webhooks, hàng đợi gửi bền vững trên PostgreSQL, retry, DLQ, replay, nhật ký, chống SSRF, mTLS, API quản trị. Phụ thuộc artifact inbound (dùng chung phần ký), `-jpa` (`StarterSchemaMigrator`), `-scheduling` (job bảo trì), `-authz`, `-audit`; mã hoá secret bằng `SecretCipher` của `platform-core` |
 | `@vyforge/webhooks` | Portal quản lý endpoint, xem nhật ký gửi, gửi thử, replay, xoay secret |
 
 Lý do tách hai artifact nằm ở mục 3.1.
@@ -303,7 +310,7 @@ flowchart TB
   subgraph spi["SPI / adapter"]
     dest["WebhookDestination: http (mặc định)"]
     auth["EndpointAuthenticator: header tĩnh, mTLS"]
-    cipher["SecretCipher: AES-256-GCM cục bộ"]
+    cipher["SecretCipher (platform-core)"]
     guard["EgressPolicy: chặn IP, cổng, tên miền"]
   end
   db[("PostgreSQL<br/>webhook_*")]
@@ -332,8 +339,8 @@ flowchart TB
 | `EndpointWorker` | Với endpoint đang giữ lease: lấy delivery đến hạn, áp rate limit (bucket) và số request đồng thời (semaphore), giữ thứ tự theo key, gửi trên virtual thread, ghi attempt, tính lần retry tiếp theo |
 | `WebhookDestination` | SPI gửi một request. Bản đầu chỉ có `http`. Thêm `kafka`, `sqs` sau mà không đổi lõi |
 | `SafeDnsResolver` + `EgressPolicy` | Phân giải tên miền, loại bỏ IP bị chặn, trả về đúng địa chỉ để HttpClient kết nối |
-| `SecretCipher` | Mã hoá secret của endpoint, header nhạy cảm và khoá riêng của chứng chỉ client trước khi lưu |
-| Job bảo trì (`@ClusterScheduled`) | Tạo/xoá partition, xoá dữ liệu quá retention theo tenant, tự tắt endpoint lỗi lâu, chạy replay theo lô, đồng bộ catalog |
+| `SecretCipher` (platform-core) | Mã hoá secret của endpoint, header nhạy cảm và khoá riêng của chứng chỉ client trước khi lưu. Context gắn vào AAD: `webhooks:endpoint-secret:<tenant>:<id>`, `webhooks:endpoint-headers:<tenant>:<id>`, `webhooks:client-key:<tenant>:<id>` |
+| Job bảo trì (`@ClusterScheduled`) | Tạo/xoá partition, xoá dữ liệu quá retention theo tenant, tự tắt endpoint lỗi lâu, chạy replay theo lô, mã hoá lại bản mã có `needsRotation()`, đồng bộ catalog |
 
 ### 3.3 Vì sao lease theo endpoint
 
@@ -548,7 +555,7 @@ erDiagram
     int timeout_ms
     varchar ordering
     varchar retry_policy
-    bytea headers_enc
+    text headers_ciphertext
     uuid client_certificate_id FK
     jsonb metadata
     jsonb attributes
@@ -559,9 +566,8 @@ erDiagram
     varchar tenant_id
     uuid endpoint_id FK
     varchar algorithm
-    bytea secret_enc
+    text secret_ciphertext
     text public_key
-    varchar kek_id
     timestamptz expires_at
     timestamptz revoked_at
   }
@@ -580,7 +586,7 @@ erDiagram
     varchar tenant_id
     varchar name
     text certificate_pem
-    bytea private_key_enc
+    text private_key_ciphertext
     timestamptz not_after
     varchar fingerprint_sha256
   }
@@ -697,8 +703,7 @@ create table webhook_client_certificate (
     tenant_id           varchar(63)  not null,
     name                varchar(128) not null,
     certificate_pem     text         not null,    -- chuỗi chứng chỉ (công khai)
-    private_key_enc     bytea        not null,    -- PKCS#8, mã hoá bởi SecretCipher
-    kek_id              varchar(32)  not null,
+    private_key_ciphertext text      not null,    -- PKCS#8 PEM; SecretCipher, context webhooks:client-key:<tenant>:<id>
     trust_pem           text,                     -- CA riêng của đối tác để kiểm chứng chỉ server (K6)
     not_after           timestamptz  not null,
     fingerprint_sha256  varchar(64)  not null,
@@ -725,8 +730,7 @@ create table webhook_endpoint (
     timeout_ms            int,
     ordering              varchar(16)  not null default 'NONE', -- NONE | KEY
     retry_policy          varchar(32),
-    headers_enc           bytea,                            -- header tuỳ chỉnh (JSON) đã mã hoá
-    kek_id                varchar(32),
+    headers_ciphertext    text,                             -- header tuỳ chỉnh (JSON); SecretCipher, context webhooks:endpoint-headers:<tenant>:<id>
     client_certificate_id uuid references webhook_client_certificate (id),
     metadata              jsonb        not null default '{}', -- do khách tự đặt, trả lại qua API
     attributes            jsonb        not null default '{}', -- mở rộng của app, có kiểm soát (mục 6.5)
@@ -742,8 +746,7 @@ create table webhook_endpoint_secret (
     tenant_id   varchar(63) not null,
     endpoint_id uuid        not null references webhook_endpoint (id),
     algorithm   varchar(16) not null,     -- HMAC_SHA256 (v1) | ED25519 (v1a)
-    secret_enc  bytea       not null,     -- whsec_/whsk_ đã mã hoá
-    kek_id      varchar(32) not null,
+    secret_ciphertext text  not null,     -- whsec_/whsk_; SecretCipher, context webhooks:endpoint-secret:<tenant>:<id>
     public_key  text,                     -- whpk_ cho ED25519
     created_at  timestamptz not null,
     created_by  varchar(255) not null,
@@ -919,10 +922,11 @@ drop partition quá hạn. Có partition `default` để insert không lỗi n�
 
 ### 4.5 Tiến hoá schema
 
-- **Migration** chạy bằng một Flyway riêng của starter: location `classpath:META-INF/vyforge/db/webhooks`, bảng lịch
-  sử `vyforge_webhooks_schema_history`. Số version của starter (`V1__…`, `V2__…`) không bao giờ đụng số version của
-  app. Lý do chọn cách này nằm ở mục 10. App không muốn starter tự migrate thì đặt
-  `vyforge.webhooks.flyway.enabled=false` rồi chép SQL ở `META-INF/vyforge/sql/webhooks.sql` vào migration của mình.
+- **Migration** theo mục 5.3 của quy ước: `StarterSchemaMigrator` của `-jpa` chạy location
+  `classpath:META-INF/vyforge/db/webhooks` với bảng lịch sử riêng `flyway_schema_history_webhooks`, trước
+  `EntityManagerFactory`. Version của starter (`V1__…`, `V2__…`) không đụng version của app. Tắt bằng
+  `vyforge.webhooks.schema.migrate=false`; DBA dùng file gộp `META-INF/vyforge/sql/webhooks.sql`. Artifact inbound
+  không có bảng.
 - **Payload**: envelope có trường `version` (version của event type). Thay đổi tương thích (thêm field) giữ version.
   Thay đổi không tương thích tăng version và khai báo `PayloadRenderer` (mục 6.2) để dựng payload version cũ cho endpoint
   đã ghim. Message lưu một bản body ở version mới nhất. Bản cho version cũ được dựng lúc gửi, nên không phải lưu nhiều bản.
@@ -1374,7 +1378,7 @@ classpath), chuyển mỗi thông báo thành `publish("notification.<template>"
 vyforge:
   webhooks:
     enabled: true
-    flyway.enabled: true
+    schema.migrate: true            # StarterSchemaMigrator, lịch sử flyway_schema_history_webhooks
     dispatcher:
       enabled: true                 # false trên replica chỉ phục vụ API
       poll-interval: 500ms          # cộng LISTEN/NOTIFY để đánh thức sớm
@@ -1412,9 +1416,7 @@ vyforge:
       allow-cidrs: []
       tenant-allow-cidrs: {}        # acme: ["10.20.0.0/16"]
       proxy: null                   # http://smokescreen.egress:4750
-    encryption:
-      active-key: k2026a
-      keys: { k2026a: "${WEBHOOKS_KEK_K2026A}" }  # 32 byte base64; nạp từ ESO/OpenBao
+    # Khoá mã hoá secret: vyforge.crypto.keys.<kid> + vyforge.crypto.active-key (SecretCipher của platform-core)
     api:
       enabled: true
       publish-enabled: false
@@ -1474,7 +1476,7 @@ readiness của app đỏ (cấu hình group), vì API nghiệp vụ vẫn chạ
 | Đối tác sập nhiều ngày | Circuit mở, cooldown tăng dần tới 1 giờ; delivery giữ lịch retry; tới 5 ngày thì tắt endpoint và phát event |
 | Đối tác trả 429 liên tục | Giảm rate một nửa, tăng dần lại (AIMD); không tính vào ngưỡng tự tắt |
 | Bão event (import 1 triệu đơn) | Publish chỉ insert; dispatcher gửi theo rate limit của từng endpoint; `queue.lag` tăng và có alert. Nên dùng channel hoặc filter để giảm fan-out |
-| KEK bị mất | Không giải mã được secret: endpoint không gửi được, attempt `outcome=SECRET_UNAVAILABLE`, không tắt endpoint. KEK phải có trong backup của secret store |
+| Khoá của `SecretCipher` bị mất | Không giải mã được secret: endpoint không gửi được, attempt `outcome=SECRET_UNAVAILABLE`, không tắt endpoint. Khoá phải có trong backup của secret store |
 | Đồng hồ lệch | Lease và lịch dùng `now()` của database, không dùng đồng hồ JVM |
 | Catalog bị xoá type khi còn endpoint đăng ký | Lúc khởi động chỉ đánh dấu `archived`, không xoá; publish type đã xoá khỏi code thì lỗi lúc compile của app chứ không lỗi ngầm |
 
@@ -1503,7 +1505,7 @@ mỗi endpoint (qua `-ratelimit`).
 |---|---|
 | SSRF, DNS rebinding | Mục 3.6: kiểm khi đăng ký và khi kết nối, resolver trả đúng IP đã kiểm, không redirect, ngoại lệ chỉ do người vận hành cấu hình, NetworkPolicy, proxy tuỳ chọn. Test bắt buộc cho các dạng IP nội bộ |
 | Giả mạo webhook của Vyforge | Ký Standard Webhooks, secret 32 byte riêng từng endpoint; ed25519 tuỳ chọn để đối tác chỉ giữ khoá công khai |
-| Lộ secret | Mã hoá AES-256-GCM (nonce 96 bit, AAD = `tenant_id|endpoint_id|secret_id`) với KEK có id; KEK nạp từ secret store (ESO/OpenBao); xoay KEK bằng job mã hoá lại. API chỉ trả secret khi tạo, khi xoay, hoặc qua `RevealSecret` có audit. Không log secret, không đưa vào attempt |
+| Lộ secret | `SecretCipher` của `platform-core` (AES-256-GCM, bản mã `v1:<kid>:`), context gồm tenant và id gắn vào AAD nên bản mã không chép sang dòng hoặc tenant khác được. Khoá nạp từ secret store (ESO/OpenBao). Job `webhooks-reencrypt` mã hoá lại bản mã có `needsRotation()`. API chỉ trả secret khi tạo, khi xoay, hoặc qua `RevealSecret` có audit. Không log secret, không đưa vào attempt |
 | Replay webhook gửi ra | `webhook-timestamp` nằm trong chữ ký, tính lại ở mỗi attempt; `webhook-id` cố định để khử trùng |
 | Webhook vào giả mạo | Kiểm trên body thô trước khi parse, so sánh hằng thời gian, kiểm timestamp, `ReplayGuard`, IP allowlist tuỳ chọn; trả 401 chung chung, chi tiết chỉ nằm trong log |
 | Tấn công qua phản hồi của đối tác | Đọc tối đa 64 KB, lưu 4 KB, coi là văn bản không tin cậy (portal escape khi hiển thị), không parse |
@@ -1542,7 +1544,7 @@ Quy định ngành: webhook thanh toán theo hướng dẫn của Ngân hàng Nh
 |---|---|---|
 | 1 | Module `platform-starter-webhooks-inbound`: gói `signature` (Standard Webhooks v1/v1a, `HmacScheme`, `Canonicalizer`, `Hmacs`, `WebhookSecret`) | Unit: vector của spec; **oracle** `com.standardwebhooks:standardwebhooks:1.2.0` (scope test) ký/kiểm hai chiều; ed25519 bằng JDK; xoay nhiều chữ ký; tolerance với `Clock` giả; vector SePay, GitHub, Stripe từ tài liệu; ArchUnit gói `signature` không import Spring |
 | 2 | Inbound Spring: `RawBodyFilter`, `@InboundWebhook`, `InboundWebhookSource`, `HmacHeaderSource`, `StandardWebhooksSource`, `ApiKeySource`, `SecretResolver`, `ReplayGuard` (ProcessedMessages, Redis) | MockMvc: body thô giữ nguyên byte (JSON có khoảng trắng, UTF-8 có dấu), sai chữ ký → 401, quá hạn, trùng id; Testcontainers PostgreSQL cho `ReplayGuard` |
-| 3 | Module `platform-starter-webhooks`: Flyway riêng, schema, entity `TenantEntity`, store JDBC, `SecretCipher` AES-GCM, catalog + đồng bộ | Testcontainers PostgreSQL: migration chạy trên DB trống và trên DB có app migration; `TenantIsolationTests` cho từng store; mã hoá/giải mã, xoay KEK |
+| 3 | Module `platform-starter-webhooks`: migration qua `StarterSchemaMigrator`, schema, entity `TenantEntity`, store JDBC, dùng `SecretCipher` của `platform-core`, catalog + đồng bộ | Testcontainers PostgreSQL: migration chạy trên DB trống và trên DB có app migration; `TenantIsolationTests` cho từng store; bản mã sai context bị từ chối, job mã hoá lại |
 | 4 | Egress: `UrlPolicy`, `SafeDnsResolver`, `EgressPolicy`, HttpClient5 không redirect, mTLS, proxy | Unit: bảng IP (IPv4, IPv6, IPv4-mapped, NAT64, 6to4, dạng thập phân/hex, `localhost`, `0.0.0.0`); resolver giả trả IP công khai rồi IP nội bộ (rebinding); MockWebServer: redirect không theo; mTLS với chứng chỉ sinh trong test |
 | 5 | Publish + fan-out + idempotency + `@WebhookEvent` bridge + interceptor + renderer version | Testcontainers: rollback không có message; lọc type wildcard, channel; idempotency trả `duplicate`; pin version dùng renderer |
 | 6 | Dispatcher: claim lease, worker, bucket, semaphore, thứ tự theo key, retry + jitter, circuit, `Retry-After`, 410, tự tắt | Testcontainers + MockWebServer: 3 dispatcher song song không gửi trùng và không vượt `max-in-flight`; lease hết hạn sau khi "giết" worker; thứ tự theo key khi lỗi giữa chừng; 429 giảm tốc; 410 tắt endpoint; lịch retry với đồng hồ DB giả lập bằng `next_attempt_at` |
@@ -1578,13 +1580,12 @@ thứ tự và portal).
 
 | # | Quy ước | Thiết kế này | Lý do |
 |---|---|---|---|
-| L1 | Migration dùng `R__` hoặc dải số riêng trong lịch sử Flyway của app | Flyway riêng của starter, bảng lịch sử `vyforge_webhooks_schema_history` | Dải số lớn (ví dụ V9000) làm migration mới của app có số nhỏ hơn bị Flyway coi là out-of-order và từ chối; `R__` không hợp với bảng partition và hàm SQL cần đổi có thứ tự. Lịch sử riêng tách hẳn vòng đời schema của starter khỏi app. Đề xuất đưa cách này thành quy ước chung cho các starter P1 |
+| L1 | (đã thành quy ước 5.3) | `StarterSchemaMigrator`, bảng lịch sử `flyway_schema_history_webhooks` | Không còn là lệch |
 | L2 | Job không đọc chéo tenant ngầm định (ADR-0015 §4) | Hàm `vyforge_webhooks_claim` đọc mọi tenant để chia việc | Lặp theo từng tenant thì độ trễ tăng theo số tenant và không công bằng. Hàm chỉ trả `(endpoint_id, tenant_id)`, là `security definer` để chạy được khi bật RLS, được đánh dấu `@TenantExempt`. Mọi xử lý sau đó chạy trong `TenantContext.run` |
 | L3 | Rate limit dùng `-ratelimit` | Bucket4j cục bộ trong `EndpointWorker` | `-ratelimit` giới hạn request **đi vào**. Ở đây là giới hạn request **đi ra** theo endpoint, và nhờ lease endpoint nên bucket cục bộ đã chính xác, không cần Valkey. `-ratelimit` vẫn dùng cho API test send |
 | L4 | Gọi ra ngoài qua `RestClient` của `-web` (timeout, retry, circuit breaker, chuyển tiếp request id) | HttpClient5 riêng | Cần resolver chống SSRF, mTLS theo endpoint, không retry ở tầng HTTP, không gửi request id và token nội bộ ra ngoài |
-| L5 | Việc bất đồng bộ qua outbox Modulith (`event_publication`) | Bảng `webhook_delivery` là outbox | Cần hẹn giờ retry theo từng delivery, lease theo endpoint, replay chọn lọc. Modulith vẫn dùng cho event công khai (mục 5.6) |
+| L5 | Việc bất đồng bộ qua outbox Modulith (`event_publication`); việc nền bền vững qua `DurableTaskQueue` (quy ước 5.2) | Bảng `webhook_delivery` là outbox và hàng đợi, lease theo endpoint | Cần hẹn giờ retry theo policy của từng endpoint (có `Retry-After`, cooldown), replay chọn lọc theo endpoint. Giới hạn đồng thời, tốc độ và thứ tự **theo endpoint** chỉ chính xác khi một endpoint tại một thời điểm do một replica gửi. `DurableTaskQueue` chỉ giới hạn theo queue và tenant: dùng nó thì phải thêm slot trong DB, rate limit qua Valkey (không có Valkey thì sai theo số replica), và mỗi delivery có hai bản ghi trạng thái (task và delivery) với khoảng 7 lần ghi thay vì 4. Modulith vẫn dùng cho event công khai (mục 5.6). Được duyệt 26/10/2026, ghi trong ADR-0020 |
 | L6 | Một starter cho một module | Hai artifact | Mục 3.1 |
-| L7 | Secret mã hoá at-rest (chưa có khối chung) | `SecretCipher` (AES-256-GCM, KEK có id) trong starter | Chưa có trong `platform-core`. Đề xuất chuyển `SecretCipher` lên `platform-core` khi `-notification` và `-payment` cũng cần; khi đó starter dùng bản chung, API không đổi |
 
 ### 10.2 Quyết định đã tự chốt (có thể đổi khi duyệt)
 
@@ -1601,9 +1602,9 @@ thứ tự và portal).
 | DNS | Strict: một IP bị chặn thì chặn cả tên miền | Bỏ IP bị chặn, dùng IP còn lại (smokescreen) |
 | Lưu body phản hồi | 4 KB, bật mặc định, tắt được theo tenant | Không lưu |
 
-### 10.3 Cần người dùng quyết định
+### 10.3 Kết quả duyệt (26/10/2026)
 
-- **Pilot:** nguyên tắc 5 của MODULE_PLAN yêu cầu ghi tên dự án pilot trong ADR của module. Thiết kế này chưa có tên
-  pilot; phiên điều phối hoặc chủ sở hữu điền khi viết ADR.
-- **Vị trí ADR:** một mục trong ADR-0020 chung cho các module P1, hay ADR riêng cho webhooks. Thiết kế đề xuất mục 10.1 L1
-  (Flyway riêng) và L7 (`SecretCipher` chung) được chốt chung cho mọi module P1, vì ảnh hưởng nhiều starter.
+- L1–L6 được chấp nhận. L7 bỏ, dùng `SecretCipher` của `platform-core`.
+- Các quyết định ở mục 10.2 giữ nguyên.
+- Không cần tên pilot.
+- ADR: một mục "webhooks" trong ADR-0020 chung cho các module P1.
