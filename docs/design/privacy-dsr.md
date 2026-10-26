@@ -1,7 +1,7 @@
 # Thiết kế module privacy-dsr: consent, yêu cầu của chủ thể dữ liệu, retention, hồ sơ tuân thủ
 
 > Module: `platform-starter-privacy` (mở rộng, phần SPI nhẹ) + `platform-starter-privacy-dsr` (mới, phần có dữ liệu) +
-> `@vyforge/privacy` + `@vyforge/privacy-admin`. Revision `0.13.0-SNAPSHOT`.
+> `@vyforge/privacy` (kèm `/admin`) + zone `platform-admin/apps/privacy-admin`. Revision `0.13.0-SNAPSHOT`.
 > Căn cứ: Luật Bảo vệ dữ liệu cá nhân 91/2025/QH15, NĐ 356/2025/NĐ-CP, NĐ 330/2026/NĐ-CP (xử phạt).
 > Trạng thái: thiết kế, giai đoạn 1 (session forge-44, 26–27/10/2026). Chưa code. Khu quản trị theo kiến trúc đã chốt
 > trong `docs/design/platform-services.md` (forge-37).
@@ -1830,7 +1830,7 @@ không có (ZIP bằng `java.util.zip`, JSON Schema validator đã có trong bom
 | export.md §3.8: privacy đăng ký `ExportDefinition privacy.subject-data` | Privacy tự đóng gói ZIP; export chỉ dùng cho báo cáo và render mẫu | Gói DSR không phải nguồn dạng bảng; cần checkpoint theo contributor (mục 6.2) |
 | Bảng bằng chứng: app có toàn quyền DB | Trigger chặn UPDATE/DELETE trên bảng consent/request/breach event | Nghĩa vụ chứng minh (NĐ 356 Điều 6 khoản 2); ẩn danh qua hàm `SECURITY DEFINER` |
 | Entitlement `module.<m>` chặn mọi API của module khi tenant không được hưởng (platform-services.md §5.4) | `/me/**` và `/public/**` của privacy **không** bị chặn khi tenant đã có dữ liệu privacy; chỉ khu quản trị và khai báo mới bị tắt | Quyền của chủ thể (Luật Điều 4) không được phụ thuộc gói dịch vụ |
-| Tên frontend `@vyforge/<module>` | `@vyforge/privacy` và `@vyforge/privacy-admin` (không phải `privacy-dsr`) | Khớp MODULE_PLAN (`@vyforge/privacy`); người dùng cuối không cần biết "DSR" |
+| Tên frontend `@vyforge/<module>` | `@vyforge/privacy` (component quản trị ở `@vyforge/privacy/admin`), zone `privacy-admin`, `/m/privacy` (không phải `privacy-dsr`) | Khớp MODULE_PLAN (`@vyforge/privacy`); người dùng cuối không cần biết "DSR" |
 
 ### 10.2 Quyết định đã tự chốt (đổi được khi duyệt) và điểm cần pháp chế
 
