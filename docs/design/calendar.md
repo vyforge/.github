@@ -187,8 +187,9 @@ thuật toán trùng thư viện ở mọi năm có Tết; với UTC+7 thì lệ
 | 2085, 2086, 2095, 2100 | — | — | lệch 1 ngày | |
 
 Đối chiếu năm hiện hành: thuật toán UTC+7 cho Tết 2026 = 17/02/2026, Giỗ Tổ 2026 = 26/04/2026 (khớp thông báo nghỉ
-bù 27/4/2026), Tết 2027 = 06/02/2027 (khớp TB 11483: 04/02 là 28 tháng Chạp... 10/02 là mùng 5), Giỗ Tổ 2027 =
-16/04/2027.
+bù 27/4/2026), Tết 2027 = 06/02/2027 (khớp TB 11483: 04/02/2027 là 28 tháng Chạp, 10/02/2027 là mùng 5), Giỗ Tổ
+2027 = 16/04/2027, Giỗ Tổ 2019 = 14/04/2019 (khớp thông báo nghỉ bù 15/04/2019); năm nhuận tháng 6 (2025), nhuận
+tháng 5 (2028).
 
 **Quyết định:** cài `VietnameseLunarCalendar` riêng (thuật toán thiên văn công khai, viết lại từ công thức của Meeus,
 không chép mã có điều khoản "phi thương mại"), tham số múi giờ mặc định 7. `cn.6tail:lunar` chỉ là **test dependency**
@@ -1195,3 +1196,520 @@ Xoá cache giữa replica/app: Valkey `vyforge:calendar:changed` `{tenant, key, 
 
 Peer dependency: `@fullcalendar/core|react|daygrid|timegrid|list|interaction` 7.1.3 (MIT). Không dùng plugin premium.
 Không gọi API từ trình duyệt trực tiếp: dữ liệu qua Server Component/Server Action (BFF, ADR-0006), như master-data 5.4.
+
+---
+
+## 6. Mở rộng
+
+### 6.1 SPI
+
+| SPI | Mục đích | Ví dụ cụ thể |
+|---|---|---|
+| `NationalHolidaySource` | Nguồn dữ liệu quốc gia; nhiều nguồn sắp theo `order()`, nguồn đầu tiên có `code` thắng | `MasterDataNationalHolidaySource`; tập đoàn tự cài nguồn đọc từ HRM trung tâm |
+| `CalendarResolverStep` | Một bước trong chuỗi tìm lịch cho đối tượng | `OrgUnitStep` (organization); dự án bệnh viện: `DoctorShiftStep` đọc lịch trực theo khoa |
+| `CalendarFeedContributor` | Đưa sự kiện chỉ đọc vào màn hình lịch | `TodoFeedContributor` (collaboration, nguồn `todo`), `WorkflowDeadlineFeedContributor` (nguồn `workflow`), `BookingFeedContributor` (nguồn `booking`, cũng là nguồn khoảng bận) |
+| `CalendarImpactProbe` | Cho admin biết "thay đổi này ảnh hưởng bao nhiêu hạn đang mở" trước khi lưu | workflow đếm việc `ACTIVE` có `due_at` trong khoảng; privacy-dsr đếm yêu cầu mở |
+| `ReminderChannel` | Cách giao nhắc | `NotificationReminderChannel` (`notification:<type>` → `Notifications.send` với `correlationKey = reminderId:occurrence`); dự án cài `zalo-oa-direct` |
+| `CalendarChangeInterceptor` | `beforeChange(change)` (chặn được, thêm cảnh báo), `afterChange(change)` | Chặn sửa tháng đã khoá sổ chấm công; bắt buộc lý do khi sửa ngày đã qua |
+| `HolidayDraftGenerator` (của master-data) | Sinh nháp lịch nghỉ năm mới | Calendar cài bằng `HolidayRuleEngine` (âm lịch UTC+7) |
+| `PersonalAbsenceSource` (bản sau) | Ngày vắng của một người | HRM của dự án |
+| `ExternalCalendarSync` (bản sau) | Đồng bộ sổ lịch với Google/Microsoft/CalDAV | Adapter Microsoft Graph cho khách dùng M365 |
+
+Ví dụ: workflow cài port của mình bằng calendar.
+
+```java
+@Bean
+@ConditionalOnBean(BusinessCalendars.class)
+WorkflowBusinessCalendar calendarAdapter(BusinessCalendars calendars) {
+    return new WorkflowBusinessCalendar() {                                      // port BusinessCalendar của workflow
+        public Instant addBusinessDuration(String key, Instant start, BusinessDuration d) {
+            return calendars.get(key).add(start, d, CalcOptions.DEFAULT).at();
+        }
+        public Duration businessDurationBetween(String key, Instant a, Instant b) {
+            return calendars.get(key).businessDurationBetween(a, b);
+        }
+        public boolean isWorkingTime(String key, Instant at) { return calendars.get(key).isWorkingTime(at); }
+    };
+}
+```
+
+privacy-dsr (`CalendarWorkingDays`):
+
+```java
+public Instant addWorkingDays(Instant from, int days, ZoneId zone) {
+    return calendars.defaultCalendar()
+            .addBusinessDays(from, days, DayCountRule.LEGAL, CalcOptions.CONSERVATIVE).at();
+}
+public Instant addCalendarDays(Instant from, int days, ZoneId zone) {
+    return calendars.defaultCalendar().addCalendarDays(from, days, false).at();     // "ngày" = cuối ngày thứ n
+}
+```
+
+Nguồn lịch của collaboration:
+
+```java
+@Component
+@ConditionalOnBean(Agendas.class)
+class TodoFeedContributor implements CalendarFeedContributor {
+    public String source() { return "todo"; }
+    public List<FeedItem> items(FeedQuery q) {                      // q.viewer(), q.from(), q.to()
+        return todos.dueBetween(q.viewer(), q.from(), q.to()).stream()
+                .map(t -> FeedItem.allDayOrTimed(t.id(), t.summary(), t.dueAt(), t.dueDate())
+                                  .link("/todos/" + t.id()).color("amber").readOnly())
+                .toList();
+    }
+}
+```
+
+### 6.2 Cấu hình theo tenant (`cal_tenant_settings.settings`, `schema_version: 1`)
+
+```json
+{
+  "defaultCalendar": "default",
+  "defaultTimeZone": "Asia/Ho_Chi_Minh",
+  "defaultNationalCode": "VN",
+  "optionDefaults": "FOLLOW_GOV",
+  "pastChangePolicy": "REQUIRE_REASON",
+  "agenda": { "enabled": true, "publicAgendas": true, "feeds": { "enabled": true, "maxPerUser": 5, "ttlDays": 365 } },
+  "reminders": { "defaultChannel": "notification:calendar.reminder", "quietHours": null },
+  "lunarDisplay": true
+}
+```
+
+- `optionDefaults`: `FOLLOW_GOV` (mặc định: phương án trùng khu vực công) | `FIRST` | `NONE` (không chọn thì không nghỉ
+  ngày tuỳ chọn — chỉ dùng khi doanh nghiệp tự quản ngày nghỉ).
+- `pastChangePolicy`: `ALLOW` | `REQUIRE_REASON` | `DENY` (sửa ngày đã qua làm đổi lịch sử SLA).
+- Không có secret nên không cần `SecretCipher`. Giá trị mặc định cấp platform: `vyforge.calendar.defaults.*`.
+
+### 6.3 Thêm lịch nước khác
+
+1. Dựng pack `holiday-day:SG` bằng `tools/masterdata-packs` (hoặc tay), ký bằng khoá tin cậy.
+2. Có master-data: nhập ở admin master-data. Không có: `POST /admin/national/packs`.
+3. Tenant tạo lịch `cn-sg` với `nationalCode = SG`, `timeZone = Asia/Singapore`, gán cho đơn vị chi nhánh.
+
+Không phải sửa code. Quy tắc dự đoán cho năm chưa công bố chỉ có cho `VN`/`VN-GOV`; mã khác ở trạng thái `MISSING` thì
+chỉ trừ cuối tuần và gắn `provisional`.
+
+### 6.4 Thêm kênh nhắc
+
+Cài `ReminderChannel` với `id()` (`"zalo-oa"`), `deliver(ReminderDelivery)` idempotent theo `deliveryKey`, ném
+`RetryableChannelException` cho lỗi tạm. Kênh xuất hiện trong `admin/info.capabilities` (`reminder.channel.zalo-oa`).
+
+---
+
+## 7. Vận hành
+
+### 7.1 Cấu hình
+
+```yaml
+vyforge:
+  calendar:
+    enabled: true
+    mode: embedded                       # embedded | remote (platform-services 3.5)
+    remote:
+      url: http://platform-services
+      stale-after: 24h                   # snapshot cũ hơn → stale=true, health DEGRADED
+    schema:
+      migrate: true
+    defaults:
+      time-zone: Asia/Ho_Chi_Minh
+      national-code: VN
+      pattern: "MON-FRI 08:00-12:00,13:00-17:00"
+    national:
+      sources: [master-data, pack]       # thứ tự ưu tiên
+      packs:
+        classpath: classpath*:META-INF/vyforge/calendar/packs/*.pack.json.gz
+        trusted-keys: { vyforge-packs-2026: "base64…" }   # dùng chung khoá với master-data
+      expect-next-year-by: "11-15"       # sau ngày này năm sau chưa OFFICIAL → health WARN, NationalDataStale
+      predict-years-ahead: 2
+    cache:
+      max-entries: 5000
+      ttl: 24h
+    max-horizon-years: 5
+    max-range-days: 731
+    reminders:
+      queue: calendar
+      max-attempts: 8
+      retention: 90d
+      recalc-batch-size: 1000
+    ticks:
+      enabled: true
+      cron: "0 * * * * *"
+      max-catch-up: 7d
+    agenda:
+      enabled: true
+      max-expansion: 2000
+      ics:
+        max-bytes: 5MB
+        max-events: 5000
+    events:
+      externalize: false
+    rls:
+      enabled: false
+```
+
+### 7.2 Metric (Micrometer)
+
+| Metric | Loại | Tag |
+|---|---|---|
+| `vyforge.calendar.compute` | timer | `op` (`addBusinessDays`, `add`, `between`, `isWorkingTime`…), `outcome` |
+| `vyforge.calendar.compile` | timer | `cause` (`miss`, `invalidated`) |
+| `vyforge.calendar.cache` | Caffeine stats (`cache.gets{result=hit|miss}`) | `cache=calendar-compiled` |
+| `vyforge.calendar.provisional` | counter | `code` — số phép tính dùng năm dự đoán |
+| `vyforge.calendar.national.years` | gauge | `code`, `status` — năm có dữ liệu OFFICIAL tới đâu |
+| `vyforge.calendar.national.fallback` | counter | `from`, `to` (master-data → pack) |
+| `vyforge.calendar.reminders.scheduled` / `fired` / `failed` | counter | `kind`, `channel` |
+| `vyforge.calendar.reminders.lag` | timer | — (thời điểm chạy − `fire_at`) |
+| `vyforge.calendar.ticks` | counter | `stream`, `outcome` |
+| `vyforge.calendar.ticks.gap` | counter | `stream` |
+| `vyforge.calendar.feed.requests` | counter | `outcome` (`ok`, `revoked`, `rate_limited`) |
+| `vyforge.calendar.contributor` | timer | `source`, `outcome` (`ok`, `timeout`, `error`) |
+
+Span OTel: `calendar.compile`, `calendar.compute`, `calendar.reminder.fire`, `calendar.ics.import`; log có `tenant_id`,
+`request_id`, `calendar_key`.
+
+**Health** `calendar`: `UP`; `WARN`/`DEGRADED` khi (a) năm sau chưa `OFFICIAL` sau `expect-next-year-by`, (b) đang dùng
+pack fallback vì master-data lỗi, (c) snapshot `remote` quá `stale-after`, (d) có `ScheduleSpec` bị gap.
+
+### 7.3 Alert gợi ý
+
+| Alert | Điều kiện | Mức |
+|---|---|---|
+| `CalendarNationalDataMissing` | `vyforge.calendar.national.years{status="OFFICIAL"}` < năm hiện tại + 1 và ngày > 15/11 | warning |
+| `CalendarNationalDataMissingCurrentYear` | Năm hiện tại không `OFFICIAL` | critical |
+| `CalendarReminderLag` | p95 `reminders.lag` > 2 phút trong 10 phút | warning |
+| `CalendarReminderFailures` | `reminders.failed` tăng > 50/giờ | warning |
+| `CalendarTickGap` | `ticks.gap` > 0 | warning |
+| `CalendarProvisionalSpike` | `provisional` > 1.000/giờ trong tháng 12–1 | info (nhắc người vận hành nhập văn bản Tết) |
+
+### 7.4 Tải, dung lượng, chế độ lỗi
+
+- Tính toán: sau khi cache ấm, `addBusinessDays`/`businessDurationBetween` < 5 µs (mục tiêu benchmark JMH: ≥ 200.000
+  phép/giây/lõi). Biên dịch một lịch một năm < 2 ms. 10.000 tenant × 3 lịch × 2 năm × 15 KB ≈ 900 MB nếu ấm hết → cache
+  giới hạn 5.000 mục (~75 MB), tenant ít dùng biên dịch lại khi cần.
+- Nhắc: mỗi nhắc là một `vyforge_task`; tải theo khả năng của `DurableTaskQueue` (giới hạn đồng thời queue `calendar`
+  mặc định 16, theo tenant 4).
+- Tick: chỉ tenant có đăng ký; mỗi phút một lượt quét theo trang 500 đăng ký.
+- `occurrences`: khoảng ≤ 366 ngày, ≤ 2.000 lần/chuỗi, ≤ 5.000 mục/lượt (quá thì `truncated: true`).
+- Chế độ lỗi theo bảng 3.11. Calendar không gọi mạng ngoài trên đường tính (dữ liệu quốc gia đã nằm trong bộ nhớ/DB).
+
+---
+
+## 8. Bảo mật và tuân thủ
+
+### 8.1 Phân quyền (catalog action `calendar:*`)
+
+| Action | Resource (VRN) | Ai (policy nền gợi ý) |
+|---|---|---|
+| `calendar:calendar:List`, `calendar:calendar:Get` | `vrn:calendar:calendar/<key>` | Mọi người dùng đã đăng nhập của tenant |
+| `calendar:calendar:Create`, `Update`, `Archive` | `vrn:calendar:calendar/*` | Tenant admin |
+| `calendar:exception:Edit` | `vrn:calendar:calendar/<key>` | Tenant admin, HR (ngày nghỉ công ty) |
+| `calendar:option:Choose` | `vrn:calendar:calendar/<key>` | Tenant admin, HR |
+| `calendar:assignment:Edit` | `vrn:calendar:assignment/*` | Tenant admin, HR |
+| `calendar:calendar:EditPast` | `vrn:calendar:calendar/<key>` | Tenant admin (khi `pastChangePolicy` cho phép) |
+| `calendar:reminder:List`, `Retry`, `Cancel` | `vrn:calendar:reminder/*` | Tenant admin, vận hành |
+| `calendar:schedule:List` | `vrn:calendar:schedule/*` | Tenant admin |
+| `calendar:agenda:List`, `Create`, `Update`, `Delete` | `vrn:calendar:agenda/<key>` | Theo `owner_type`: chủ agenda cá nhân; thư ký/chánh văn phòng cho agenda đơn vị |
+| `calendar:event:Read`, `Create`, `Update`, `Delete` | `vrn:calendar:agenda/<key>` (thuộc tính `visibility`) | Theo agenda; `PUBLIC` đọc qua trang công khai của app (BFF) |
+| `calendar:feed:Create`, `Revoke` | `vrn:calendar:feed/*` | Người dùng (chỉ feed của mình); admin thu hồi mọi feed |
+| `calendar:settings:Get`, `Update` | `vrn:calendar:settings/tenant` | Tenant admin |
+| `calendar:national:Read` | `vrn:calendar:national/*` | Đăng nhập |
+| `calendar:national:Import` | `vrn:calendar:national/*` | **Chỉ người vận hành** (tenant vận hành, MFA, như `masterdata:pack:Import`) |
+
+Mọi thao tác ghi có `@Audited` (diff tóm tắt, `revision`, lý do). Sửa ngày đã qua và chọn phương án luôn ghi lý do.
+
+### 8.2 Dữ liệu cá nhân (Luật 91/2025/QH15, NĐ 356/2025/NĐ-CP)
+
+| Dữ liệu | Có PII? | Xử lý |
+|---|---|---|
+| Lịch làm việc, ngày nghỉ, phương án | Không | — |
+| `cal_assignment` (user → lịch ca) | Có (định danh `sub`, gián tiếp cho biết ca làm) | Chỉ lưu `sub`; xoá theo DSR |
+| `cal_reminder` | Có (`owner_sub`, `subject_vrn`) | `payload` không chứa PII thô (chỉ id, khoá i18n); module gọi phải tuân thủ (kiểm bằng `LogSafeJson` khi log); purge 90 ngày |
+| `cal_event` | Có thể có (tiêu đề "Khám cho bệnh nhân X", người tham dự, địa điểm) | `title`, `description`, `location` đánh `@PersonalData(category = CONTENT)`; `attendees` chỉ `sub`; `visibility = BUSY_ONLY` để feed chỉ lộ "Bận"; dữ liệu nhạy cảm (sức khoẻ) nên để module chuyên trách (booking) giữ và chỉ đưa vào lịch qua contributor |
+| Feed token | Token là bí mật | Lưu SHA-256, hiện một lần, thu hồi được, hết hạn, log chỉ 6 ký tự đầu |
+
+- **DSR:** calendar cài `PersonalDataContributor` của privacy-dsr (`@ConditionalOnBean`): *xuất* sự kiện người đó tổ
+  chức/tham dự, nhắc của họ, gán lịch; *xoá/ẩn danh* bằng cách gỡ `sub` khỏi `attendees`, xoá nhắc và feed token, ẩn
+  danh `organizer_sub` của sự kiện thuộc agenda đơn vị (giữ sự kiện của tổ chức).
+- **Chuyển dữ liệu ra nước ngoài:** calendar không gọi dịch vụ ngoài ở bản đầu. `ExternalCalendarSync` (bản sau) phải bật
+  theo tenant, có cảnh báo chuyển dữ liệu (giống geocoding của master-data).
+- **Nhập ICS** là dữ liệu không tin cậy: giới hạn kích thước, tắt mọi URL/attachment trong VEVENT (không tải), làm sạch
+  `DESCRIPTION` (text thuần), không cho `X-` property lạ đi vào `attributes`.
+
+### 8.3 Pháp lý về ngày nghỉ
+
+- Dữ liệu ngày nghỉ là **dữ liệu công bố có nguồn**: mỗi ngày có `legalRefs` (số văn bản, ngày); admin hiện nguồn khi
+  hover. Ngày dự đoán luôn có nhãn "dự kiến".
+- Calendar **không quyết** ngày nghỉ thay doanh nghiệp: phương án là lựa chọn của tenant, có audit (người chọn, lúc chọn,
+  ghi chú), phục vụ chứng minh đã thông báo người lao động (Tết 2027: trước 30 ngày).
+- Lịch `VN-GOV` chỉ là dữ liệu tham chiếu; khu vực công dùng `VN-GOV`, doanh nghiệp dùng `VN` + phương án.
+
+---
+
+## 9. Kế hoạch triển khai
+
+### 9.1 Thứ tự (platform-java `platform-starter-calendar`, `0.13.0-SNAPSHOT`)
+
+Interface công khai (bước 1–3) chốt trước để workflow (39), privacy-dsr (44), collaboration (40) viết adapter song song
+(gap analysis mục 5: `calendar` phải chốt interface trước khi workflow và privacy-dsr triển khai).
+
+| # | Phần | Test |
+|---|---|---|
+| 1 | `api/` (record, interface, `BusinessDuration.parse`, `DayCountRule`, `CalendarVersion`), thêm module vào `pom.xml` gốc và `platform-bom` | Unit: parse/format `BusinessDuration`, `CalendarVersion` round-trip |
+| 2 | `lunar/`: `Astronomy` (Meeus), `VietnameseLunarCalendar` UTC+7, can chi | Unit: bảng Tết VN 1968–2100 (dựng từ thuật toán, đối chiếu điểm với nguồn công bố: 2007 = 17/02, 2026 = 17/02, 2027 = 06/02, 2030 = 02/02), Giỗ Tổ 2019 = 14/04, 2026 = 26/04; **test chéo** với `cn.6tail:lunar` 1.7.7 (scope `test`): múi 8 trùng mọi năm 1900–2100, múi 7 lệch đúng danh sách 2.4; tháng nhuận (2025 nhuận tháng 6, 2028 nhuận tháng 5) |
+| 3 | `core/`: `CalendarCompiler`, `CompiledCalendar`, `DayCountEngine`, `SlaTimer` (thuần, không Spring) | Unit + property-based (jqwik): `between(a, add(a, d)) == d`; `add` đơn điệu; `isWorkingTime` khớp `workingIntervals`; ca qua nửa đêm; DST (`Europe/Berlin` 29/03/2026); chu kỳ 2 tuần; K1, K2, K3, K6 thành test có tên |
+| 4 | `national/`: pack (đọc, kiểm chữ ký Ed25519 + JCS dùng chung code với master-data nếu đã có, không thì bản riêng cùng định dạng), pack seed `VN`, `VN-GOV` 2024–2027 (Phụ lục B), `HolidayRuleEngine`, `NationalHolidayRegistry`, phương án | Unit: dự đoán 2028 khớp quy tắc; phương án mặc định `FOLLOW_GOV`; pack sai chữ ký bị từ chối |
+| 5 | `internal/` + Flyway V1–V4, `BusinessCalendars`/`CalendarAdmin` embedded, resolver chain, cache + invalidation (Valkey) | Testcontainers PostgreSQL: CRUD, revision, `BusinessCalendarChanged`, tenant isolation (ArchUnit `TENANT_ISOLATION` + test A/B), optimistic lock |
+| 6 | `reminder/` trên `DurableTaskQueue` | Testcontainers: nhắc tuyệt đối, `-4bh`, RRULE 3 lần, đổi lịch → generation, kênh lỗi → `FAILED`, idempotent khi `schedule` lặp |
+| 7 | `tick/` + `CalendarSchedules` | Testcontainers + `CalendarTimeTravel`: 2 replica giả lập không phát trùng; tắt 3 ngày → bù đủ; ngày 1 rơi vào Tết → `NthBusinessDay(1, MONTH)` chạy ngày làm việc kế tiếp |
+| 8 | `agenda/`: event CRUD, mở rộng ical4j, ngoại lệ chuỗi, ICS nhập/xuất, feed token | Unit ICS round-trip (file mẫu Google, Outlook, Apple); Testcontainers: tách chuỗi THIS_AND_FOLLOWING; feed bị thu hồi trả 404 |
+| 9 | `integration/`: master-data (`NationalHolidaySource`, `HolidayDraftGenerator`, nghe `MasterDataPublished`), organization (`OrgUnitStep`), notification (`ReminderChannel`), privacy (`PersonalDataContributor`), forms (interceptor mẫu) | Test với bean giả của từng module + test "không có module" (context vẫn lên, capability tắt) |
+| 10 | `web/`: REST công khai, admin, internal, `admin/info`, Problem Details vi/en | MockMvc + contract (OpenAPI snapshot) |
+| 11 | `remote/`: snapshot client + `CalendarContractTests` chạy cùng kịch bản ở `embedded` và `remote` (platform-services 3.5) | Testcontainers `platform-services` |
+| 12 | platform-web `packages/calendar` (`@vyforge/calendar`) | Vitest + Testing Library (date picker vô hiệu ngày nghỉ, `DeadlinePreview`), Storybook; lint, typecheck, build |
+| 13 | `platform-admin/apps/calendar-admin` bằng `pnpm create-admin-zone calendar` khi forge-37 xong | Playwright qua shell |
+| 14 | README, mục ADR-0020, `THIRD-PARTY-DATA.md` (nguồn ngày nghỉ) | — |
+
+### 9.2 Phụ thuộc mới (platform-bom)
+
+| Artifact | Version | License | Scope |
+|---|---|---|---|
+| `org.mnode.ical4j:ical4j` | 4.4.0 | BSD-3-Clause | compile (chỉ trong `agenda/`, `IcsCodec`; không lộ ra API) |
+| `cn.6tail:lunar` | 1.7.7 | MIT | **test** (đối chiếu) |
+| `net.jqwik:jqwik` | bản trong BOM test hiện có (nếu chưa có: bản ổn định mới nhất) | EPL-2.0 | test |
+| `@fullcalendar/core`, `react`, `daygrid`, `timegrid`, `list`, `interaction` | 7.1.3 | MIT | platform-web (peer của `@vyforge/calendar`) |
+
+Không thêm Spring Modulith Moments (C10). Caffeine đã có qua Spring Boot.
+
+### 9.3 Để bản sau
+
+- `ExternalCalendarSync` (Google, Microsoft 365, CalDAV) và server CalDAV.
+- `PersonalAbsenceSource` (lịch rảnh theo người, có nghỉ phép).
+- `dayStartsAt` (ngày làm việc bắt đầu 06:00 cho ca).
+- Ngày nghỉ địa phương (cấp tỉnh) khi có văn bản.
+- Lịch tài nguyên dạng timeline (cần plugin premium hoặc tự làm) — thuộc booking.
+- Partition `cal_reminder`.
+
+---
+
+## 9a. Đóng gói và triển khai độc lập
+
+Theo module-conventions mục 6 và platform-services D1–D10, 4.11–4.12, 5.1–5.6.
+
+### 9a.1 Backend
+
+| Cách chạy | Cấu hình | Ghi chú |
+|---|---|---|
+| **Starter nhúng** (mặc định) | `platform-starter-calendar` | Đủ tính năng cho dự án một app |
+| **Trong `platform-services`** | `SERVICES_MODULES=…,calendar` | Khuyến nghị khi ≥ 2 app dùng chung lịch tenant (một nơi quản trị lịch, một nơi chạy nhắc và tick). App đặt `vyforge.calendar.mode=remote` |
+| **Server riêng** | Image `platform-services` chỉ bật `calendar` | Hiếm |
+| Tắt từng phần | `vyforge.calendar.agenda.enabled=false`, `vyforge.calendar.ticks.enabled=false` | Chỉ dùng lịch làm việc + nhắc |
+
+**Chế độ `remote`:** không migration, không job, không handler.
+
+| Interface | Đường ở `remote` | Token |
+|---|---|---|
+| `BusinessCalendars`, `BusinessCalendar`, `NationalHolidays`, `LunarCalendar` | **Tính cục bộ** từ snapshot `/internal/snapshots/calendars` + `/national/{code}` (ETag), làm mới khi nhận `vyforge:calendar:changed` qua Valkey chung, poll 60 s dự phòng; lõi tính toán và âm lịch là thuần nên chạy được ở app | Client credentials + `X-Tenant-Id` |
+| `Reminders` | REST `/internal/reminders` (`Idempotency-Key` bắt buộc), gọi **sau commit** của app (outbox Modulith của app → listener gọi REST), để nhắc không tạo khi transaction nghiệp vụ rollback | Client credentials + `X-Tenant-Id` |
+| `CalendarSchedules.register` | `PUT /internal/schedules/{owner}` lúc khởi động; tick tới app qua Kafka `vyforge.calendar` (`ScheduleFired` có `owner`) | Client credentials |
+| `Agendas`, `CalendarAdmin` | REST công khai/admin qua token exchange | Token exchange |
+| `CalendarFeedContributor` của app | **Không hỗ trợ ở bản đầu** khi calendar ở server: màn hình lịch của app gộp nguồn ở BFF (`@vyforge/calendar` nhận nhiều `eventSources`) | — |
+| `ReminderDue` cho app | Kafka `vyforge.calendar` (khi `events.externalize=true`), consumer idempotent `ProcessedMessages` | — |
+
+**Route gateway** (thêm vào bảng platform-services 5.1):
+
+| Route | Đích | `public-paths` | Rate limit |
+|---|---|---|---|
+| `/api/v1/calendar/**` | `platform-services` (hoặc app nhúng) | `GET /feeds/*.ics` (module tự kiểm token) | Chung; `/feeds/**` 60/phút/token và 300/phút/IP; `:compute` 600/phút/người |
+
+**Không phụ thuộc cứng module P1 khác** (bảng 3.3). workflow, privacy-dsr, collaboration, helpdesk, booking, automation,
+forms **dùng** calendar qua port của chính họ + `@ConditionalOnBean(BusinessCalendars.class)`; calendar không import code
+của họ (trừ cài SPI của họ trong `integration/` với dependency `optional`).
+
+### 9a.2 Package frontend `@vyforge/calendar`
+
+Như mục 5.4. Component nhận dữ liệu và Server Action qua props. Màn hình quản trị chỉ ở subpath `/admin`.
+
+### 9a.3 Admin microfrontend (`/m/calendar`, app `platform-admin/apps/calendar-admin`)
+
+Component quản trị ở `@vyforge/calendar/admin` (D5), nhận `can` để ẩn nút, không tự đọc cookie hay env. Nhóm
+(platform-services 4.8): **O** = người vận hành, **T** = tenant admin.
+
+| Màn hình | Nhóm | Action | Component | API |
+|---|---|---|---|---|
+| Danh sách lịch làm việc: khoá, tên, múi giờ, lịch quốc gia, lịch cha, số đối tượng gán, mặc định | T (O xem qua "tenant đang xem") | `calendar:calendar:List` | `CalendarTable` | `GET /admin/calendars` |
+| Chi tiết lịch: **xem năm** (12 tháng, tô loại ngày, ngày âm, nguồn văn bản), so sánh với lịch cha | T | `calendar:calendar:Get` | `CalendarYearView` | `GET /calendars/{key}/days` |
+| Mẫu tuần: lưới thứ × giờ kéo thả, chu kỳ 1–4 tuần, hiệu lực từ ngày, xem trước số giờ/tuần | T | `calendar:calendar:Update` | `WeeklyPatternEditor` | `PUT /admin/calendars/{key}/patterns/{validFrom}` |
+| Ngoại lệ: thêm nghỉ/làm/đổi giờ, một ngày, khoảng, lặp dương/âm lịch; nhập ICS/CSV; **xem trước ảnh hưởng** ("dời 37 hạn đang mở") | T | `calendar:exception:Edit` | `ExceptionTable`, `ExceptionForm`, `ImpactDialog` | `/admin/calendars/{key}/exceptions`, `:impact` |
+| **Phương án nghỉ** theo năm: nhóm, các lựa chọn, mặc định, hạn báo người lao động, chọn + ghi chú | T | `calendar:option:Choose` | `NationalOptionsPanel` | `/admin/calendars/{key}/national-options` |
+| Gán lịch: người dùng, đơn vị (chọn từ organization nếu có), tài nguyên; hiệu lực | T | `calendar:assignment:Edit` | `AssignmentTable` | `/admin/assignments` |
+| Lịch sử thay đổi (revision, nguyên nhân, người sửa, khoảng ảnh hưởng) | T | `calendar:calendar:Get` | `RevisionTimeline` | `/admin/calendars/{key}/revisions` |
+| Nhắc việc: lọc theo trạng thái/kind/đối tượng, retry, huỷ | T | `calendar:reminder:*` | `ReminderTable` | `/admin/reminders` |
+| Lịch chạy (ScheduleSpec, tick): đăng ký, lần chạy kế tiếp, watermark, gap | T | `calendar:schedule:List` | `ScheduleTable` | `/admin/schedules` |
+| Sổ lịch và feed: agenda của tenant, quyền, feed đang mở, thu hồi | T | `calendar:agenda:*`, `calendar:feed:Revoke` | `AgendaTable`, `FeedTokenTable` | `/agendas`, `/feeds` |
+| Cài đặt tenant (6.2) | T | `calendar:settings:*` | `CalendarSettingsForm` | `/admin/settings` |
+| **Lịch quốc gia**: mã lịch × năm × trạng thái (OFFICIAL/PROVISIONAL/MISSING), nguồn (master-data/pack), ngày và văn bản | O | `calendar:national:Read` | `NationalYearMatrix` | `GET /admin/national` |
+| **Nhập pack, sinh nháp** (chỉ khi không có master-data; có master-data thì nút chuyển sang `/m/master-data/holidays`) | O | `calendar:national:Import` | `HolidayPackImport`, `HolidayDraftEditor` | `POST /admin/national/packs`, `/drafts/{year}` |
+| Công cụ: đổi âm–dương, thử tính hạn với rule bất kỳ | O+T | `calendar:calendar:Get` | `LunarConverter`, `DeadlineCalculator` | `/lunar/convert`, `:compute` |
+
+**Manifest** (`apps/calendar-admin/admin.manifest.ts`, hợp đồng `contract: 1`):
+
+```ts
+import { defineAdminManifest } from '@vyforge/admin-shell/manifest';
+import pkg from './package.json' with { type: 'json' };
+
+export default defineAdminManifest({
+  contract: 1,
+  name: 'calendar',
+  version: pkg.version,
+  title: { vi: 'Lịch làm việc', en: 'Business calendar' },
+  icon: 'calendar-days',
+  order: 160,
+  audiences: ['operator', 'tenant'],
+  minPermission: { anyOf: [{ action: 'calendar:calendar:List', resource: 'vrn:calendar:calendar/*' }] },
+  entitlement: 'admin.calendar',
+  api: { base: '/api/v1/calendar', requires: '>=0.13.0 <1.0.0' },
+  menu: [
+    { id: 'calendars', path: '/calendars', title: { vi: 'Lịch làm việc', en: 'Calendars' },
+      permission: { action: 'calendar:calendar:List', resource: 'vrn:calendar:calendar/*' } },
+    { id: 'options', path: '/options', title: { vi: 'Phương án nghỉ lễ', en: 'Holiday options' },
+      permission: { action: 'calendar:option:Choose', resource: 'vrn:calendar:calendar/*' } },
+    { id: 'assignments', path: '/assignments', title: { vi: 'Gán lịch', en: 'Assignments' },
+      permission: { action: 'calendar:assignment:Edit', resource: 'vrn:calendar:assignment/*' } },
+    { id: 'reminders', path: '/reminders', title: { vi: 'Nhắc việc', en: 'Reminders' },
+      permission: { action: 'calendar:reminder:List', resource: 'vrn:calendar:reminder/*' } },
+    { id: 'schedules', path: '/schedules', title: { vi: 'Lịch chạy', en: 'Schedules' },
+      permission: { action: 'calendar:schedule:List', resource: 'vrn:calendar:schedule/*' } },
+    { id: 'agendas', path: '/agendas', title: { vi: 'Sổ lịch', en: 'Agendas' },
+      permission: { action: 'calendar:agenda:List', resource: 'vrn:calendar:agenda/*' } },
+    { id: 'national', path: '/national', title: { vi: 'Lịch nghỉ quốc gia', en: 'National holidays' },
+      permission: { action: 'calendar:national:Read', resource: 'vrn:calendar:national/*' }, audience: 'operator' },
+    { id: 'settings', path: '/settings', title: { vi: 'Cài đặt', en: 'Settings' },
+      permission: { action: 'calendar:settings:Get', resource: 'vrn:calendar:settings/tenant' } },
+  ],
+  health: '/api/health',
+});
+```
+
+`capabilities` của `GET /admin/info`: `national.master-data` | `national.pack`, `lunar`, `reminders`,
+`reminder.channel.<id>`, `ticks`, `agenda`, `agenda.ics`, `agenda.feeds`, `resolver.org-unit`, `impact.<module>`. Không
+có `agenda` thì ẩn menu Sổ lịch; có `national.master-data` thì màn hình nhập pack chuyển hướng sang master-data. Nhãn
+vi/en trong `@vyforge/calendar/admin/messages`; lỗi backend dịch theo `code`. Nhập pack yêu cầu MFA (`requireStepUp()`).
+Thao tác người vận hành trên tenant khác dùng "tenant đang xem" (platform-services 5.6).
+
+---
+
+## 10. Lệch quy ước và quyết định
+
+### 10.1 Lệch quy ước
+
+| Lệch | Lý do | Kiểm soát |
+|---|---|---|
+| `cal_holiday_pack` là dữ liệu dùng chung, không `@TenantId` | Lịch quốc gia dùng cho mọi tenant | Repository trong `internal`, ngoại lệ ArchUnit đúng package, test "tenant không ghi được pack" |
+| Lõi tính toán chạy ở app cả khi `mode=remote` (snapshot), không gọi REST cho mỗi phép tính | Workflow/helpdesk gọi rất nhiều; độ trễ mạng không chấp nhận được | Snapshot có ETag, version; `CalendarContractTests` chạy cả hai chế độ |
+| Không dùng Spring Modulith Moments như gap analysis gợi ý | Không cluster-safe, không bù, một múi giờ (2.3) | Tick riêng trên `@ClusterScheduled` + `DurableTaskQueue`; `CalendarTimeTravel` cho test |
+| Không dùng `cn.6tail:lunar` ở runtime như gap analysis gợi ý | Sai ngày VN ở 2030, 2053, Giỗ Tổ 2037/2038… (2.4) | Tự cài UTC+7, thư viện ở scope test để đối chiếu |
+| `CalendarFeedContributor` của app không chạy khi calendar ở `platform-services` | Gọi ngược app từ server là phức tạp (cùng lý do files 3.4) | BFF gộp nhiều nguồn ở frontend |
+
+### 10.2 Quyết định đã tự chốt (có thể đổi khi duyệt)
+
+1. Ba lớp (ngoại lệ > quốc gia > mẫu tuần), lịch cha sâu tối đa 3 (C1).
+2. Lịch quốc gia đọc từ master-data khi có, pack cùng định dạng khi không (C2).
+3. Phương án nghỉ mặc định `FOLLOW_GOV`: khi tenant chưa chọn, dùng phương án trùng khu vực công (Bộ Nội vụ khuyến
+   khích doanh nghiệp làm vậy). Dự đoán ngày liền kề Quốc khánh cho năm chưa công bố: ngày liền kề mà khu vực công dùng
+   năm gần nhất cùng thứ trong tuần; không có thì 1/9.
+4. Ngày làm bù (`MAKEUP_WORKING_DAY`) làm theo giờ của ngày được hoán đổi (`swappedWith`).
+5. Ngày Văn hoá 24/11 trùng cuối tuần: **không** tự sinh nghỉ bù trong dự đoán cho tới khi Điều 112 được sửa hoặc có
+   thông báo năm; dữ liệu năm công bố sẽ có (2.1). Với `CONSERVATIVE` thì vẫn an toàn (không thêm ngày nghỉ).
+6. `DayCountRule.LEGAL` kết thúc 24:00 ngày làm việc thứ n (BLDS Điều 148); `SAME_TIME` cho `bd` của workflow.
+7. Kết quả tính không lưu; hạn do module dùng tự lưu kèm `CalendarVersion` (C8).
+8. Tick tự làm; chỉ quét tenant có đăng ký; bù tối đa 7 ngày.
+9. Sổ lịch có trong bản đầu (K10, K15), không đồng bộ ngoài.
+10. Lặp theo ngày làm việc và theo âm lịch là phần mở rộng Vyforge, xuất ICS thành `RDATE` đã tính sẵn.
+11. Tenant chưa có lịch: tự tạo `default` (T2–T6, 08:00–12:00 và 13:00–17:00, `VN`) — giờ hành chính phổ biến; tenant
+    khu vực công đổi sang `VN-GOV` trong cài đặt.
+
+### 10.3 Cần người dùng hoặc phiên điều phối xác nhận
+
+| # | Câu hỏi | Đề xuất |
+|---|---|---|
+| Q1 | **Trả lời master-data 10.3 Q1:** đồng ý ranh giới mục 3.9 của master-data (dữ liệu ở master-data; SPI `NationalHolidaySource` ở calendar; calendar cài `HolidayDraftGenerator`), **kèm đề nghị** master-data thêm `kind = OPTIONAL_DAY_OFF` và thuộc tính `optionGroup`, `option`, `optionDefault`, `swappedWith` cho `holiday-day:*` (mục 3.5) | Đồng ý; phiên master-data thêm 4 thuộc tính vào schema của list (không đổi `format` pack) |
+| Q2 | Đổi so với gap analysis: không dùng Moments và `cn.6tail:lunar` ở runtime (10.1) | Đồng ý (có bằng chứng ở 2.3, 2.4) |
+| Q3 | Tên method chốt cho các module đang chờ: `addBusinessDays(Instant, int, DayCountRule, CalcOptions)`, `add(Instant, BusinessDuration, CalcOptions)`, `businessDurationBetween`, `isWorkingTime`; privacy-dsr dùng `LEGAL` + `CONSERVATIVE`; workflow dùng `add(..)` với `bd` = `SAME_TIME` | Phiên điều phối báo workflow (39), privacy-dsr (44), collaboration (40) sửa adapter theo mục 6.1 |
+| Q4 | Sổ lịch (agenda) có nằm trong calendar hay tách module riêng | Giữ trong calendar, tắt được bằng `agenda.enabled=false` (một nơi cho RRULE/ICS) |
+| Q5 | Pháp chế xác nhận cách hiểu "N ngày làm việc" cho DSR (`LEGAL`: không tính ngày nhận, hết 24:00 ngày thứ N) và giờ chốt nhận hồ sơ một cửa | Cần trước khi dự án khu vực công đi vào vận hành |
+| Q6 | Pack seed `VN`/`VN-GOV` 2024–2027 do ai ký (cùng khoá với master-data, master-data 10.3 Q3) | Cùng khoá, cùng quy trình phát hành |
+
+---
+
+## Phụ lục A. Ranh giới với các module khác
+
+| Module | Dùng gì của calendar | Cách nối | Ai làm |
+|---|---|---|---|
+| privacy-dsr | `addBusinessDays(.., LEGAL, CONSERVATIVE)`, `addCalendarDays`, `CalendarVersion`; (sau) `Reminders` | Adapter `CalendarWorkingDays` của privacy (`@ConditionalOnBean(BusinessCalendars.class)`); calendar cài `PersonalDataContributor` | privacy (adapter), calendar (contributor) |
+| workflow | `add(.., BusinessDuration)`, `businessDurationBetween`, `isWorkingTime`, `forSubject`, `businessDaysBetween` cho `ConditionFunctions`; `BusinessCalendarChanged` để tính lại | Port `BusinessCalendar` của workflow + adapter; `CalendarFeedContributor`, `CalendarImpactProbe` do workflow cài | workflow |
+| collaboration | `TodoDueCalculator` → `addBusinessDays`; `ReminderScheduler` → `Reminders`; to-do lặp RRULE → `RecurrenceExpander` qua `CalendarSchedules.preview` | Adapter của collaboration; `TodoFeedContributor` | collaboration |
+| master-data | Calendar đọc `PublicHolidays`, nghe `MasterDataPublished`, cài `HolidayDraftGenerator` | `integration/masterdata` trong calendar, dependency `optional` | calendar |
+| organization | `OrgUnitStep` dùng `unitsOf(user, at)` | `integration/organization`, `optional` | calendar |
+| notification | `NotificationReminderChannel`; `CalendarEventChanged` → lời mời họp | `integration/notification`, `optional`; notification type `calendar.reminder`, `calendar.invitation` khai trong `META-INF/vyforge/notification/types/calendar.yml` | calendar |
+| forms | `SubmissionInterceptor` mẫu `BusinessDayConstraint` ("sau hôm nay ≥ n ngày làm việc") | `integration/forms`, `optional` | calendar |
+| helpdesk (đợt C) | `SlaTimer`, `forSubject(queue)`, `BusinessCalendarChanged` | Port của helpdesk | helpdesk |
+| booking (đợt C) | `workingIntervals`, lịch gán cho tài nguyên, `BookingFeedContributor` (khoảng bận), xuất ICS lịch hẹn | Port của booking | booking |
+| automation (đợt C) | `CalendarSchedules`, `ScheduleFired`, `BusinessDayStarted` làm trigger; `businessDaysBetween` trong điều kiện | Port của automation | automation |
+| export | Job định kỳ theo `ScheduleSpec` | Tuỳ chọn | export |
+| cms-content | Lịch xuất bản hiển thị bằng `<AgendaCalendar>`; `CmsScheduleFeedContributor` | Tuỳ chọn | cms-content |
+
+## Phụ lục B. Dữ liệu lịch nghỉ 2026–2027 đã kiểm
+
+Dùng để dựng pack seed và làm test (nguồn ở 2.1; ngày âm tính bằng thuật toán UTC+7 ở 2.4). "GOV" = `VN-GOV`, "LĐ" =
+`VN` (người lao động nói chung).
+
+| Ngày | Thứ | GOV | LĐ | Ghi chú, nguồn |
+|---|---|---|---|---|
+| 01/01/2026 | Năm | HOLIDAY | HOLIDAY | Tết Dương lịch (BLLĐ Điều 112) |
+| 16/02–20/02/2026 | Hai–Sáu | HOLIDAY (5 ngày Tết; 14–15, 21–22/02 là cuối tuần) | HOLIDAY | Tết Bính Ngọ, mùng 1 = 17/02/2026; khu vực công nghỉ 14/02–22/02 ([Báo Chính phủ – XDCS](https://xaydungchinhsach.chinhphu.vn/de-xuat-phuong-an-nghi-tet-am-lich-nghi-le-quoc-khanh-nam-2026-119251002130522291.htm), [VietNamNet](https://vietnamnet.vn/lich-nghi-tet-nguyen-dan-2026-nguoi-lao-dong-nghi-9-ngay-lien-tiep-2488245.html)) |
+| 26/04/2026 | CN | HOLIDAY | HOLIDAY | Giỗ Tổ (10/3 Bính Ngọ) |
+| 27/04/2026 | Hai | COMPENSATORY_DAY_OFF | COMPENSATORY_DAY_OFF | Nghỉ bù Giỗ Tổ ([Báo Lào Cai](https://baolaocai.vn/lich-nghi-dip-le-gio-to-hung-vuong-va-dip-304-152026-post894187.html), [Hà Tĩnh](https://hatinh.gov.vn/vi/bai-viet/lich-nghi-le-gio-to-hung-vuong-304-15-quoc-khanh-29-nam-2026)) |
+| 30/04/2026, 01/05/2026 | Năm, Sáu | HOLIDAY | HOLIDAY | Không hoán đổi |
+| 22/08/2026 | Bảy | MAKEUP_WORKING_DAY (`swappedWith` 31/08) | — | TB 9441/TB-BNV |
+| 31/08/2026 | Hai | SWAPPED_DAY_OFF | — | TB 9441/TB-BNV |
+| 01/09/2026 | Ba | HOLIDAY | OPTIONAL_DAY_OFF (`2026-quoc-khanh-lien-ke`/`truoc`, mặc định) | Doanh nghiệp chọn 1/9 hoặc 3/9 |
+| 02/09/2026 | Tư | HOLIDAY | HOLIDAY | Quốc khánh |
+| 03/09/2026 | Năm | — | OPTIONAL_DAY_OFF (`…`/`sau`) | |
+| 24/11/2026 | Ba | HOLIDAY | HOLIDAY | Ngày Văn hoá VN, không hoán đổi (NQ 28/2026/QH16; tin 02/10/2026) |
+| 01/01/2027 | Sáu | HOLIDAY | HOLIDAY | |
+| 04/02–08/02/2027 | Năm–Hai | HOLIDAY (5 ngày Tết: 28 Chạp → mùng 3; 06–07/02 là T7, CN) | Nhóm `2027-tet`: 3 phương án (1+4, 2+3, 3+2), mặc định trùng GOV (2+3) | Tết Đinh Mùi, mùng 1 = 06/02/2027 (TB 11483/TB-BNV) |
+| 09/02–10/02/2027 | Ba–Tư | COMPENSATORY_DAY_OFF | theo phương án | 2 ngày nghỉ bù do Tết trùng T7, CN |
+| 16/04/2027 | Sáu | PROVISIONAL HOLIDAY | PROVISIONAL HOLIDAY | Giỗ Tổ 10/3 Đinh Mùi theo thuật toán; chờ thông báo |
+| 30/04/2027, 01/05/2027 | Sáu, Bảy | PROVISIONAL HOLIDAY; 03/05 PROVISIONAL COMPENSATORY | như GOV | 1/5 rơi T7 → nghỉ bù thứ Hai 03/05 theo BLLĐ; chờ thông báo |
+| 02/09/2027, 03/09/2027 | Năm, Sáu | HOLIDAY (nghỉ 02–05/09) | 2/9 HOLIDAY + phương án 1/9 hoặc 3/9 (chưa có hướng dẫn: PROVISIONAL, mặc định 3/9 theo GOV) | TB 11483/TB-BNV |
+| 24/11/2027 | Tư | PROVISIONAL HOLIDAY | PROVISIONAL HOLIDAY | Bộ Nội vụ đề xuất nghỉ đúng ngày, không hoán đổi ([Góc nhìn pháp lý](https://gocnhinphaply.nguoiduatin.vn/lich-nghi-24112026-va-tet-nguyen-dan-2027-theo-cong-van-10065-cbccvc-va-nguoi-lao-dong-duoc-nghi-bao-nhieu-ngay-53154.html)) |
+
+Phương án Tết 2027 của doanh nghiệp được ghi theo cấu trúc "số ngày cuối năm Bính Ngọ + số ngày đầu năm Đinh Mùi"; ngày
+cụ thể của từng phương án dựng khi lập pack từ bản gốc của TB 11483/TB-BNV (bài báo chỉ nêu số ngày).
+
+## Phụ lục C. Nguồn đã kiểm
+
+Kiểm ngày 27/10/2026 bằng WebSearch/WebFetch, Maven Central, npm registry, GitHub API, và chạy thử mã.
+
+| Nguồn | Dùng cho |
+|---|---|
+| [NQ 28/2026/QH16 – LuatVietnam](https://luatvietnam.vn/tin-van-ban-moi/tu-hom-nay-01-7-2026-nguoi-lao-dong-chinh-thuc-co-them-1-ngay-nghi-huong-nguyen-luong-186-109961-article.html), [XDCS Chính phủ](https://xaydungchinhsach.chinhphu.vn/ngay-24-11-hang-nam-la-ngay-van-hoa-viet-nam-nguoi-lao-dong-duoc-nghi-huong-nguyen-luong-119260113152642414.htm) | 24/11, hiệu lực 01/07/2026 |
+| [Dự thảo sửa BLLĐ 2026 – thuvienphapluat](https://thuvienphapluat.vn/banan/tin-tuc/toan-van-du-thao-luat-sua-doi-bo-luat-lao-dong-moi-nhat-2026-bo-sung-ngay-nghi-le-tet-trong-nam-chi-50507.html) | Điều 112 chưa sửa |
+| [Tiền Phong](https://tienphong.vn/cong-chuc-nguoi-lao-dong-duoc-nghi-ngay-2411-khong-hoan-doi-ngay-lam-viec-post1881722.tpo), [Dân trí](https://dantri.com.vn/noi-vu/chinh-phu-chot-nghi-1-ngay-ngay-van-hoa-viet-nam-2026-20260919231056506.htm), [Thanh Niên](https://thanhnien.vn/bo-noi-vu-thay-doi-de-xuat-ngay-van-hoa-viet-nam-nghi-1-ngay-khong-hoan-doi-185260920073806526.htm), [VnExpress](https://vnexpress.net/trinh-bo-sung-nghi-mot-ngay-dip-van-hoa-viet-nam-khong-hoan-doi-lam-viec-5122382.html) | 24/11/2026 nghỉ 1 ngày |
+| [Báo Lào Cai – làm bù 22/8](https://baolaocai.vn/thu-bay-ngay-228-nhung-ai-phai-di-lam-bu-post906228.html), [Tạp chí Công Thương](https://tapchicongthuong.vn/chinh-thuc--cong-chuc--nguoi-lao-dong-duoc-nghi-5-ngay-dip-le-quoc-khanh-2026-538937.htm) | Quốc khánh 2026, TB 9441/TB-BNV |
+| [LuatVietnam – TB 11483/TB-BNV](https://luatvietnam.vn/linh-vuc-khac/lich-nghi-tet-nguyen-dan-2027-duoc-chot-the-nao-tai-thong-bao-11483-tb-bnv-883-113717-article.html), [Tuổi Trẻ](https://tuoitre.vn/bo-noi-vu-thong-bao-chi-tiet-lich-nghi-tet-am-lich-quoc-khanh-2027-100261010082304185.htm), [Báo Chính phủ](https://baochinhphu.vn/nghi-tet-am-lich-2027-keo-dai-7-ngay-nghi-quoc-khanh-4-ngay-102261010095648278.htm), [VietnamPlus](https://www.vietnamplus.vn/bo-noi-vu-huong-dan-doanh-nghiep-3-phuong-an-nghi-tet-am-lich-nam-2027-post1141406.vnp) | Tết, Quốc khánh 2027 |
+| [Tạp chí Tòa án](https://tapchitoaan.vn/khong-co-vuong-mac-ve-tinh-thoi-han-trong-to-tung-dan-su), [Luật Minh Khuê](https://luatminhkhue.vn/thoi-han-la-gi-cach-tinh-thoi-han-theo-quy-dinh-cua-phap-luat.aspx) | BLDS 2015 Điều 147–148 (nguồn thứ cấp) |
+| [Nhân Dân](https://nhandan.vn/chung-quanh-thong-tin-ve-ngay-am-lich-khac-nhau-tren-mot-so-loai-lich-post489744.html), [RFA](https://www.rfa.org/vietnamese/in_depth/WhyVietnameseLunarCalendarDiffersFromChina_GMinh-20070207.html), [Hồ Ngọc Đức – quy tắc](https://www.informatik.uni-leipzig.de/~duc/amlich/calrules_en.html) | Âm lịch VN theo UTC+7 |
+| [`cn.6tail:lunar` (Maven Central)](https://central.sonatype.com/artifact/cn.6tail/lunar), [6tail/lunar-java](https://github.com/6tail/lunar-java) | 1.7.7, MIT; chạy thử đối chiếu |
+| [Spring Modulith Moments 2.1.1](https://docs.spring.io/spring-modulith/reference/moments.html), [mã nguồn `Moments`](https://github.com/spring-projects/spring-modulith/blob/2.1.1/spring-modulith-moments/src/main/java/org/springframework/modulith/moments/support/Moments.java) | C10 |
+| [ical4j](https://github.com/ical4j/ical4j) (Maven Central 4.4.0, BSD-3-Clause) | RRULE, ICS |
+| [FullCalendar](https://github.com/fullcalendar/fullcalendar) (npm 7.1.3, MIT; `resource-timeline` license riêng) | Web |
+| [rrule (npm)](https://github.com/jkbrzt/rrule) 2.8.1, BSD-3-Clause, bản cuối 11/2023 | Lý do không dùng ở web |
+| [Odoo `resource_calendar.py` 19.0](https://github.com/odoo/odoo/blob/19.0/addons/resource/models/resource_calendar.py) | So sánh |
+| [Frappe Holiday List](https://docs.frappe.io/erpnext/user/manual/en/holiday-list) | So sánh |
+| [Jira SLA calendars](https://support.atlassian.com/jira-service-management-cloud/docs/set-up-sla-calendars/) | So sánh |
+| [Zendesk Schedules API](https://developer.zendesk.com/api-reference/ticketing/ticket-management/schedules/) | So sánh |
+| [Google Calendar Events](https://developers.google.com/workspace/calendar/api/v3/reference/events) | So sánh, mô hình sự kiện |
+| [python-holidays `vietnam.py`](https://github.com/vacanza/holidays/blob/main/holidays/countries/vietnam.py) (0.107, MIT) | So sánh, làm bù theo năm |
+| [Jollyday `Holidays_vn.xml`](https://github.com/focus-shift/jollyday/blob/main/jollyday-core/src/main/resources/holidays/Holidays_vn.xml) (v2.22.1, Apache-2.0) | Thiếu Tết/Giỗ Tổ → không dùng |
