@@ -1088,12 +1088,10 @@ yêu cầu cho L1). Thứ tự merge: admin-shell → platform-admin (shell) →
   - (b) `X-Vyforge-Tenant` chỉ nhận với token có role `platform-admin` (thuộc tenant vận hành) và đã đăng nhập có MFA
     (`amr` có `mfa`), cộng action `platform:tenant:Operate`. Mọi thao tác qua header này ghi audit.
   - (c) `platform-gateway` **luôn gỡ** cả `X-Tenant-Id` lẫn `X-Vyforge-Tenant` khỏi request đến từ bên ngoài (thêm vào
-    `HeaderSanitizingFilter`), có test e2e. Hai header chỉ đến được `platform-services` qua mạng nội bộ (app gọi thẳng)
-    hoặc do BFF của admin đặt sau gateway… — **lưu ý khi làm P2/P5:** admin MFE gọi qua gateway, nên `X-Vyforge-Tenant`
-    của người vận hành cũng bị gỡ. Cách giữ được điều kiện (c): BFF của zone gọi `platform-services` bằng URL nội bộ
-    (không qua gateway) cho API quản trị khi đang xem tenant khác, hoặc gateway chỉ cho header này đi qua khi request
-    mang token có role `platform-admin` + MFA. Phiên P5 chọn và ghi lại; mặc định chọn cách thứ nhất (gỡ vô điều kiện ở
-    gateway, đúng nguyên văn điều kiện).
+    `HeaderSanitizingFilter`), có test e2e.
+- Hệ quả cho P2/P5: admin MFE gọi API qua gateway thì `X-Vyforge-Tenant` cũng bị gỡ. Để người vận hành vẫn "xem tenant
+  khác" được, BFF của zone gọi API quản trị của `platform-services` bằng URL nội bộ (không qua gateway) khi đang chọn
+  tenant khác. Gateway giữ đúng nguyên văn điều kiện (c): gỡ vô điều kiện.
 - `@vyforge/admin-shell` dùng role vận hành mặc định `admin` (role hiện có của platform-admin) cho chế độ `operator`
   ở giao diện; backend áp `platform-admin` theo điều kiện (b). Khi auth-server thống nhất tên role thì đổi cấu hình
   `operatorRoles`, không đổi code.
