@@ -1,7 +1,7 @@
 # Quy hoạch module Vyforge (Q4/2026 – Q4/2027)
 
-> **Trạng thái: đề xuất, chờ duyệt.** Sau khi được duyệt, phần quyết định ở đây sẽ được ghi thành ADR-0015
-> (danh mục repo và module), và các quy tắc ở mục 7 sẽ được đưa vào [ARCHITECTURE.md](ARCHITECTURE.md).
+> **Trạng thái: đề xuất, chờ duyệt.** Sau khi được duyệt, phần quyết định ở đây sẽ được ghi thành ADR-0013
+> (danh mục repo và module, version và nâng cấp), và các quy tắc ở mục 7 sẽ được đưa vào [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Tài liệu này chốt hệ sinh thái Vyforge gồm những module nào: cái nào giữ, gộp, đổi tên, bỏ, cái nào thêm mới, và làm
 theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo nghiên cứu:
@@ -21,6 +21,8 @@ theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo 
 | **Giữ** | Mọi starter Java và package web hiện có. `TokenExchangeClient` vẫn ở trong `-security`; `-audit` không gộp vào `-authz`. |
 | **Tách** | Repo `.github` tách thành `platform-ci` (CLI `vyforge-ci`, image `ci-toolbox`, adapter CI cho GitHub, Forgejo/Gitea, GitLab, preset Renovate) và `platform-docs` (ADR, kiến trúc, quy hoạch). Trên GitHub chỉ còn một `.github` chứa profile org. |
 | **Thêm** | 12 starter Java, 4 package web, 2 chart, 3 repo/template hạ tầng và mobile, 3 lệnh CI mới (`copier-update`, `openapi-sdk`, `load-test`). Mục 4 có danh sách đầy đủ. |
+| **Phạm vi** | Không làm hết danh sách. Một người chỉ đủ sức cho khoảng một nửa trong 5 quý (mục "Năng lực và phạm vi"). P0 chỉ còn những gì bắt buộc trước pilot: `platform-ci`, `-scheduling`, `-ratelimit`, `-privacy` bản tối thiểu, quy ước tenant ở tầng dữ liệu, `template-infra`. Mọi module khác chỉ bắt đầu khi có dự án pilot cụ thể cần đến. |
+| **Hai nhóm quản trị** | `platform-admin` dành cho người vận hành platform. Quản trị viên của khách hàng quản lý phân quyền trong chính app nghiệp vụ, chỉ trong tenant của mình. |
 | **CI/CD trung lập** | Git server chỉ chứa code. Logic CI nằm trong `vyforge-ci`; mọi registry, token và khoá ký là tham số. Bộ on-prem tham chiếu: Forgejo + Forgejo Runner + registry của Forgejo (Maven, npm) + Harbor (image, chart) + cosign với OpenBao + Renovate self-host + Argo CD. Phải sửa 70 file trong 10 repo. |
 | **Không tự xây** | Máy chủ thông báo, search engine, workflow engine, feature-flag server, secret store, CMS, Backstage, service mesh. Mục 5 có lý do. |
 | **Số repo** | Hiện 12 repo; cuối 2027 có 13 repo đang hoạt động: bớt 3 (`nextjs-ui`, `spring-boot-starter`, `platform-iam-server`); `.github` thành `platform-ci` + `platform-docs` (thêm 1); thêm `template-infra`, `platform-infra`, `template-expo`. Không chuyển sang một monorepo chung cho cả org. |
@@ -33,9 +35,102 @@ theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo 
 3. Đội nhỏ thì **bớt đơn vị phải release** ở mọi chỗ có thể. Module mới đặt trong monorepo sẵn có (`platform-java`,
    `platform-web`, `platform-helm-charts`).
 4. Mỗi module mới là **lớp mỏng trên OSS**, đứng sau một port của Vyforge. Không tự viết engine.
-5. Module P1 và P2 chỉ làm khi có dự án pilot cần đến.
+5. **Module P1 và P2 chỉ bắt đầu khi có một dự án pilot cụ thể cần đến.** Dự án đó phải được ghi tên trong ADR của
+   module. Không có pilot thì không làm, kể cả khi module đã có trong bảng ở mục 4.
 6. **Git server chỉ là nơi chứa code.** CI/CD, registry, ký image và cập nhật dependency phải chạy được trên GitHub,
    GitLab hoặc Forgejo/Gitea tự dựng (mục tiếp theo).
+7. **Mọi module chứa dữ liệu đều theo cùng một quy ước tenant** (mục "Tenant ở tầng dữ liệu"). Quy ước phải có trước
+   module mới đầu tiên.
+8. **Redis là lớp tăng tốc, không phải nơi lưu dữ liệu gốc.** Mất Redis thì hệ thống chậm đi hoặc kém chính xác trong một
+   khoảng có giới hạn, nhưng không mất dữ liệu và không mở quyền (mục "Redis").
+
+## Năng lực và phạm vi
+
+Báo cáo [module thông dụng](research/2026-10-module-thong-dung.md) ước lượng công sức như sau:
+
+| Phần việc | Ước lượng |
+|---|---|
+| Module P0 ban đầu (scheduling, ratelimit, privacy, notification, files, quy ước dữ liệu VN, `template-infra` + observability) | khoảng 20,5 tuần-người |
+| Module P1 | khoảng 22–24 tuần-người |
+| Chưa tính | đợt đang làm (authz, tenant, IdP, template), chuyển CI/CD sang trung lập (70 file, 26 workflow), dựng on-prem, pentest, hỗ trợ pilot |
+
+Org hiện chỉ có một người làm, tức khoảng 40 tuần làm việc hiệu dụng mỗi năm. Riêng phần module đã vượt năng lực của cả
+5 quý. Vì vậy:
+
+1. **P0 rút gọn** chỉ còn những gì phải có trước pilot đầu tiên:
+   - `platform-ci` 0.1;
+   - quy ước tenant ở tầng dữ liệu (trong `-jpa`);
+   - `-scheduling` (nhỏ);
+   - `-ratelimit` (thay hai bộ lọc đang có);
+   - `-privacy` bản tối thiểu: `@PersonalData`, che PII trong log và audit. Phần consent và yêu cầu xuất/xoá dữ liệu làm khi pilot có dữ liệu người dùng thật;
+   - `template-infra` bản tối thiểu.
+2. **`-notification` và `-files` chuyển xuống P1.** Thứ tự P1 theo nhu cầu của pilot tier 1, không theo thứ tự trong bảng.
+3. **Q4/2026 chỉ khép đợt đang làm,** cộng `platform-ci` 0.1 và quy ước tenant. Không mở module mới nào khác trước khi 4 nhánh đang làm được merge.
+4. **Có người thứ hai là điều kiện** trước khi bắt đầu bất kỳ module P1 nào (rủi ro R1 trong báo cáo quy hoạch).
+5. **Mỗi quý rà lại bảng này,** so ước lượng với thời gian thực tế, rồi đẩy việc xuống quý sau thay vì làm dở nhiều việc cùng lúc.
+
+## Hai nhóm người quản trị
+
+Hiện có hai nhóm người cần màn hình quản trị. Hai nhóm này khác nhau về phạm vi và về mức rủi ro:
+
+| | Người vận hành platform | Quản trị viên của khách hàng (tenant admin) |
+|---|---|---|
+| Là ai | Đội Vyforge vận hành auth, IAM, gateway | Người của khách hàng quản lý người dùng của họ |
+| Làm gì | Client OAuth, IdP, tenant, khoá tài khoản; policy cho chính các service nền tảng | Mời thành viên, gán group và policy, xem quyền hiệu lực, audit, nhưng chỉ trong tenant của mình |
+| Ở đâu | `platform-admin` | Trang `/admin/iam` trong app nghiệp vụ, dùng `@vyforge/iam` (template-nextjs đã có khi `use_iam`) |
+| Quyền | Role `platform-admin` xuyên tenant (ADR-0011), bắt buộc MFA | Role theo tenant, ví dụ `TENANT_ADMIN`, chỉ có `iam:*` trên tài nguyên của tenant đó |
+
+Hệ quả:
+- Khu "Phân quyền" vừa thêm vào `platform-admin` chỉ dành cho người vận hành. Không đưa console này cho khách hàng.
+- Cần thêm **quản trị uỷ quyền theo tenant**, hiện ghi trong ADR-0011 là "chưa làm":
+  - role tenant admin trên auth-server;
+  - policy mẫu cho tenant admin trên iam-server;
+  - luật chống leo thang đặc quyền của nhánh `fix/authz-hardening` áp dụng cho tenant admin.
+
+  Làm trong Q1/2027, trước pilot tier 1.
+- `@vyforge/iam` phải dùng được ở cả hai nơi. Không có màn hình nào giả định người xem có quyền xuyên tenant.
+
+## Tenant ở tầng dữ liệu
+
+ADR-0011 mới giải quyết tenant ở tầng xác thực, tức claim `tenant_id`. Các starter mới đều lưu dữ liệu theo tenant,
+gồm files, notification, export, features và realtime. Nếu mỗi module tự cách ly theo một kiểu riêng, sớm muộn sẽ có lỗ
+rò dữ liệu giữa các tenant. Cần một ADR riêng (ADR-0015) trước module mới đầu tiên. ADR này chốt các điểm sau:
+
+| Chỗ | Quy ước đề xuất |
+|---|---|
+| Bảng PostgreSQL | Cột `tenant_id` bắt buộc trên mọi bảng thuộc tenant. `-jpa` tự gắn điều kiện lọc từ tenant hiện tại (Hibernate filter hoặc `@TenantScoped`). Tier 2 bật thêm Row-Level Security của PostgreSQL |
+| Cache, Redis | Key có tiền tố `t:<tenant>:` |
+| File (S3) | Prefix `<tenant>/`; presigned URL chỉ ký trong prefix của tenant hiện tại |
+| Kafka | Header `tenant_id` trên mọi event; consumer đặt lại tenant hiện tại từ header |
+| Job nền | Job chạy theo từng tenant, mang tenant trong context; không có job nào đọc chéo tenant ngầm định |
+| Feature flag | `tenant_id` là thuộc tính mặc định của evaluation context |
+| Kiểm tra | Luật ArchUnit trong `platform-test`: entity thuộc tenant phải có `tenant_id`. Test mẫu "user tenant A không đọc được dữ liệu tenant B" có sẵn cho mọi starter |
+
+## Redis
+
+Redis đang thành phụ thuộc chung: xoá cache IAM, rate limit, idempotency của consumer, và sắp tới realtime.
+
+| Việc | Đề xuất |
+|---|---|
+| Bản phân phối | **Valkey** (BSD-3, fork của Redis do Linux Foundation quản lý). Redis 7.4 chuyển sang RSALv2/SSPL; từ Redis 8 có thêm lựa chọn AGPLv3. Valkey giữ BSD nên không vướng điều kiện copyleft khi đóng gói cho khách hàng on-prem |
+| HA on-prem | Valkey có Sentinel hoặc chạy qua operator trên K8s, khai báo trong `template-infra` và `platform-infra`. Tier 0–1 chấp nhận một instance có persistence |
+| Khi Redis mất | **authz:** cache tự hết hạn theo TTL, không mở quyền. **ratelimit:** cấu hình được fail-open hoặc fail-closed theo endpoint; mặc định fail-closed cho đăng nhập. **idempotency:** lùi về bảng PostgreSQL. **realtime:** client tự kết nối lại |
+| Kiểm tra | Test "mất Redis giữa chừng" bắt buộc cho mọi starter dùng Redis. Starter authz đã có test này |
+
+## Rủi ro của auth-server tự viết
+
+`platform-auth-server` là identity provider tự viết. Đây là khoản nợ dài hạn lớn nhất của platform. Đợt này còn thêm SAML,
+LDAP, passkey và Zalo, nên bề mặt tấn công tăng mạnh trước khi có pentest. Keycloak có sẵn tất cả các tính năng này. Kế
+hoạch giữ hướng tự viết theo ADR-0008, nhưng kèm các điều kiện sau:
+
+1. **IdP mở rộng mặc định tắt.** SAML, LDAP và Zalo chỉ bật khi có cấu hình trong DB. Passkey bật bằng cờ cấu hình, mặc
+   định tắt trên production cho tới khi pentest xong.
+2. **Pentest theo ASVS L3** là điều kiện để ra 1.0.0 và để bất kỳ dự án nào dùng auth-server trên production.
+3. **Keycloak vẫn là phương án dự phòng.** Template phải chạy được với Keycloak chỉ bằng cách đổi cấu hình (issuer,
+   claim role, claim tenant), có test cho cả hai.
+4. **Có ít nhất hai owner** cho auth-server trước Q2/2027. Nếu không đạt, dự án pilot dùng Keycloak.
+5. **Mỗi quý so sánh lại chi phí duy trì với Keycloak,** gồm số giờ vá lỗi, số CVE của các thư viện liên quan và tính
+   năng còn thiếu, rồi ghi kết quả vào ADR-0008.
 
 ## CI/CD và registry trung lập với nền tảng git
 
@@ -169,7 +264,7 @@ Danh sách lập từ lệnh
 
 | Quý | Việc | Xong khi |
 |---|---|---|
-| **Q4/2026** | Viết ADR-0016. Tạo `platform-ci` với `vyforge-ci` 0.1 và `ci-toolbox`. Tham số hoá registry trong `platform-java`, `platform-web`, `platform-helm-charts` (bỏ ghi cứng; GitHub vẫn là giá trị đang dùng) | Mọi repo build được trên GitHub qua `vyforge-ci`; grep ở trên chỉ còn khớp trong file adapter GitHub và tài liệu lịch sử |
+| **Q4/2026** | Viết ADR-0014. Tạo `platform-ci` với `vyforge-ci` 0.1 và `ci-toolbox`. Tham số hoá registry trong `platform-java`, `platform-web`, `platform-helm-charts` (bỏ ghi cứng; GitHub vẫn là giá trị đang dùng) | Mọi repo build được trên GitHub qua `vyforge-ci`; grep ở trên chỉ còn khớp trong file adapter GitHub và tài liệu lịch sử |
 | **Q1/2027** | Dựng môi trường on-prem tham chiếu: Forgejo 15 LTS, Runner, Harbor, OpenBao, Renovate self-host. Adapter Forgejo. Template có `ci_platform`. Tách `platform-docs`. Ký image bằng cosign + OpenBao | `platform-gateway` chạy toàn bộ CI/CD trên Forgejo on-prem **không cần GitHub**: build, test, publish, image lên Harbor, ký, quét, bump GitOps, Argo CD deploy lên dev |
 | **Q2/2027** | Chuyển mọi service và thư viện sang chạy được trên Forgejo; mirror hai chiều với GitHub nếu cần. Adapter GitLab CI (khi có khách hàng dùng GitLab). `copier-update` qua Renovate | Một dự án pilot sinh từ template với `ci_platform=forgejo` lên production không chạm GitHub |
 | **Q3/2027** | Chart `platform-policies` (Kyverno) verify chữ ký cosign bằng public key của org trên mọi cluster | Cluster từ chối image không có chữ ký của Vyforge |
@@ -199,8 +294,8 @@ flowchart TB
   subgraph JAVA["platform-java (monorepo Maven)"]
     jcore["web · security · jpa · messaging<br/>observability · authz · audit · test"]:::have
     iamsrv["platform-iam-server<br/>(chuyển từ repo riêng)"]:::moved
-    jp0["P0: scheduling · ratelimit · privacy<br/>notification · files"]:::new
-    jp1["P1: export · webhooks · features<br/>payment · realtime"]:::new
+    jp0["P0: scheduling · ratelimit<br/>privacy (tối thiểu) · tenant trong jpa"]:::new
+    jp1["P1, theo pilot: notification · files<br/>export · webhooks · features · payment · realtime"]:::new
     jp2["P2: ai · einvoice"]:::new
   end
 
@@ -272,8 +367,8 @@ flowchart TB
 | `template-spring-boot`, `template-nextjs` | Giữ | Copier cần tag riêng cho `copier update` | Chuyển sang auth-server và authz 0.9 (Q4/2026); thêm câu hỏi cho starter mới (Q1/2027) |
 | `platform-auth-server` | Giữ (repo riêng) | Code bảo mật, cần ≥ 2 owner và lịch pentest riêng (ADR-0008) | Tenant, danh bạ, IdP mở rộng (Q4/2026); 1.0.0 sau pentest (Q2/2027) |
 | `platform-gateway` | Giữ (repo riêng) | Theo release train của Spring Cloud, không nằm trong BOM | Rate limit qua Redis (Q1/2027) |
-| `platform-iam-server` | **Chuyển** vào `platform-java`, archive repo | Chỉ có class `main`, cấu hình và một migration giống hệt `iam.sql` của starter. Luôn phải release cùng starter | Q1/2027, sau khi merge `fix/authz-hardening` |
-| `platform-auth-admin` | **Đổi tên** thành `platform-admin` | Đã gồm users, roles, clients; đang thêm phân quyền, tenant, IdP | Q1/2027 (cùng lúc chuyển sang registry trung lập) |
+| `platform-iam-server` | **Chuyển** vào `platform-java`, archive repo | Chỉ có class `main`, cấu hình và một migration giống hệt `iam.sql` của starter. Luôn phải release cùng starter. **Cái giá:** một bản vá chỉ cho iam-server cũng phải ra một bản patch cho cả `platform-java`. Chấp nhận được, vì gần như mọi thay đổi của iam-server nằm trong starter | Q1/2027, sau khi merge `fix/authz-hardening` |
+| `platform-auth-admin` | **Đổi tên** thành `platform-admin` | Đã gồm users, roles, clients; đang thêm phân quyền, tenant, IdP. Chỉ dành cho người vận hành platform; quản trị viên của khách hàng dùng `@vyforge/iam` trong app nghiệp vụ (mục "Hai nhóm người quản trị") | Q1/2027 (cùng lúc chuyển sang registry trung lập) |
 | `nextjs-ui`, `spring-boot-starter` | **Bỏ** | Repo rỗng, chưa từng có commit | Q4/2026, chờ chủ sở hữu xác nhận |
 | *(mới)* `template-infra` | Thêm | Khung repo `<du-an>-infra`: Argo CD, values, overlay dev/staging/prod, ESO. Đặt được trên git server bất kỳ; registry và chart repo là tham số | P0, Q4/2026 – Q1/2027 |
 | *(mới)* `platform-infra` | Thêm | GitOps cho chính các service nền tảng | P0, Q1/2027 |
@@ -286,7 +381,7 @@ flowchart TB
 | `platform-bom`, `platform-parent` | Giữ | BOM quản lý thêm các starter mới |
 | `-web` | Giữ | — |
 | `-security` | Giữ, không tách `TokenExchangeClient` (141 dòng, đã là phần tuỳ chọn) | Sửa tên trong ADR-0010 cho khớp code |
-| `-jpa` | Giữ, mở rộng | `LocalizedText`, `@SoftDeletable`, tìm kiếm `unaccent` + trigram, mã hoá cột (chuyển `AesGcmKeyCipher` từ auth-server lên) |
+| `-jpa` | Giữ, mở rộng | Quy ước tenant (cột `tenant_id`, lọc tự động, RLS tuỳ chọn; mục "Tenant ở tầng dữ liệu") trong Q4/2026. Sau đó: `LocalizedText`, `@SoftDeletable`, tìm kiếm `unaccent` + trigram, mã hoá cột (chuyển `AesGcmKeyCipher` từ auth-server lên) |
 | `-messaging` | Giữ | Nền cho notification, webhooks, payment |
 | `-observability` | Giữ | Quy ước tên metric khớp chart `platform-observability` |
 | `-authz` | Giữ một artifact | `jdbc` thành optional; migration Flyway có sẵn trong starter; metric (nhánh `fix/authz-hardening`) |
@@ -308,22 +403,26 @@ flowchart TB
 
 ## 4. Module mới
 
-Thứ tự ưu tiên:
-- **P0:** cần trước khi có dự án pilot đầu tiên.
-- **P1:** làm khi pilot cần.
+Thứ tự ưu tiên (đã rút gọn theo mục "Năng lực và phạm vi"):
+- **P0:** bắt buộc trước pilot đầu tiên.
+- **P1:** chỉ bắt đầu khi có một pilot được ghi tên cần đến.
 - **P2:** chỉ làm khi có hợp đồng hoặc dự án cụ thể.
 
 | Module | Loại | Bài toán | Nền OSS | Ưu tiên · quý |
 |---|---|---|---|---|
-| `platform-starter-scheduling` | starter | Job định kỳ chỉ chạy một lần dù có nhiều replica | ShedLock (Apache-2.0) | P0 · Q4/2026 |
-| `platform-starter-ratelimit` | starter | Rate limit dùng chung giữa các replica; thay hai bộ lọc tự viết | Bucket4j + Redis | P0 · Q4/2026 |
-| `platform-starter-privacy` + `@vyforge/privacy` | starter + package | Luật 91/2025/QH15 và NĐ 356/2025: đánh dấu dữ liệu cá nhân, masking, consent, yêu cầu xuất/xoá dữ liệu | Tự viết (không có OSS cho luật VN) | P0 · Q4/2026 – Q1/2027 |
-| `platform-starter-notification` + `@vyforge/notifications` | starter + package | Email, Zalo ZNS, SMS, push, in-app; template; outbox | Angus Mail, adapter ZNS, Firebase Admin | P0 · Q4/2026 – Q1/2027 |
-| `platform-starter-files` + `@vyforge/files` | starter + package | Upload qua presigned URL, quét virus, xử lý ảnh | AWS SDK v2 S3; SeaweedFS khi chạy local (MinIO bản cộng đồng đã bị archive); ClamAV | P0 · Q4/2026 – Q1/2027 |
-| `template-infra`, `platform-infra` | template + repo | GitOps cho dự án và cho platform; chạy với git server bất kỳ; registry image và chart là tham số | Argo CD 3.5, Kargo 1.12, ESO 2.14, CloudNativePG 1.30 | P0 · Q4/2026 – Q1/2027 |
 | `platform-ci`: `vyforge-ci` + image `ci-toolbox` | CLI + image | Logic build, test, publish, ký, bump GitOps dùng chung cho mọi nền tảng git | `just`, cosign, Syft, Trivy, Helm, crane | P0 · Q4/2026 |
+| Quy ước tenant trong `-jpa` + luật trong `platform-test` | phần mở rộng | Cách ly dữ liệu giữa các tenant theo một kiểu chung cho mọi module | Hibernate filter, PostgreSQL RLS | P0 · Q4/2026 |
+| `platform-starter-scheduling` | starter | Job định kỳ chỉ chạy một lần dù có nhiều replica | ShedLock (Apache-2.0) | P0 · Q4/2026 – Q1/2027 |
+| `platform-starter-ratelimit` | starter | Rate limit dùng chung giữa các replica; thay hai bộ lọc tự viết | Bucket4j + Valkey/Redis | P0 · Q1/2027 |
+| `platform-starter-privacy` (bản tối thiểu) | starter | `@PersonalData`, che PII trong log và audit (Luật 91/2025/QH15, NĐ 356/2025) | Tự viết | P0 · Q1/2027 |
+| Bộ môi trường dev (compose) | compose | Một lệnh chạy auth, iam, gateway, PostgreSQL, Valkey cho dev và E2E | Docker Compose | P0 · Q4/2026: dùng lại `platform-gateway/e2e`, chuyển vào `platform-infra/dev` ở Q1/2027 |
+| `template-infra` (bản tối thiểu), `platform-infra` | template + repo | GitOps cho dự án và cho platform; chạy với git server bất kỳ; registry image và chart là tham số | Argo CD 3.5, Kargo 1.12, ESO 2.14, CloudNativePG 1.30, Valkey | P0 · Q1/2027 |
+| `-privacy` phần còn lại + `@vyforge/privacy` | starter + package | Consent, yêu cầu xuất/xoá dữ liệu của chủ thể dữ liệu | Tự viết | P1 · khi pilot có dữ liệu người dùng thật |
+| `platform-starter-notification` + `@vyforge/notifications` | starter + package | Email, Zalo ZNS, SMS, push, in-app; template; outbox | Angus Mail, adapter ZNS, Firebase Admin | P1 · theo pilot |
+| `platform-starter-files` + `@vyforge/files` | starter + package | Upload qua presigned URL, quét virus, xử lý ảnh | AWS SDK v2 S3; SeaweedFS khi chạy local (MinIO bản cộng đồng đã bị archive); ClamAV | P1 · theo pilot |
+| Quản trị uỷ quyền theo tenant | phần mở rộng auth-server, iam-server, `@vyforge/iam` | Tenant admin tự quản lý thành viên và phân quyền trong tenant của mình | — | P1 · Q1/2027, trước pilot tier 1 |
 | `vyforge-ci copier-update`, `openapi-sdk`, `load-test` | lệnh trong `platform-ci` | Đồng bộ khung Copier; sinh SDK từ OpenAPI; chạy k6. Mỗi lệnh có adapter cho GitHub, Forgejo/Gitea, GitLab | Copier, Renovate (manager `copier`), OpenAPI Generator, k6 | P0/P1 · Q1–Q2/2027 |
-| chart `platform-observability` | chart | OTel Collector + Loki, Grafana, Tempo, Mimir; dashboard và alert theo SLO | Grafana LGTM, Alloy, Sloth | P0 · Q1/2027 |
+| chart `platform-observability` | chart | OTel Collector + Loki, Grafana, Tempo, Mimir; dashboard và alert theo SLO | Grafana LGTM, Alloy, Sloth | P1 · trước khi pilot lên production |
 | `platform-starter-export` | starter | Xuất Excel/PDF lớn chạy nền, trả link tải | FastExcel/POI, OpenHTMLtoPDF (LGPL, cần pháp chế duyệt) | P1 · Q1/2027 |
 | `platform-starter-webhooks` | starter | Gửi webhook ra ngoài có ký HMAC, retry, idempotent | Standard Webhooks | P1 · Q1/2027 |
 | `platform-starter-features` + `@vyforge/features` | starter + package | Feature flag theo tenant hoặc gói dịch vụ | OpenFeature + flagd | P1 · Q1/2027 |
@@ -364,11 +463,14 @@ cần module code: dùng ESO + OpenBao hoặc secret manager của cloud, khai b
 
 | Quý | Tạo mới | Gộp, đổi tên, bỏ | Điều kiện xong |
 |---|---|---|---|
-| **Q4/2026** | `-scheduling`, `-ratelimit`; bắt đầu `-privacy`, `-notification`, `-files`, `template-infra`; `platform-ci` với `vyforge-ci` 0.1 và `ci-toolbox` | Xoá `nextjs-ui`, `spring-boot-starter`. Bỏ ghi cứng registry GitHub trong `platform-java`, `platform-web`, `platform-helm-charts`. Merge đợt đang làm: authz 0.9.0, tenant và danh bạ (ADR-0011), IdP mở rộng (ADR-0012), UI phân quyền, template dùng auth-server | E2E xanh; app sinh từ template đăng nhập được bằng auth-server mà không cần sửa tay; mọi repo build qua `vyforge-ci` |
-| **Q1/2027** | Xong `-privacy`, `-notification`, `-files` (kèm package web); `platform-infra`, chart `platform-observability`, `-export`, `-webhooks`, `-features`, lệnh `copier-update`; môi trường on-prem tham chiếu (Forgejo, Runner, Harbor, OpenBao, Renovate self-host); adapter Forgejo/Gitea; câu hỏi `ci_platform` trong template | Chuyển `platform-iam-server` vào `platform-java`. Đổi tên `platform-admin`. Tách `.github` thành `platform-ci` + `platform-docs`. Bỏ `RateLimitFilter` riêng ở gateway và auth-server | Service nền tảng chạy qua GitOps ở dev/staging; khởi động pilot tier 1; `platform-gateway` đi trọn CI/CD trên Forgejo on-prem không cần GitHub |
-| **Q2/2027** | `-payment`, `-realtime`, chart `platform-policies`, lệnh `openapi-sdk` và `load-test`, khối admin trong `@vyforge/ui`; adapter GitLab CI khi có khách hàng dùng GitLab | Hợp nhất audit (bỏ `iam_audit_log`). `platform-web` chuyển sang version lockstep 1.0.0 | Pentest xong, ra auth-server 1.0.0 và `platform-java` 1.0.0; pilot tier 1 chạy production ≥ 4 tuần; mọi service và thư viện chạy được CI/CD trên Forgejo |
-| **Q3/2027** | `template-expo`, `@vyforge/auth/core`; `-ai` nếu có dự án cần | `platform-policies` chuyển sang Enforce (verify chữ ký cosign bằng public key của org) | Pilot tier 2 lên production; Boot 4.2 / Spring Cloud 2026.0 |
-| **Q4/2027** | `-einvoice`, workflow engine: chỉ khi có hợp đồng | Module không có dự án dùng sau 2 quý thì đánh dấu deprecated | ≥ 3 dự án dùng platform; mỗi service nền tảng có ≥ 2 owner |
+| **Q4/2026** | Chỉ: `platform-ci` với `vyforge-ci` 0.1 và `ci-toolbox`; quy ước tenant trong `-jpa` (ADR-0015); bộ môi trường dev dùng lại E2E của gateway | Merge đợt đang làm: authz 0.9.0, tenant và danh bạ (ADR-0011), IdP mở rộng (ADR-0012, mặc định tắt), UI phân quyền, template dùng auth-server. Xoá `nextjs-ui`, `spring-boot-starter`. Bỏ ghi cứng registry GitHub trong `platform-java`, `platform-web`, `platform-helm-charts` | E2E xanh; app sinh từ template đăng nhập được bằng auth-server mà không cần sửa tay; mọi repo build qua `vyforge-ci` |
+| **Q1/2027** | `-scheduling`, `-ratelimit`, `-privacy` bản tối thiểu; `template-infra` bản tối thiểu, `platform-infra` (kèm Valkey); quản trị uỷ quyền theo tenant; môi trường on-prem tham chiếu (Forgejo, Runner, Harbor, OpenBao, Renovate self-host); adapter Forgejo/Gitea; câu hỏi `ci_platform` | Chuyển `platform-iam-server` vào `platform-java`. Đổi tên `platform-admin`. Tách `.github`. Bỏ `RateLimitFilter` riêng ở gateway và auth-server | Service nền tảng chạy qua GitOps ở dev/staging; `platform-gateway` đi trọn CI/CD trên Forgejo không cần GitHub; **chốt pilot tier 1 và danh sách module P1 mà pilot cần** |
+| **Q2/2027** | Module P1 mà pilot tier 1 cần (dự kiến `-notification`, `-files`, chart `platform-observability`); chart `platform-policies` chế độ Audit | Hợp nhất audit (bỏ `iam_audit_log`). `platform-web` chuyển sang version lockstep 1.0.0 | Pentest xong, ra auth-server 1.0.0 và `platform-java` 1.0.0; pilot tier 1 chạy production ≥ 4 tuần |
+| **Q3/2027** | Module P1 tiếp theo theo pilot tier 2 (`-export`, `-webhooks`, `-features`, `-payment`, `-realtime`: chỉ cái nào pilot cần); `template-expo` nếu có dự án mobile | `platform-policies` chuyển sang Enforce | Pilot tier 2 lên production; Boot 4.2 / Spring Cloud 2026.0 |
+| **Q4/2027** | P2 chỉ khi có hợp đồng | Module không có dự án dùng sau 2 quý thì đánh dấu deprecated | ≥ 3 dự án dùng platform; mỗi service nền tảng có ≥ 2 owner |
+
+Module P1 không có pilot cần đến thì lùi sang 2028. Lộ trình này giả định có người thứ hai từ Q1/2027. Nếu không có,
+Q2–Q4 dời mỗi mốc khoảng một quý.
 
 ## 7. Đề xuất bổ sung ARCHITECTURE.md (áp dụng sau khi duyệt)
 
@@ -414,14 +516,20 @@ chung.
 |---|---|---|
 | 0011 | Tenant và danh bạ người dùng | Đang viết |
 | 0012 | IdP mở rộng: passkey, SAML, LDAP, Zalo | Đang viết |
-| 0013 | Version, release, deprecation; ma trận tương thích | Q4/2026 |
-| 0014 | Nâng cấp hàng loạt cho dự án con (Renovate, `copier update`) | Q4/2026 |
-| 0015 | Danh mục repo và module: ghi chính thức tài liệu này | Ngay sau khi duyệt |
-| 0016 | CI/CD và registry trung lập với nền tảng git: `vyforge-ci`, adapter, registry theo tham số, bộ on-prem tham chiếu, tách `.github` | Q4/2026 |
-| 0017 – 0024 | Runtime, GitOps, PostgreSQL trên K8s, secrets, chuỗi cung ứng, observability, SLO, DR | Q1/2027 |
-| 0025 – 0033 | Bảo vệ dữ liệu cá nhân, pentest, job và rate limit, thông báo, lưu file, export/webhook/flag, thanh toán, mobile, hợp nhất audit | Trước khi làm từng module |
+| 0013 | Danh mục repo và module (ghi chính thức tài liệu này); version, release, deprecation, ma trận tương thích; nâng cấp hàng loạt cho dự án con (Renovate, `copier update`) | Ngay sau khi duyệt |
+| 0014 | CI/CD và registry trung lập với nền tảng git: `vyforge-ci`, adapter, registry theo tham số, bộ on-prem tham chiếu, tách `.github` | Q4/2026 |
+| 0015 | Tenant ở tầng dữ liệu: cột `tenant_id`, lọc tự động, RLS, key cache, prefix file, header Kafka | Q4/2026, trước module mới đầu tiên |
+| 0016 | Runtime và vận hành: K8s, GitOps (Argo CD, Kargo), môi trường và preview, PostgreSQL (CloudNativePG), Valkey HA, secrets (ESO + OpenBao) | Q1/2027 |
+| 0017 | Chuỗi cung ứng và quan sát: ký image, provenance, Kyverno, observability, SLO và on-call | Q1/2027 |
+| 0018 | Bảo mật vận hành: pentest (ASVS), DR/BCP, điều kiện để auth-server ra 1.0, so sánh định kỳ với Keycloak | Q1/2027 |
+| 0019 | Bảo vệ dữ liệu cá nhân: phân định trách nhiệm platform và khách hàng; `-privacy` | Q1/2027 |
+| 0020 | Module ứng dụng dùng chung: một ADR, mỗi module một mục (thư viện, license, pilot cần đến), bổ sung khi bắt đầu từng module | Theo từng module |
+| 0021 | Thanh toán nội địa: IPN, idempotent, đối soát | Khi có pilot cần |
+| 0022 | Golden path mobile: `template-expo`, OIDC native app | Khi có dự án mobile |
+| 0023 | IAM giai đoạn tiếp theo: hợp nhất audit, lọc danh sách theo policy, quản trị uỷ quyền theo tenant | Q1/2027 |
 
-Danh sách đầy đủ có ở mục 6 của [báo cáo quy hoạch](research/2026-10-quy-hoach-vyforge.md).
+Danh sách này gộp khoảng 23 ADR trong bản nháp của [báo cáo quy hoạch](research/2026-10-quy-hoach-vyforge.md) thành 11
+ADR, để đội nhỏ viết và duy trì nổi. Khi lệch nhau, số ADR ở đây là số chính thức.
 
 ## Cần chủ sở hữu quyết định
 
@@ -438,3 +546,8 @@ Danh sách đầy đủ có ở mục 6 của [báo cáo quy hoạch](research/2
    chính thì cần bản Pro, vì bản CE giới hạn 40.000 component.
 9. Tách `.github` thành `platform-ci` và `platform-docs`.
 10. Nơi đặt git server on-prem và ai vận hành nó (Forgejo, Harbor, OpenBao cần backup và cập nhật như service nền tảng).
+11. Phạm vi rút gọn: đồng ý P0 chỉ gồm `platform-ci`, quy ước tenant, `-scheduling`, `-ratelimit`, `-privacy` bản tối
+    thiểu, `template-infra` bản tối thiểu; các module còn lại chờ pilot.
+12. Dự án pilot tier 1 là dự án nào, và khi nào có người thứ hai.
+13. Điều kiện cho auth-server: IdP mở rộng mặc định tắt, pentest trước production, template luôn chạy được với Keycloak.
+14. Dùng Valkey thay Redis cho mọi môi trường.

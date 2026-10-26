@@ -335,7 +335,7 @@ module mới.
   - Ma trận tương thích: `platform-java` 1.x ↔ Boot 4.1 / Spring Cloud 2025.1 / Java 25; 2.x ↔ Boot 4.2 / 2026.0.
     `platform-web` ↔ Next ≥ 16.4.1, React 19, Node 24 LTS (Node 26 lên LTS khoảng 28/10/2026;
     [từ v27 phát hành mỗi năm một bản](https://nodejs.org/en/about/releases/)).
-- **Nâng cấp hàng loạt (ADR-0014).**
+- **Nâng cấp hàng loạt (ADR-0013).**
   - Renovate với nhóm "platform" cho `com.vyforge.platform:*` và `@vyforge/*`.
   - Khung Copier: dùng [manager `copier`](https://docs.renovatebot.com/modules/manager/copier/) của Renovate. Manager
     này cần Renovate self-host với `allowScripts`, vì template của vyforge dùng `--trust`. Nếu không thì dùng workflow
@@ -373,6 +373,9 @@ module mới.
 
 ## 5. Lộ trình theo quý (Q4/2026 – Q4/2027)
 
+> **Bản nháp.** Lộ trình chính thức, đã rút gọn phạm vi theo năng lực của đội, nằm ở mục 6 của
+> [MODULE_PLAN.md](../MODULE_PLAN.md). Bảng dưới giữ lại để tham khảo.
+
 | Quý | Module **tạo mới** | Module **gộp / đổi tên / bỏ** | Việc chính khác | Tiêu chí hoàn thành | Phụ thuộc |
 |---|---|---|---|---|---|
 | **Q4/2026** | `platform-starter-scheduling`, `platform-starter-ratelimit`; bắt đầu `-privacy`, `-notification`, `-files`, `template-infra` | **Xoá** `nextjs-ui`, `spring-boot-starter`. `-authz`: `jdbc` optional, migration Flyway | Merge đợt hiện tại: authz 0.9.0, tenant/danh bạ (ADR-0011), IdP (ADR-0012), UI phân quyền. Tag v0.1.0 cho 4 service. Template chuyển sang auth-server. Compose E2E. ADR-0013, 0014 | 4 nhánh đã merge; E2E xanh; app sinh từ template đăng nhập được bằng auth-server | Contract chung |
@@ -384,6 +387,9 @@ module mới.
 ## 6. ADR nên viết tiếp
 
 ADR-0011 (tenant và danh bạ) và ADR-0012 (IdP mở rộng) đang được viết ở nhánh khác.
+
+> **Bản nháp.** Danh sách dưới đây đã được gộp lại thành 11 ADR ở mục 8 của [MODULE_PLAN.md](../MODULE_PLAN.md). Số ADR
+> chính thức lấy theo MODULE_PLAN.md.
 
 | ADR | Tiêu đề | Mô tả một dòng |
 |---|---|---|
