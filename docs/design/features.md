@@ -145,7 +145,7 @@ flowchart LR
     resolver["EntitlementResolver<br/>plan + add-on + override + grant"]
     meter["UsageMeter<br/>CounterStore SPI"]
     admin["REST quản trị + OFREP<br/>/api/v1/features/**"]
-    jobs["Job @ClusterScheduled<br/>lịch · trial/grace · đóng kỳ · partition"]
+    jobs["TaskHandler (DurableTaskQueue, queue features)<br/>lịch · trial/grace · đóng kỳ · fan-out<br/>+ @ClusterScheduled: partition · flush · reconcile"]
     sync["SnapshotSynchronizer<br/>pub/sub + poll version"]
   end
 
@@ -170,7 +170,10 @@ flowchart LR
   sync --> snap
   sync <--> valkey
   sync --> db
+  queue[("vyforge_task<br/>(-scheduling)")]
   jobs --> db & outbox
+  jobs <--> queue
+  admin -- "enqueue cùng transaction" --> queue
   web -- "OFREP bulk + /me/entitlements" --> admin
   flagd -- "HTTP sync: snapshot JSON flagd" --> admin
 ```
@@ -334,11 +337,14 @@ sequenceDiagram
 ### 3.6 Lịch bật/tắt và rollout theo lịch
 
 `ff_scheduled_change` chứa một *patch* có thứ tự (`setState`, `setDefaultServe`, `setRuleServe`, `setTenantOverride`,
-`removeTenantOverride`) cùng `run_at`. Job `@ClusterScheduled(name = "features-scheduled-changes", fixedDelay = "30s")` áp
-các patch đến hạn qua đúng `FlagService` mà API dùng, nên có version, revision, audit (actor là người tạo lịch,
-`via=schedule`) và event như thay đổi tay. Patch lỗi (flag đã xoá, version lệch theo `expectedVersion`) → `FAILED` + event
-`FlagScheduledChangeFailed`, không thử lại. Rollout theo lịch (kịch bản 1) là chuỗi patch `setDefaultServe` với trọng số
-tăng dần.
+`removeTenantOverride`) cùng `run_at`. Dòng này là bản ghi nghiệp vụ (hiển thị, huỷ, lịch sử). Việc *áp* patch đi qua
+`DurableTaskQueue` của `-scheduling` (mục 3.11): tạo lịch thì `enqueue` (cùng transaction) một task queue `features`, kind
+`flag.scheduled-change`, `next_run_at = run_at`, `idempotency_key = <id lịch>`. Huỷ lịch thì huỷ task và đặt `CANCELED`.
+Handler áp patch qua đúng `FlagService` mà API dùng, nên có version, revision, audit (actor là người tạo lịch,
+`via=schedule`) và event như thay đổi tay. Lỗi tạm thời (DB, khoá) thì queue retry có backoff. Lỗi nghiệp vụ (flag đã xoá,
+version lệch theo `expectedVersion`) thì handler báo lỗi không retry → task `DEAD`, lịch `FAILED`, event
+`FlagScheduledChangeFailed`. Người vận hành retry hoặc huỷ bằng API quản trị của queue. Rollout theo lịch (kịch bản 1) là
+chuỗi patch `setDefaultServe` với trọng số tăng dần.
 
 Điều kiện theo khung giờ trong ngày (kịch bản 12) dùng rule `before/after` biên dịch sang `$flagd.timestamp`, vì không cần
 ghi DB mỗi ngày. Giờ địa phương tính theo `vyforge.features.zone` (mặc định `Asia/Ho_Chi_Minh`) lúc biên dịch.
@@ -424,10 +430,10 @@ stateDiagram-v2
   [*] --> TRIALING: startTrial(plan)
   [*] --> ACTIVE: assign(plan)
   TRIALING --> ACTIVE: activate() (đã thanh toán)
-  TRIALING --> EXPIRED: hết trial, chưa thanh toán (job)
-  ACTIVE --> PAST_DUE: markPastDue() hoặc hết kỳ chưa gia hạn (job)
+  TRIALING --> EXPIRED: hết trial, chưa thanh toán (task)
+  ACTIVE --> PAST_DUE: markPastDue() hoặc hết kỳ chưa gia hạn (task)
   PAST_DUE --> ACTIVE: activate() / renew()
-  PAST_DUE --> SUSPENDED: hết grace (job)
+  PAST_DUE --> SUSPENDED: hết grace (task)
   SUSPENDED --> ACTIVE: activate()
   ACTIVE --> CANCELED: cancel(now)
   ACTIVE --> ACTIVE: renew() · changePlan() · cancelAtPeriodEnd
@@ -445,8 +451,11 @@ stateDiagram-v2
 - `changePlan` có `effective = NOW | PERIOD_END`. Nâng gói thường `NOW`, hạ gói `PERIOD_END` (lưu `pending_plan_version_id`).
   Hạ gói làm `LIMIT` thấp hơn số hiện có (đang 15 user, gói mới 10): không xoá gì, chỉ chặn tạo mới; event có
   `overLimitFeatures` để app hiển thị.
-- Job `features-subscription-lifecycle` (`@ClusterScheduled`, 5 phút) xử lý hết trial, hết kỳ, hết grace, `TrialEnding`
-  (trước `trial-ending-notice`, mặc định 3 ngày), áp `pending_plan_version_id`.
+- Mốc thời gian của subscription là task hẹn giờ trong `DurableTaskQueue` (mục 3.11): mỗi lần subscription đổi, service
+  `enqueue` (cùng transaction) các task `subscription.trial-ending`, `subscription.trial-expire`, `subscription.period-end`,
+  `subscription.grace-expire`, `subscription.apply-pending-plan` với `next_run_at` là mốc tương ứng. Handler kiểm lại trạng
+  thái và `version` của subscription trước khi chuyển; mốc đã cũ (đã gia hạn, đã huỷ) thì bỏ qua. Không có job quét định kỳ
+  làm việc này.
 - **Không phụ thuộc `-payment`.** Payment (hoặc code của app) gọi `activate/renew/markPastDue` khi nhận IPN. Mục 5.3 có
   hợp đồng.
 
@@ -478,6 +487,45 @@ sequenceDiagram
   E->>Snap: tuổi 11 phút > stale-ttl 10 phút
   E-->>S: EntitlementUnavailableException → 503 entitlement.unavailable
 ```
+
+### 3.11 Việc nền: `DurableTaskQueue` của `-scheduling`
+
+Theo phụ lục 5.2 của quy ước, module **không** có bảng job hay cơ chế retry riêng. Mọi việc chạy theo mốc giờ, theo từng
+tenant hoặc fan-out hàng loạt là task trong `DurableTaskQueue` (`com.vyforge.platform.scheduling.task`, bảng `vyforge_task`).
+Module chỉ khai báo queue `features` và các `TaskHandler`.
+
+| `kind` | Tạo khi | `next_run_at` | `idempotency_key` | Handler làm gì |
+|---|---|---|---|---|
+| `flag.scheduled-change` | Tạo lịch (mục 3.6) | `run_at` | `<id lịch>` | Áp patch qua `FlagService` |
+| `subscription.trial-ending` | Bắt đầu trial | `trial_ends_at − trial-ending-notice` | `<subId>:trial-ending:<trial_ends_at>` | Phát `TrialEnding` |
+| `subscription.trial-expire` | Bắt đầu/đổi trial | `trial_ends_at` | `<subId>:trial-expire:<trial_ends_at>` | `TRIALING → EXPIRED`, về `default-plan` |
+| `subscription.period-end` | Assign, renew | `current_period_end` | `<subId>:period-end:<period_end>` | Chưa gia hạn → `PAST_DUE`, đặt `grace_ends_at`; `cancel_at_period_end` → `CANCELED` |
+| `subscription.grace-expire` | Vào `PAST_DUE` | `grace_ends_at` | `<subId>:grace:<grace_ends_at>` | `PAST_DUE → SUSPENDED` |
+| `subscription.apply-pending-plan` | `changePlan(PERIOD_END)` | `current_period_end` | `<subId>:pending:<planVersionId>` | Áp `pending_plan_version_id` |
+| `usage.period-close` | Counter mới của kỳ có hạn | `period_end` | `<tenant>:<feature>:<period_start>` | Đóng kỳ, tiêu grant, rollover, phát `UsagePeriodClosed` |
+| `plan.migrate-subscribers` | `POST …/migrate` | thời điểm hẹn | `<plan>:<from>→<to>` | Fan-out: tạo một `subscription.migrate` cho mỗi tenant |
+| `subscription.migrate` | Fan-out ở trên | ngay | `<subId>:migrate:<to>` | Đổi `plan_version_id`, event |
+| `grant.bulk` | API tạo grant hàng loạt (kịch bản 9) | ngay | `Idempotency-Key` của request | Fan-out: một `grant.create` mỗi tenant |
+| `grant.create` | Fan-out ở trên | ngay | `<bulkId>:<tenant>` | Tạo `ent_grant`, audit |
+
+- **Tạo task cùng transaction nghiệp vụ** (`enqueue` trong transaction), nên task chỉ có khi thay đổi đã commit, và mất
+  task đồng nghĩa với thay đổi chưa xảy ra.
+- **Handler luôn đọc lại trạng thái** và so `version`/mốc trong payload; task cũ (subscription đã gia hạn, kỳ đã đóng) kết
+  thúc `SUCCEEDED` mà không làm gì. Nhờ vậy đổi mốc chỉ cần tạo task mới, không phải tìm và huỷ task cũ (vẫn huỷ khi biết
+  id, để backlog gọn).
+- **Payload** là record có `schemaVersion` (cột `schema_version` của `vyforge_task`), chỉ chứa id và mốc, không chứa dữ
+  liệu cá nhân.
+- **Tenant:** task theo tenant mang `tenant_id`, handler chạy trong `TenantContext.run` (do queue lo). Task chung
+  (`flag.scheduled-change` không có tenant, `plan.migrate-subscribers`, `grant.bulk`) mang `tenant_id` = tenant vận hành
+  (`vyforge.features.admin.operator-tenant`) và handler chỉ đụng bảng danh mục dùng chung hoặc fan-out. Nếu
+  `vyforge_task.tenant_id` cho phép null thì dùng null; chốt khi forge-35 merge (ghi ở điểm nối).
+- **Giới hạn đồng thời** theo queue `features` (mặc định 4) và theo tenant (mặc định 1), cấu hình ở
+  `vyforge.scheduling.tasks.queues.features.*` của `-scheduling`. Backoff mặc định của queue; `max_attempts` 10.
+- **Lưới an toàn:** `@ClusterScheduled(name = "features-reconcile", fixedDelay = "15m")` tìm subscription/counter đã quá mốc
+  mà không có task `PENDING`/`RUNNING` tương ứng (vd. dữ liệu nhập tay bằng SQL), rồi `enqueue` với cùng
+  `idempotency_key`, nên chạy trùng không sao.
+- Việc định kỳ toàn cục, không theo mốc của từng bản ghi, vẫn là `@ClusterScheduled`: tạo/xoá partition, đẩy bộ đếm `FAST`
+  về DB, dọn `ent_usage_dedupe`/`ff_scheduled_change`.
 
 ---
 
@@ -521,7 +569,7 @@ vấn đánh dấu `@TenantExempt`). Các bảng còn lại thuộc tenant: cộ
 `tenant_id` (ADR-0015). Không có enum nghiệp vụ trong DB: `varchar` + kiểm ở code; chỉ trạng thái state machine có `check`.
 
 ```sql
--- V1__features.sql (Flyway riêng của starter, mục 4.4)
+-- META-INF/vyforge/db/features/V1__features.sql (StarterSchemaMigrator, lịch sử flyway_schema_history_features, mục 4.4)
 
 create table ff_flag (
     key            varchar(128) primary key check (key ~ '^[a-z0-9][a-z0-9._-]{0,127}$'),
@@ -803,10 +851,11 @@ create index ent_usage_dedupe_created_idx on ent_usage_dedupe (created_at);
 ### 4.4 Migration và tiến hoá schema
 
 - Location `classpath:META-INF/vyforge/db/features`, migration có version `V1__features.sql`, `V2__…`.
-- **Lịch sử Flyway riêng**: starter chạy một `Flyway` riêng với `table = vyforge_features_schema_history`, `baselineOnMigrate`,
-  trước Flyway của app. Số version của starter không đụng số của app hay của starter khác, nên không cần `R__` hay dải số.
-  Tắt bằng `vyforge.features.schema.migrate=false` (app tự chép SQL vào migration của mình). Đây là lệch quy ước nhỏ
-  (mục 10).
+- **Flyway riêng theo phụ lục 5.3 của quy ước:** dùng `StarterSchemaMigrator` của `platform-starter-jpa` (do forge-35 làm,
+  module này không tự viết), bảng lịch sử `flyway_schema_history_features`, chạy trước `EntityManagerFactory` và trước Flyway
+  của app. Số version của starter không đụng số của app hay starter khác. Tắt bằng `vyforge.features.schema.migrate=false`.
+  File SQL gộp cho DBA: `META-INF/vyforge/sql/features.sql` (test kiểm file gộp khớp các migration).
+- Bảng `vyforge_task` thuộc migration của `-scheduling`, không nằm trong migration của module này.
 - Payload JSONB (`definition`, `conditions`, `patch`, `attributes` của usage) có `schema_version`. Code đọc được mọi version cũ
   và nâng lên version hiện tại khi đọc (upcaster); ghi luôn version mới. Không viết migration dữ liệu JSONB trừ khi bắt buộc.
 - `attributes` JSONB là chỗ mở rộng có kiểm soát: khoá phải khai báo trong `vyforge.features.attributes.allowed` hoặc có tiền
@@ -1003,6 +1052,15 @@ Payload có `schemaVersion`.
 
 **Điểm nối với `-realtime`:** nghe `FlagChanged`, `TenantFlagOverrideChanged` để báo client tải lại snapshot.
 
+**Điểm nối với khối dùng chung của platform-java 0.12.1 (forge-35, phụ lục 5 của quy ước):** dùng nguyên, không làm lại.
+
+- `DurableTaskQueue`/`TaskHandler` (`-scheduling`): queue `features`, các kind ở mục 3.11. Cần chốt `vyforge_task.tenant_id`
+  có nhận null hay không (task chung).
+- `StarterSchemaMigrator` (`-jpa`): migration `META-INF/vyforge/db/features`, lịch sử `flyway_schema_history_features`.
+  Starter phụ thuộc `-jpa` để có khung này (repository vẫn viết bằng `JdbcClient`).
+- `SecretCipher` (`platform-core`): chưa dùng ở 0.13 (mục 8).
+- Nếu 0.12.1 chưa release lúc triển khai thì code theo đúng interface trong phụ lục, build với `0.12.1-SNAPSHOT` từ `~/.m2`.
+
 **Điểm nối với `-authz`:** `features.authz.principal-attributes=true` đăng ký `PrincipalAttributesProvider` thêm
 `principal.plan` và `principal.entitlements` (danh sách feature boolean được phép) cho `Condition` của policy (đúng đề xuất
 của báo cáo module thông dụng mục 3.4).
@@ -1121,7 +1179,9 @@ vyforge:
     admin:
       operator-tenant: default
     schema:
-      migrate: true
+      migrate: true                  # StarterSchemaMigrator, bảng flyway_schema_history_features
+    tasks:                           # giới hạn đồng thời, backoff: vyforge.scheduling.tasks.queues.features.*
+      reconcile-interval: 15m
     entitlements:
       enabled: true
       default-plan: free
@@ -1168,7 +1228,7 @@ lại vì DB chậm), `featuresInvalidation` (`UP` khi đang nghe Valkey, `UNKNO
 | Lỗi đánh giá | `rate(vyforge.features.evaluation.errors[5m]) > 0` |
 | Entitlement không dùng được | `outcome=unavailable` > 0 |
 | Fast meter dồn | `usage.fast.pending > 10000` trong 5 phút |
-| Job lịch lỗi | `FlagScheduledChangeFailed`, hoặc `vyforge.scheduling.*` failures của job `features-*` |
+| Task lỗi | `FlagScheduledChangeFailed`; `vyforge.task.*{queue="features", status="DEAD"}` > 0; backlog `PENDING` quá hạn > 15 phút; failures của job `features-*` (`vyforge.scheduling.*`) |
 | Flag rác | `vyforge.features.flags{status="expired"} > 0` (cảnh báo mức thấp, gửi owner) |
 
 ### 7.4 Tải và dung lượng
@@ -1195,11 +1255,13 @@ lại vì DB chậm), `featuresInvalidation` (`UP` khi đang nghe Valkey, `UNKNO
 
 ### 7.6 Chế độ lỗi đã ghi ở mục 3.10. Ngoài ra
 
-- Job (`features-scheduled-changes`, `features-subscription-lifecycle`, `features-usage-period-close`,
-  `features-usage-partitions`, `features-usage-fast-flush`, `features-cleanup`) đều dùng `@ClusterScheduled`; lượt lỗi chạy
-  lại ở lượt sau, xử lý theo từng dòng nên một tenant lỗi không chặn tenant khác.
-- Đóng kỳ trễ (app tắt qua đêm): job xử lý mọi counter có `period_end < now()` chưa `closed_at`, theo thứ tự thời gian.
-  `consume` sau `period_end` luôn ghi vào kỳ mới, không phụ thuộc job.
+- Việc theo mốc hoặc theo tenant chạy trên `DurableTaskQueue` (mục 3.11): retry có backoff, `DEAD` khi hết lượt, xem
+  backlog, retry, cancel bằng API quản trị của queue, metric `vyforge.task.*{queue="features"}`. Một tenant lỗi không chặn
+  tenant khác vì mỗi tenant là một task.
+- Chỉ việc định kỳ toàn cục dùng `@ClusterScheduled`: `features-usage-partitions`, `features-usage-fast-flush`,
+  `features-cleanup`, và `features-reconcile` (mục 3.11).
+- Đóng kỳ trễ (app tắt qua đêm): task `usage.period-close` đến hạn chạy ngay khi app lên lại; `features-reconcile` tạo
+  task cho counter quá `period_end` mà chưa có task. `consume` sau `period_end` luôn ghi vào kỳ mới, không phụ thuộc task.
 - Đồng hồ: kỳ và hạn dùng tính theo giờ của DB (`now()`), giống `-scheduling`.
 
 ---
@@ -1231,7 +1293,12 @@ có thêm revision đầy đủ để khôi phục.
 không sửa trực tiếp, chỉ qua `adjust` có lý do và audit; `ent_usage_record` lưu từng thay đổi. Thời hạn lưu chứng từ do pháp
 chế của dự án quyết định theo Luật Kế toán; hoá đơn điện tử thuộc `-payment`/`-einvoice`.
 
-**Khác.** Không có secret trong module. `external_ref` không chứa số thẻ hay tài khoản. Endpoint `/flagd/flags.json` cần scope
+**Secret.** Bản 0.13 không lưu secret nào: không gọi ra ngoài, không có khoá theo tenant. Adapter sau này cần secret (vd.
+API key OpenMeter theo tenant cho `CounterStore`) phải mã hoá bằng `SecretCipher` của `platform-core` (phụ lục 5.1), context
+`features:counter-store:<tenant>`, và mã hoá lại khi `needsRotation`. Module không tự viết mã hoá. `attributes` JSONB không
+được chứa secret (API từ chối khoá có tên kiểu `*secret*`, `*password*`, `*token*`, `*key*`).
+
+**Khác.** `external_ref` không chứa số thẻ hay tài khoản. Endpoint `/flagd/flags.json` cần scope
 `features.sync`, không công khai. Chặn tấn công đoán flag qua OFREP bằng `-ratelimit` (rule mẫu trong README).
 
 ---
@@ -1240,16 +1307,18 @@ chế của dự án quyết định theo Luật Kế toán; hoá đơn điện 
 
 ### 9.1 Thứ tự (platform-java, `platform-starter-features`, `0.13.0-SNAPSHOT`)
 
-1. Khung starter, properties, mã lỗi vi/en, catalog action, Flyway riêng + `V1__features.sql`, partition job.
+1. Khung starter, properties, mã lỗi vi/en, catalog action; `V1__features.sql` chạy qua `StarterSchemaMigrator` (bảng
+   `flyway_schema_history_features`) + file gộp `META-INF/vyforge/sql/features.sql`; job partition.
 2. Flag: mô hình + `FlagCompiler` + `VyforgeFlagProvider` trên `flagd-core` 3.0.0; `FlagCatalog` đồng bộ vào DB lúc khởi
    động (code tạo flag mới, không ghi đè thay đổi của admin); `FeatureFlags`; ngữ cảnh (contributor, propagator).
 3. Snapshot, `PollingChangeNotifier`, `RedisChangeNotifier`, health, metric.
 4. API quản trị flag: CRUD, revision, rollback, override tenant, opt-in, simulate, validate, segment, stale report, OFREP,
    `flagd/flags.json`; audit; event.
-5. Scheduled change + job.
+5. Scheduled change: queue `features` + `TaskHandler` `flag.scheduled-change` trên `DurableTaskQueue`.
 6. Entitlement: catalog feature, plan + version + kế thừa, `EntitlementResolver`, `Entitlements` (boolean, limit, config).
-7. Subscription + state machine + job lifecycle + event; `PaymentReference`.
-8. Metering: `JdbcCounterStore`, dedupe, record, ngưỡng, đóng kỳ, grant; `RedisCounterStore` (FAST) + flush.
+7. Subscription + state machine + task theo mốc (`subscription.*`) + `features-reconcile` + event; `PaymentReference`.
+8. Metering: `JdbcCounterStore`, dedupe, record, ngưỡng, task `usage.period-close`, grant (+ `grant.bulk`); `RedisCounterStore`
+   (FAST) + flush.
 9. `@RequiresFlag`, `@RequiresEntitlement`; bridge `principal.plan` cho `-authz`; provider `file` và `remote`.
 10. README module, mục trong README gốc, `platform-bom`, pom gốc.
 
@@ -1262,7 +1331,7 @@ banner, meter) → `ui` quản trị → `openfeature` → trang ví dụ trong 
 |---|---|
 | Unit | Biên dịch rule → JSON flagd (snapshot test), thứ tự đánh giá (off, prerequisite, override, rule, default), phân bố rollout (100.000 key, sai số < 0,5%), ổn định hash qua lần biên dịch, giải entitlement (plan + cha + add-on + override + grant), tính kỳ theo múi giờ Việt Nam (ranh giới tháng, năm nhuận), state machine (mọi chuyển hợp lệ và không hợp lệ) |
 | Tương thích flagd | Chạy bộ test JSON của flagd (`flagd-testbed`) trên `FlagdCore` qua lớp provider để bảo đảm không làm lệch hành vi; so kết quả bucketing của JSON xuất ra với flagd daemon (Testcontainers `ghcr.io/open-feature/flagd`) |
-| Testcontainers PostgreSQL | Repository, migration riêng, `consume` song song (50 thread, không vượt hạn mức, không đếm trùng với cùng idempotency key), rollback cùng transaction nghiệp vụ, partition job, đóng kỳ, `TenantIsolationTests` cho mọi bảng thuộc tenant |
+| Testcontainers PostgreSQL | Repository, migration qua `StarterSchemaMigrator` (bảng lịch sử riêng, file gộp khớp migration), handler của từng task kind (chạy trên `DurableTaskQueue` thật: mốc cũ bị bỏ qua, lỗi nghiệp vụ → `DEAD`, fan-out idempotent), `consume` song song (50 thread, không vượt hạn mức, không đếm trùng với cùng idempotency key), rollback cùng transaction nghiệp vụ, partition job, đóng kỳ, `TenantIsolationTests` cho mọi bảng thuộc tenant |
 | Testcontainers Valkey | Lan truyền thay đổi giữa 2 context Spring; **mất Valkey giữa chừng** (bắt buộc theo MODULE_PLAN): poll vẫn đưa thay đổi tới; FAST lùi về JDBC; flush sau khi Valkey trở lại |
 | Web MVC | Quyền mọi endpoint, Problem Details + mã lỗi, OFREP (ETag/304, lọc `client_visible`, client không ghi đè được `tenantId`), API theo tenant chỉ cho tenant vận hành |
 | Contract | `ErrorCatalogAssertions`, ArchUnit (`TENANT_ISOLATION`, `PERSONAL_DATA_ANNOTATED`, `NO_PLAIN_SCHEDULED`), ModularityAssertions; schema OFREP so với `openapi.yaml` của OFREP 0.4.0 |
@@ -1272,6 +1341,7 @@ banner, meter) → `ui` quản trị → `openfeature` → trang ví dụ trong 
 
 | Artifact | Version | License |
 |---|---|---|
+| `platform-starter-scheduling`, `platform-starter-jpa`, `platform-core` (nội bộ) | ≥ 0.12.1 (`DurableTaskQueue`, `StarterSchemaMigrator`, `SecretCipher`) | — |
 | `dev.openfeature:sdk` | 1.23.0 | Apache-2.0 |
 | `dev.openfeature.contrib.tools:flagd-core` (kéo `flagd-api` 1.0.0, `json-logic-java` 1.1.6, `semver4j`, `commons-codec`, Jackson 2.22, Gson) | 3.0.0 | Apache-2.0 |
 | `dev.openfeature.contrib.hooks:otel` (tuỳ chọn) | 3.3.1 | Apache-2.0 |
@@ -1302,7 +1372,6 @@ chạy song song được; Jackson 2 vẫn có trong BOM của Boot 4. Cần ki�
 | Có hệ thống gói (entitlement) riêng, trái với báo cáo module thông dụng mục 3.4 ("không làm hệ thống edition riêng, dùng `principal.plan` của IAM") | Brief của module yêu cầu plan, quota, metering, trial, grace. `principal.plan` chỉ trả lời có/không, không có hạn mức, kỳ, mức dùng. Giữ cầu nối `principal.plan` cho policy IAM (mục 5.3) |
 | Bảng `ff_flag`, `ff_segment`, `ent_feature`, `ent_plan*` không có `tenant_id` | Là danh mục của platform, như bảng dùng chung trong ADR-0015; truy vấn đánh dấu `@TenantExempt` |
 | API quản trị nhận `{tenantId}` trên path | Người vận hành platform cần quản lý gói của mọi tenant. Chỉ token thuộc tenant vận hành được dùng; tenant thật sự chạy qua `TenantContext.run` sau khi kiểm quyền. ADR-0015 cấm *lấy tenant* từ path cho dữ liệu của chính người gọi; ở đây tenant của người gọi vẫn là claim, path là *đối tượng* thao tác |
-| Flyway có bảng lịch sử riêng thay vì `R__` hoặc dải số | Module có nhiều bảng và sẽ còn tiến hoá; migration có version dễ review hơn `R__` idempotent; bảng lịch sử riêng tránh trùng số mà không làm app phải `outOfOrder` |
 | "Provider" của flag là provider OpenFeature (bean), không phải `ServiceLoader` | OpenFeature đã có chuẩn provider; bọc thêm không có ích |
 | Không có cấu hình provider theo tenant | Module không gọi ra ngoài; phần theo tenant là dữ liệu (mục 6.2) |
 | Quota vượt trả 403 (không 402, không 429) | 402 chưa được chuẩn hoá cho mục đích này; 429 dành cho `-ratelimit` và client sẽ tự retry. Mã `entitlement.quota_exceeded` + `resetAt` đủ để client xử lý |
