@@ -8,6 +8,7 @@
 #         packages: write
 #         id-token: write
 #         attestations: write
+#       secrets: inherit                                    # truyền PACKAGES_TOKEN của repo (nếu có)
 # PR chỉ build + quét, không push. Output `digest` dùng cho gitops-bump.yml.
 name: Container
 
@@ -31,6 +32,10 @@ on:
       trivy-severity:
         type: string
         default: 'CRITICAL,HIGH'
+    secrets:
+      PACKAGES_TOKEN:
+        description: PAT classic scope read:packages để tải com.vyforge.platform:* (thiếu thì dùng GITHUB_TOKEN)
+        required: false
     outputs:
       image:
         value: ${{ jobs.build.outputs.image }}
@@ -82,7 +87,8 @@ jobs:
           load: true
           tags: local/scan:${{ github.sha }}
           # Dockerfile đọc bằng --mount=type=secret,id=GITHUB_TOKEN (tải com.vyforge.platform:* / @vyforge/*)
-          secrets: GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          # Maven trên GitHub Packages chỉ cấp quyền theo repo nguồn: repo dự án cần PACKAGES_TOKEN (xem java-ci.yml).
+          secrets: GITHUB_TOKEN=${{ secrets.PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
           build-args: GITHUB_ACTOR=${{ github.actor }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -112,7 +118,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           sbom: true
           provenance: mode=max
-          secrets: GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          # Maven trên GitHub Packages chỉ cấp quyền theo repo nguồn: repo dự án cần PACKAGES_TOKEN (xem java-ci.yml).
+          secrets: GITHUB_TOKEN=${{ secrets.PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
           build-args: GITHUB_ACTOR=${{ github.actor }}
           cache-from: type=gha
       - name: Attest provenance
