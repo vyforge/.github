@@ -4,6 +4,12 @@
 > [quy ước module P1](#phụ-lục-a-quy-ước-áp-dụng) và nối với `platform-java` 0.12.0, `platform-web` 0.9.0. Bản triển khai
 > đầu đặt version `0.13.0-SNAPSHOT`.
 >
+> **Sửa 26/10 theo quy ước mục 5 (khối dùng chung, platform-java 0.12.1):** module **không** tự làm hàng đợi job, mã hoá
+> secret và khung Flyway. Job chạy trên `DurableTaskQueue` của `-scheduling` (queue `export`); secret của tenant mã hoá bằng
+> `SecretCipher` của `platform-core`; migration chạy bằng `StarterSchemaMigrator` của `-jpa` với bảng lịch sử
+> `flyway_schema_history_export`. Bảng `data_job` chỉ còn giữ trạng thái **nghiệp vụ** mà người dùng thấy (tiến độ,
+> checkpoint, file, bước chờ người dùng); việc lấy việc, khoá, retry, backoff, giới hạn đồng thời là của task queue.
+>
 > Artifact: `platform-starter-export` (Java) và `@vyforge/export` (web). Một starter phủ cả ba việc: **xuất**, **nhập** và
 > **báo cáo**. Lý do không tách ba starter: cả ba dùng chung một job engine, một kho file kết quả, một mô hình quyền và
 > một màn hình "Việc của tôi". MODULE_PLAN cũng chốt "Batch không tách; khi có pilot cần thì đặt trong `-export`".
@@ -117,9 +123,9 @@ Mọi phiên bản dưới đây kiểm ngày 26/10/2026 qua `repo1.maven.org` (
 2.0; upsert theo khoá ngoài.
 
 **Không làm:** không nhúng Spring Batch làm engine mặc định (thêm 9 bảng không có tenant mà vẫn phải có bảng job riêng);
-không dùng JobRunr (license + tính năng cần nằm ở bản Pro). Thay vào đó: một hàng đợi nhỏ trong PostgreSQL với
-`FOR UPDATE SKIP LOCKED`, lease và heartbeat (khoảng 600 dòng code, test được bằng Testcontainers), cộng vòng chunk có
-checkpoint. Dự án đã dùng Spring Batch cho ETL vẫn gọi được module qua SPI (ghi file bằng `RowWriter` của module, đăng ký
+không dùng JobRunr (license + tính năng cần nằm ở bản Pro). Thay vào đó: hàng đợi `DurableTaskQueue` dùng chung của
+`platform-starter-scheduling` (PostgreSQL, `FOR UPDATE SKIP LOCKED`, backoff, giới hạn đồng thời theo queue và tenant;
+quy ước mục 5.2), cộng vòng chunk có checkpoint của module. Dự án đã dùng Spring Batch cho ETL vẫn gọi được module qua SPI (ghi file bằng `RowWriter` của module, đăng ký
 kết quả bằng `DataJobs.attachResult`).
 
 ### 2.3 Luồng nhập của ERP và SaaS nhập liệu
@@ -220,12 +226,12 @@ flowchart LR
             IS[ImportService]
             RS[ReportService]
             DJ[DataJobs<br/>state machine]
-            Q[JobQueue<br/>SKIP LOCKED + lease]
-            W[JobWorker pool<br/>virtual threads]
+            Q["DurableTaskQueue (-scheduling)<br/>queue export"]
+            W["TaskHandler của export<br/>export.run, import.*, report.*"]
             PIPE[Import pipeline<br/>parse → map → validate → commit]
             REG[DefinitionRegistry]
             SCH["ScheduleRunner<br/>@ClusterScheduled"]
-            MNT["Maintenance<br/>reaper, expiry, purge"]
+            MNT["Maintenance<br/>đối soát task, expiry, purge"]
         end
 
         subgraph spi["Port / SPI"]
@@ -268,7 +274,7 @@ flowchart LR
     core --> spi
     BIZ -.implements.-> P1 & P2 & P8
     adapters -.implements.-> P3 & P4 & P5 & P6 & P7
-    Q --- PG
+    Q ---|vyforge_task| PG
     PIPE --- PG
     A7 --> OBJ
     A6 --> GOT
@@ -289,11 +295,11 @@ Package Java (`com.vyforge.platform.export`):
 | `…export.spi` | `ExportSource`, `ExportDefinition`, `ImportDefinition`, `ImportTarget`, `RowWriter`, `RowReader`, `ReportEngine`, `ResultStore`, `DataJobNotifier`, `DocumentSigner`, hook | Không |
 | `…export.format` | Adapter CSV, XLSX, XLS, PDF bảng, JSONL; `CellFormatter`, chống formula injection | FastCSV, FastExcel, POI (optional) |
 | `…export.report` | `html-pdf`, `xlsx-template`, `gotenberg`; font; helper Thymeleaf (`#vn`) | Thymeleaf, OpenHTMLtoPDF, JXLS (optional) |
-| `…export.job` | `JobQueue`, `JobWorker`, `JobLease`, state machine, `JdbcDataJobRepository`, maintenance | Spring JDBC, `-scheduling` |
+| `…export.job` | State machine `data_job`, `JdbcDataJobRepository`, `TaskHandler` của queue `export`, `JobRunContext` (checkpoint, tiến độ, huỷ), đối soát với `vyforge_task`, maintenance | Spring JDBC, `-scheduling` (`DurableTaskQueue`) |
 | `…export.imports` | Pipeline nhập, staging, auto-mapping, file báo lỗi | Spring JDBC |
 | `…export.sign` | `Pkcs12PadesSigner` | PDFBox, Bouncy Castle (optional) |
 | `…export.web` | Controller, DTO, `ExportErrors` | `-web`, `-authz` |
-| `…export.autoconfigure` | Auto-config, `PlatformExportProperties`, Flyway riêng | Spring Boot |
+| `…export.autoconfigure` | Auto-config, `PlatformExportProperties`, đăng ký migration với `StarterSchemaMigrator` | Spring Boot, `-jpa` |
 
 ### 3.3 Luồng xuất
 
@@ -310,8 +316,8 @@ sequenceDiagram
     participant C as ExportController
     participant S as ExportService
     participant Z as Authz
-    participant Q as JobQueue (PG)
-    participant K as JobWorker
+    participant Q as DurableTaskQueue (vyforge_task)
+    participant K as TaskHandler export.run
     participant SRC as ExportSource (app)
     participant WR as RowWriter (xlsx)
     participant ST as ResultStore
@@ -327,21 +333,22 @@ sequenceDiagram
         S-->>C: stream
         C-->>W: 200 file (Content-Disposition)
     else lớn
-        S->>Q: insert data_job (QUEUED, params, principal snapshot)
+        S->>S: insert data_job (QUEUED, params, principal snapshot)
+        S->>Q: enqueue(queue=export, kind=export.run, {jobId}, idempotencyKey=job:<id>:run) (cùng transaction)
         S->>EV: DataJobSubmitted (cùng transaction)
         C-->>W: 202 {jobId, state: QUEUED}
-        K->>Q: claim (FOR UPDATE SKIP LOCKED, lease 2 phút)
-        K->>K: TenantContext.run(tenant), RequestContext(sub)
+        Q->>K: giao task (SKIP LOCKED, đã trong TenantContext.run(tenant))
+        K->>K: data_job → RUNNING, RequestContext(sub người yêu cầu)
         K->>SRC: kiểm quyền lại, open(query)
         loop mỗi trang (keyset, 1.000 dòng)
             SRC-->>K: rows + cursor
             K->>WR: write(rows) → file tạm trên đĩa
-            K->>Q: checkpoint(cursor, processed) + heartbeat
+            K->>K: data_job.checkpoint(cursor, processed), đọc cancel_requested
             K-->>EV: DataJobProgressed (tối đa 1 lần/giây, không qua outbox)
         end
         K->>WR: close (ghi sheet cuối, zip)
         K->>ST: put(tenant/exports/jobId/file.xlsx, sha256)
-        K->>Q: SUCCEEDED, result_ref, expires_at
+        K->>K: data_job SUCCEEDED, data_job_file, expires_at (task trả về thành công)
         K->>EV: DataJobCompleted (outbox → notification, realtime)
         W->>C: GET /api/v1/data-jobs/{id} (poll hoặc SSE)
         U->>W: Tải file
@@ -356,28 +363,30 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    participant K as JobWorker A
-    participant K2 as JobWorker B
-    participant Q as JobQueue (PG)
+    participant K as Handler (pod A)
+    participant K2 as Handler (pod B)
+    participant Q as DurableTaskQueue
     participant M as Maintenance (@ClusterScheduled)
     participant SRC as ExportSource
 
-    K->>Q: claim job (lease_until = now+2m)
+    Q->>K: giao task export.run (locked_until)
     K->>SRC: fetch page 37
     SRC--xK: SQLTransientException
     K->>K: retry trang đó (backoff 1s, 2s, 4s, tối đa 3)
     alt hết lượt retry, lỗi tạm thời
-        K->>Q: RETRY_WAIT, attempt+1, next_run_at = now + backoff(attempt)
+        K->>K: data_job RETRY_WAIT
+        K--xQ: ném lỗi → queue đặt PENDING, attempts+1, next_run_at theo backoff có jitter
     else lỗi vĩnh viễn (PlatformException 4xx, quyền bị thu hồi, vượt giới hạn)
-        K->>Q: FAILED (error_code, error_params)
+        K->>K: data_job FAILED (error_code, error_params)
+        K->>Q: trả về thành công (không để queue retry vô ích)
     end
     Note over K: Pod A bị kill giữa chừng (OOM, deploy)
-    M->>Q: tìm RUNNING có lease_until < now
-    M->>Q: QUEUED lại, attempt+1 (attempt > max → FAILED "job.lease_lost")
-    K2->>Q: claim
+    Q->>Q: locked_until hết hạn → task PENDING lại, attempts+1 (quá max_attempts → DEAD)
+    Q->>K2: giao lại task
+    M->>Q: đối soát: task DEAD/CANCELLED mà data_job chưa ở trạng thái cuối → data_job FAILED "job.task_dead"
     K2->>K2: đọc checkpoint: nguồn resumable thì tiếp từ cursor đã lưu,<br/>không thì ghi lại từ đầu (file tạm cũ bỏ đi)
     Note over K2: Người dùng bấm Huỷ khi đang chạy
-    K2->>Q: thấy cancel_requested ở lần heartbeat → dừng sau trang hiện tại, CANCELLED, xoá file tạm
+    K2->>K2: thấy cancel_requested ở ranh giới trang → dừng, data_job CANCELLED, xoá file tạm, task trả về thành công
 ```
 
 ### 3.4 Luồng nhập
@@ -392,7 +401,7 @@ sequenceDiagram
     participant W as ImportWizard
     participant C as ImportController
     participant I as ImportService
-    participant K as JobWorker
+    participant K as TaskHandler import.*
     participant R as RowReader (xlsx/csv)
     participant STG as data_import_row (staging)
     participant T as ImportTarget (app)
@@ -466,7 +475,7 @@ có hạn (`undo-window`, mặc định 7 ngày) vì staging bị dọn sau đó
 | Không tìm thấy dòng header, thiếu cột bắt buộc | Mapping | `MAPPING_REQUIRED` với danh sách field bắt buộc chưa ghép | `import.required_field_unmapped` |
 | Giá trị sai kiểu, sai quy tắc, trùng trong file, không tìm thấy bản ghi tham chiếu | Validate | Dòng `INVALID`, message theo field | mã của field/definition |
 | Ràng buộc toàn file sai | `validateAll` | `VALIDATED` nhưng chặn confirm (`blocking=true`) | do definition đặt |
-| DB lỗi tạm thời khi ghi | Commit | Retry chunk (3 lần, backoff); hết lượt thì `RETRY_WAIT` rồi chạy tiếp từ checkpoint | `job.transient_failure` |
+| DB lỗi tạm thời khi ghi | Commit | Retry chunk tại chỗ (3 lần); hết lượt thì ném lỗi cho task queue retry theo backoff (`RETRY_WAIT`), lần sau chạy tiếp từ checkpoint | `job.transient_failure` |
 | Lỗi ràng buộc DB khi ghi một dòng (unique, FK) | Commit | `PARTIAL`: dòng `FAILED`; `STRICT`/`ATOMIC`: dừng | `import.row_write_failed` |
 | Người dùng bỏ dở ở bước mapping/preview | Maintenance | Sau `pending-ttl` (mặc định 24 giờ) → `EXPIRED`, xoá staging và file | `job.expired` |
 
@@ -480,7 +489,7 @@ stateDiagram-v2
     [*] --> QUEUED: submit (export, report)
     [*] --> UPLOADED: upload (import)
     UPLOADED --> QUEUED: bắt đầu parse
-    QUEUED --> RUNNING: worker claim
+    QUEUED --> RUNNING: task queue giao task
     RUNNING --> MAPPING_REQUIRED: import: cần người dùng ghép cột
     MAPPING_REQUIRED --> QUEUED: PUT mapping
     RUNNING --> VALIDATED: import: kiểm xong
@@ -489,7 +498,7 @@ stateDiagram-v2
     RUNNING --> AWAITING_SIGNATURE: report: chờ ký từ xa
     AWAITING_SIGNATURE --> QUEUED: callback ký xong
     RUNNING --> RETRY_WAIT: lỗi tạm thời
-    RETRY_WAIT --> QUEUED: tới next_run_at
+    RETRY_WAIT --> RUNNING: task queue giao lại sau backoff
     RUNNING --> SUCCEEDED
     RUNNING --> COMPLETED_WITH_ERRORS: import PARTIAL có dòng lỗi
     RUNNING --> FAILED: lỗi vĩnh viễn / hết lượt
@@ -511,28 +520,63 @@ stateDiagram-v2
 Trạng thái cuối nghiệp vụ: `SUCCEEDED`, `COMPLETED_WITH_ERRORS`, `FAILED`, `CANCELLED`, `EXPIRED`. `PURGED` nghĩa là file và
 staging đã xoá, dòng job còn giữ cho lịch sử tới hết `job-retention`.
 
-**Hàng đợi.** Không thêm hạ tầng: bảng `data_job` là hàng đợi.
+**Thực thi trên `DurableTaskQueue`** (quy ước mục 5.2, `-scheduling` 0.12.1). Module không có hàng đợi, lease hay reaper
+riêng. Phân vai:
 
-- **Claim**: một câu SQL chọn job `QUEUED` có `next_run_at <= now()` theo `priority`, rồi theo tenant đang chạy ít job nhất,
-  `FOR UPDATE SKIP LOCKED`, đặt `RUNNING`, `locked_by`, `lease_until = now() + lease`. Giờ lấy từ database (như ShedLock
-  `usingDbTime`).
-- **Đánh thức**: sau commit của request tạo job, `TransactionalEventListener(AFTER_COMMIT)` đánh thức worker cùng instance;
-  các instance khác poll mỗi `poll-interval` (mặc định 2 giây; có backoff tới 10 giây khi rảnh). Không cần Kafka hay Redis.
-- **Lease và heartbeat**: worker gia hạn lease mỗi `lease/3` cùng lúc ghi checkpoint và tiến độ; đọc `cancel_requested` ở
-  đây. Job dài không bị giới hạn thời gian như `lockAtMostFor` của ShedLock.
-- **Reaper** (`@ClusterScheduled(name = "export-reaper", fixedDelay = "30s")`): job `RUNNING` quá lease → `QUEUED`,
-  `attempt + 1`; quá `max-attempts` (3) → `FAILED` với `job.lease_lost`.
-- **Công bằng giữa tenant** (K15): `max-running-per-tenant` (mặc định 2), `max-running-per-user` (mặc định 2), tổng
-  `worker.concurrency` mỗi instance (mặc định 4). Job ước lượng nhỏ có `priority` cao hơn để không xếp sau job 5 triệu dòng.
-- **Worker** chạy trên virtual thread, mỗi job một thread, bọc `TenantContext.run(tenant)` và `RequestContext` với `sub`
-  của người yêu cầu (MDC có `tenant_id`, `job_id`, `request_id` gốc).
-- **Dừng êm**: khi app shutdown, worker ngừng claim, job đang chạy được báo dừng ở ranh giới chunk, ghi checkpoint, trả
-  lease (`QUEUED`) để instance khác chạy tiếp. Chờ tối đa `spring.lifecycle.timeout-per-shutdown-phase`.
+| Việc | Ai làm |
+|---|---|
+| Lấy việc (`FOR UPDATE SKIP LOCKED`), khoá (`locked_by`/`locked_until`), trả lại việc khi pod chết | `DurableTaskQueue` |
+| Retry có backoff exponential + jitter, `max_attempts`, trạng thái `DEAD` | `DurableTaskQueue` (cấu hình queue `export`) |
+| Giới hạn đồng thời theo queue và theo tenant (K15) | `DurableTaskQueue` |
+| Idempotency khi tạo việc (unique `tenant + queue + idempotency_key`) | `DurableTaskQueue` |
+| API quản trị cho vận hành (backlog, retry, cancel), metric `vyforge.task.*` | `DurableTaskQueue` |
+| Trạng thái nghiệp vụ người dùng thấy (`MAPPING_REQUIRED`, `VALIDATED`, tiến độ, file, hạn tải) | `data_job` của module |
+| Checkpoint, huỷ ở ranh giới chunk, chạy tiếp | Handler của module |
+| Giới hạn số job đang chạy **mỗi người dùng** | Module (kiểm lúc submit, đếm `data_job` theo `requested_by`) |
+
+Queue và kind của module (đăng ký `TaskHandler<P>` theo `queue` + `kind`, payload chỉ có `{jobId}` + `schemaVersion`; mọi
+tham số nằm trong `data_job.params`):
+
+| Kind | Việc | Ghi chú |
+|---|---|---|
+| `export.run` | Đọc nguồn, ghi file, lưu kho | Một task cho cả job (file tạm phải nằm trên một pod) |
+| `import.parse` | Đọc header, auto-mapping | Kết thúc ở `MAPPING_REQUIRED` hoặc tự sang `import.validate` khi mapping đã lưu khớp |
+| `import.validate` | Parse + validate theo chunk vào staging | Chạy theo **lát** (slice) |
+| `import.commit` | Ghi dòng hợp lệ theo chế độ commit | Chạy theo lát; `ATOMIC` là một lát duy nhất |
+| `import.undo` | Hoàn tác | Chạy theo lát |
+| `report.render` | Render một hoặc nhiều tài liệu | Batch chạy theo lát (mỗi lát N tài liệu, gom ZIP ở lát cuối) |
+| `report.sign-poll` | Hỏi kết quả ký từ xa | Hẹn giờ bằng `next_run_at` của task |
+
+- **Tạo việc trong transaction nghiệp vụ.** `submit`/`confirm` ghi `data_job` và gọi `enqueue(...)` trong cùng transaction,
+  `idempotencyKey = job:<id>:<kind>:<n>`; rollback thì không có task nào.
+- **Chạy theo lát.** Việc chia được (import, report batch) xử lý tối đa `slice-max-chunks` chunk hoặc `slice-max-duration`
+  (mặc định 2 phút) rồi ghi checkpoint và `enqueue` task kế tiếp cho cùng job **trong cùng transaction của chunk cuối**. Nhờ
+  vậy task không bao giờ giữ khoá lâu, job lớn của tenant A nhường chỗ cho job nhỏ của tenant B giữa các lát, và deploy giữa
+  chừng chỉ mất tối đa một lát.
+- **Task dài `export.run`.** Không chia lát được vì file tạm nằm trên đĩa của một pod. Queue `export` cấu hình
+  `locked_until` đủ dài (mặc định 30 phút) và giới hạn `max-export-duration` (mặc định 25 phút; vượt thì `FAILED
+  export.too_slow` và gợi ý thu hẹp bộ lọc). Nếu `DurableTaskQueue` có API gia hạn khoá trong lúc chạy (heartbeat) thì
+  handler gia hạn ở mỗi checkpoint; điểm này cần chốt với forge-35 (mục 10.2, Q6).
+- **Lỗi.** Handler tự phân loại: lỗi vĩnh viễn (4xx, mất quyền, vượt giới hạn) → ghi `data_job FAILED` và trả về thành công
+  để queue không retry vô ích; lỗi tạm thời → ghi `RETRY_WAIT` rồi ném lỗi để queue retry theo backoff.
+- **Đối soát** (`@ClusterScheduled(name = "export-reconcile", fixedDelay = "1m")`): `data_job` chưa ở trạng thái cuối mà task
+  tương ứng đã `DEAD`/`CANCELLED` (vd. pod chết đủ `max_attempts` lần, hoặc vận hành huỷ qua API quản trị của queue) →
+  `FAILED job.task_dead`. Nhờ vậy trạng thái người dùng thấy không bao giờ treo.
+- **Huỷ.** `QUEUED`: huỷ task qua `DurableTaskQueue.cancel` và đặt `CANCELLED` ngay. Đang chạy: đặt `cancel_requested`,
+  handler dừng ở ranh giới chunk.
+- **Retry thủ công** (`POST /data-jobs/{id}/retry`): job `FAILED` → `QUEUED` + `enqueue` task mới (`<n>` tăng), chạy tiếp từ
+  checkpoint.
+- **Ưu tiên.** Job ước lượng nhỏ được `enqueue` với `priority` cao hơn để không xếp sau job 5 triệu dòng.
+- **Ngữ cảnh.** Queue đã chạy handler trong `TenantContext.run(tenant)`; handler đặt thêm `RequestContext` với `sub` của
+  người yêu cầu và MDC `job_id`.
+- **Dừng êm.** Khi shutdown, handler thấy tín hiệu dừng ở ranh giới chunk: việc chia lát thì ghi checkpoint và enqueue lát
+  tiếp; `export.run` thì ném lỗi tạm thời để queue giao lại.
 
 **Checkpoint và chạy tiếp.** Checkpoint lưu trong `data_job.checkpoint` (JSONB): với export là cursor keyset + số dòng đã
 ghi + đường dẫn file tạm; với import là `row_no` cuối đã commit. File tạm nằm trên đĩa local nên chỉ chạy tiếp được trên cùng
 pod; pod khác nhận job thì: export ghi lại từ đầu (nguồn `Stream` không resumable vốn đã vậy); import tiếp từ `row_no`
 (dữ liệu nằm trong staging, không cần file tạm). Đánh đổi này chấp nhận được: export là đọc, chạy lại chỉ tốn thời gian.
+Checkpoint ghi cùng transaction với dữ liệu của chunk (import) hoặc sau mỗi trang (export), độc lập với trạng thái task.
 
 ### 3.6 Báo cáo theo lịch
 
@@ -608,6 +652,7 @@ erDiagram
     data_job }o--o| data_job : "parent (undo, batch con)"
     data_report_template ||--o{ data_report_template_version : "phiên bản"
     data_job }o--o| data_report_template_version : "render bằng"
+    data_job ||--o{ vyforge_task : "thực thi bởi (-scheduling)"
 
     data_job {
         uuid id PK
@@ -617,7 +662,6 @@ erDiagram
         varchar definition
         varchar state
         varchar format
-        smallint priority
         jsonb params "schema_version"
         jsonb principal "sub, roles snapshot"
         jsonb progress "processed,total,failed"
@@ -628,10 +672,8 @@ erDiagram
         varchar idempotency_key
         uuid parent_id
         uuid schedule_id
-        int attempt
-        timestamptz next_run_at
-        varchar locked_by
-        timestamptz lease_until
+        uuid current_task_id "vyforge_task"
+        int run_no
         boolean cancel_requested
         varchar requested_by
         timestamptz created_at
@@ -728,7 +770,7 @@ erDiagram
         varchar tenant_id PK
         int schema_version
         jsonb settings
-        bytea secrets_enc
+        text secrets "SecretCipher"
         bigint version
     }
 ```
@@ -738,10 +780,11 @@ erDiagram
 Tiền tố bảng `data_` (data exchange), tránh trùng tên với bảng nghiệp vụ "export"/"import" của dự án. Mọi bảng thuộc tenant
 có `tenant_id varchar(63) not null` và index bắt đầu bằng `tenant_id` (ADR-0015, `TENANT_ISOLATION`). Module truy cập bằng
 `JdbcClient` (không JPA entity) để không ép dự án dùng JPA; mọi method truy vấn nhận `tenantId` theo luật ArchUnit, riêng
-truy vấn claim/reaper của worker chạy xuyên tenant được đánh dấu `@TenantExempt("job queue")`.
+truy vấn đối soát/maintenance chạy xuyên tenant được đánh dấu `@TenantExempt("export maintenance")`.
 
 ```sql
--- V1__data_job.sql (Flyway location classpath:META-INF/vyforge/db/export, bảng lịch sử riêng, xem 4.5)
+-- V1__export.sql (classpath:META-INF/vyforge/db/export, bảng lịch sử flyway_schema_history_export, xem 4.5)
+-- Không có cột hàng đợi (lock, attempts, next_run_at): phần thực thi nằm ở vyforge_task của -scheduling.
 create table data_job
 (
     id               uuid         primary key,              -- UUID v7, sắp theo thời gian
@@ -751,7 +794,6 @@ create table data_job
     definition       varchar(100) not null,                 -- vd. crm.customers
     state            varchar(32)  not null,
     format           varchar(32),                           -- csv | xlsx | pdf | jsonl | zip ...
-    priority         smallint     not null default 5,
     params           jsonb        not null,                 -- {"schemaVersion":1, "filter":{}, "columns":[], "locale":"vi", ...}
     principal        jsonb        not null,                 -- {"sub":"…","roles":[…]} lúc tạo, để kiểm lại quyền
     progress         jsonb        not null default '{}',    -- {"processed":0,"total":null,"failed":0,"phase":"VALIDATE"}
@@ -762,10 +804,8 @@ create table data_job
     idempotency_key  varchar(200),
     parent_id        uuid references data_job (id),
     schedule_id      uuid,
-    attempt          int          not null default 0,
-    next_run_at      timestamptz  not null default now(),
-    locked_by        varchar(200),
-    lease_until      timestamptz,
+    current_task_id  uuid,                                  -- id trong vyforge_task của lát đang chờ/chạy (đối soát, huỷ)
+    run_no           int          not null default 0,       -- số lần chạy (retry thủ công tăng 1), dùng trong idempotency key
     cancel_requested boolean      not null default false,
     requested_by     varchar(255) not null,                 -- sub hoặc 'system' / 'schedule:<id>'
     created_at       timestamptz  not null default now(),
@@ -777,9 +817,8 @@ create table data_job
     constraint data_job_kind_chk check (kind in ('EXPORT', 'IMPORT', 'REPORT'))  -- kind là loại kỹ thuật, không phải enum nghiệp vụ
 );
 
--- Hàng đợi: chỉ index phần còn việc, nhỏ dù bảng lớn
-create index data_job_queue_idx on data_job (priority desc, next_run_at) where state = 'QUEUED';
-create index data_job_lease_idx on data_job (lease_until) where state = 'RUNNING';
+-- Đối soát với vyforge_task: chỉ index job chưa ở trạng thái cuối
+create index data_job_active_idx on data_job (current_task_id) where state in ('QUEUED','RUNNING','RETRY_WAIT');
 -- "Việc của tôi" và trang quản trị
 create index data_job_owner_idx on data_job (tenant_id, requested_by, created_at desc);
 create index data_job_tenant_state_idx on data_job (tenant_id, state, created_at desc);
@@ -916,7 +955,7 @@ create table data_export_tenant_config
     tenant_id      varchar(63) primary key,
     schema_version int         not null,
     settings       jsonb       not null,                    -- giới hạn, locale, branding, retention (4.4)
-    secrets_enc    bytea,                                   -- AES-GCM: mật khẩu PKCS#12, token Gotenberg/ký từ xa
+    secrets        jsonb,                                   -- {"signing.company.password":"v1:<kid>:…"} bản mã SecretCipher, context export:config:<tenant>:<khoá>
     updated_by     varchar(255) not null,
     updated_at     timestamptz not null default now(),
     version        bigint      not null default 0
@@ -965,18 +1004,24 @@ và chạy Bean Validation), nên mỗi definition tiến hoá bộ lọc của 
 | `format.currency` | `VND` | `#,##0 "₫"`, không phần lẻ |
 | `branding.companyName`, `branding.taxCode`, `branding.address`, `branding.logoKey`, `branding.footerText` | — | Biến có sẵn trong mọi template (`#branding`) |
 | `pdf.watermark` | — | vd. "BẢN SAO", tên người tải (`${user}`) |
-| `signing.profiles.<tên>` | — | Provider (`pkcs12`, `remote:<adapter>`), chứng thư, lý do, vị trí; secret trong `secrets_enc` |
+| `signing.profiles.<tên>` | — | Provider (`pkcs12`, `remote:<adapter>`), chứng thư, lý do, vị trí; secret trong `secrets` (bản mã `SecretCipher`) |
 | `report.gotenbergUrl` | — | Bật engine gotenberg cho tenant |
 | `definitions.<tên>.enabled` | `true` | Tắt một definition cho một tenant |
 
 Cấu hình đọc qua `ExportTenantSettings` có cache theo tenant (TTL 5 phút, theo quy ước cache của `platform-core`) và xoá cache
 khi admin sửa.
 
+Secret (mật khẩu PKCS#12, token Gotenberg, client secret ký từ xa) mã hoá bằng `SecretCipher` của `platform-core`
+(AES-256-GCM, bản mã `v1:<kid>:…`), `context = "export:config:<tenant>:<khoá>"` gắn vào AAD nên không chép bản mã của tenant
+này sang tenant khác được. Không cache bản rõ quá thời gian của một lần dùng. Job `export-maintenance` gọi
+`needsRotation` và mã hoá lại secret dùng khoá cũ (xoay khoá không cần downtime).
+
 ### 4.5 Migration, partition, retention, tiến hoá schema
 
-- **Flyway riêng**: location `classpath:META-INF/vyforge/db/export`, **bảng lịch sử riêng** `vyforge_export_schema_history`,
-  do auto-config của starter chạy (`vyforge.export.flyway.enabled=true`). Lý do ở mục 10.1: tránh trùng số version với
-  migration của dự án và của starter khác.
+- **Migration** theo quy ước mục 5.3: migration có version trong `classpath:META-INF/vyforge/db/export`, bảng lịch sử riêng
+  `flyway_schema_history_export`, chạy bằng `StarterSchemaMigrator` của `platform-starter-jpa` trước `EntityManagerFactory`.
+  Tắt bằng `vyforge.export.schema.migrate=false`; khi đó DBA chạy file gộp `META-INF/vyforge/sql/export.sql`. Bảng
+  `vyforge_task` thuộc migration của `-scheduling`, module không tạo.
 - **Retention** (job `export-maintenance`, `@ClusterScheduled`, mỗi 10 phút, xoá theo lô 1.000 dòng để không khoá lâu):
   1. file hết hạn → `ResultStore.delete` → `data_job_file` xoá → job `PURGED`;
   2. staging của job đã qua `stagingTtl` → xoá `data_import_row` theo `job_id`;
@@ -1241,7 +1286,7 @@ paths:
 **Mã lỗi** (`ExportErrors implements ErrorCode`, bản vi/en trong `i18n/platform-errors` của starter): `export.forbidden`,
 `export.column_forbidden`, `export.definition_not_found`, `export.format_not_supported`, `export.invalid_filter`,
 `export.too_many_rows`, `export.too_many_running_jobs`, `job.not_found`, `job.invalid_state`, `job.expired`,
-`job.lease_lost`, `job.transient_failure`, `job.file_not_available`, `import.file_too_large`, `import.unsupported_format`,
+`job.task_dead`, `job.transient_failure`, `job.file_not_available`, `import.file_too_large`, `import.unsupported_format`,
 `import.file_unsafe`, `import.too_many_rows`, `import.header_not_found`, `import.required_field_unmapped`,
 `import.has_invalid_rows`, `import.atomic_limit_exceeded`, `import.undo_not_supported`, `import.undo_window_passed`,
 `import.row_write_failed`, và mã cấp field: `import.required`, `import.not_a_number`, `import.invalid_date`,
@@ -1414,7 +1459,7 @@ public interface DocumentSigner {
 
 - Có sẵn `Pkcs12PadesSigner` (PDFBox `SignatureInterface` + Bouncy Castle CMS, PAdES-B-B, `SubFilter ETSI.CAdES.detached`,
   tuỳ chọn timestamp RFC 3161 từ TSA cấu hình → B-T). Chứng thư số và mật khẩu theo `signing.profiles` của tenant, mật khẩu
-  mã hoá trong `secrets_enc` hoặc tham chiếu secret của ESO/OpenBao.
+  mã hoá bằng `SecretCipher` trong `secrets` hoặc tham chiếu secret của ESO/OpenBao.
 - Ký từ xa (VNPT SmartCA, Viettel MySign, FPT CA…): adapter tính hash phần cần ký, gửi hash, nhận chữ ký CMS (có thể phải
   chờ người duyệt trên app di động) → `Pending`, job `AWAITING_SIGNATURE`, worker `poll` theo backoff hoặc nhận callback ký
   HMAC. Bản đầu chỉ định nghĩa SPI và adapter PKCS#12; adapter nhà cung cấp làm khi có dự án và tài khoản sandbox.
@@ -1426,13 +1471,13 @@ public interface DocumentSigner {
 vyforge:
   export:
     enabled: true
-    flyway.enabled: true
+    schema.migrate: true             # StarterSchemaMigrator (quy ước 5.3)
     worker:
-      concurrency: 4                 # job đồng thời mỗi instance
-      poll-interval: 2s
-      lease: 2m
-      max-attempts: 3
       chunk-size: 1000               # export: dòng mỗi trang; import: 500
+      slice-max-chunks: 50           # import/report batch: số chunk mỗi lát task
+      slice-max-duration: 2m
+      max-export-duration: 25m       # export.run là một task; phải ngắn hơn khoá của queue
+      max-running-per-user: 2
       temp-dir: ${java.io.tmpdir}/vyforge-export
       temp-dir-max-bytes: 10GB       # vượt thì job mới chờ
     sync:
@@ -1451,6 +1496,15 @@ vyforge:
     defaults:                        # mặc định cấp platform cho cấu hình tenant (4.4)
       limits.max-export-rows: 2000000
       retention.result-ttl: P7D
+  scheduling:
+    tasks:                           # khoá cấu hình thật theo -scheduling 0.12.1 (forge-35); ý nghĩa như dưới
+      queues:
+        export:
+          concurrency: 4             # việc đồng thời mỗi instance
+          max-per-tenant: 2          # K15
+          max-attempts: 3
+          backoff: { initial: 10s, multiplier: 2, max: 10m, jitter: 0.2 }
+          lock-duration: 30m         # đủ cho export.run
 ```
 
 ---
@@ -1464,9 +1518,8 @@ vyforge:
 | `vyforge.export.jobs.submitted` | counter | `kind`, `definition`, `format`, `mode` | Lưu lượng |
 | `vyforge.export.jobs.completed` | counter | `kind`, `definition`, `outcome` (`succeeded`, `with_errors`, `failed`, `cancelled`, `expired`) | Tỉ lệ lỗi |
 | `vyforge.export.jobs.duration` | timer | `kind`, `definition`, `outcome` | Thời gian chạy (p95) |
-| `vyforge.export.jobs.queue.wait` | timer | `kind` | Thời gian chờ trong hàng đợi |
-| `vyforge.export.jobs.queued` / `running` | gauge | — (không tag tenant để tránh bùng cardinality) | Độ sâu hàng đợi |
-| `vyforge.export.jobs.lease.reaped` | counter | — | Pod chết giữa chừng |
+| `vyforge.task.*{queue="export"}` | (của `-scheduling`) | `queue`, `kind` | Độ sâu hàng đợi, thời gian chờ, retry, `DEAD`; module không đo lại |
+| `vyforge.export.jobs.reconciled` | counter | `reason` (`task_dead`, `task_cancelled`, `task_missing`) | Job bị đối soát sang `FAILED` |
 | `vyforge.export.rows` | counter | `kind`, `direction` (`read`/`written`) | Thông lượng |
 | `vyforge.export.import.rows` | counter | `definition`, `status` | Chất lượng dữ liệu nhập |
 | `vyforge.export.bytes` | distribution summary | `kind`, `format` | Kích thước file |
@@ -1479,15 +1532,16 @@ Span OTel: `export.job` (gốc, link về trace của request tạo job), con `e
 `import.validate`, `import.commit`, `report.render`, `report.sign`. Log có `tenant_id`, `job_id`, `request_id`, `job_kind`.
 
 **Health indicator**: `exportStore` (ghi/đọc/xoá thử một object nhỏ, cache 30 giây), `gotenberg` (khi bật), `exportQueue`
-(DOWN nếu job `QUEUED` cũ nhất > 30 phút; chỉ báo, không đưa vào readiness để không làm pod bị loại khỏi service).
+(đọc backlog của queue `export` qua API của `DurableTaskQueue`; DOWN nếu việc chờ lâu nhất > 30 phút; chỉ báo, không đưa
+vào readiness để không làm pod bị loại khỏi service).
 
 ### 7.2 Alert gợi ý (đưa vào `platform-observability`)
 
 | Alert | Điều kiện | Mức |
 |---|---|---|
-| ExportQueueBacklog | job `QUEUED` cũ nhất > 15 phút trong 10 phút | warning |
+| ExportQueueBacklog | việc chờ lâu nhất của queue `export` (metric `vyforge.task.*`) > 15 phút trong 10 phút | warning |
 | ExportFailureRate | `failed / completed` > 10% trong 30 phút (bỏ qua `cancelled`) | warning |
-| ExportLeaseReaped | > 3 lần/giờ | warning (pod OOM/restart) |
+| ExportTaskDead | `vyforge.export.jobs.reconciled{reason=task_dead}` > 3 lần/giờ | warning (pod OOM/restart lặp lại) |
 | ExportTempDirFull | `tempdir.used` > 80% `temp-dir-max-bytes` | critical |
 | ExportStoreDown | health `exportStore` DOWN 5 phút | critical |
 | ExportScheduleDisabled | event `DataJobScheduleDisabled` | info (gửi admin tenant) |
@@ -1496,12 +1550,12 @@ Span OTel: `export.job` (gốc, link về trace của request tạo job), con `e
 
 | Sự cố | Hành vi |
 |---|---|
-| Pod chết giữa job | Reaper trả job về hàng đợi sau lease; import tiếp từ checkpoint; export chạy lại (hoặc tiếp từ cursor nếu cùng pod) |
-| PostgreSQL mất kết nối | Worker ngừng claim, job đang chạy retry trang/chunk rồi `RETRY_WAIT`; request tạo job trả 503 |
-| Kho file lỗi | Retry 3 lần; hết lượt → `RETRY_WAIT` (file tạm giữ lại tới `lease`); download trả `job.file_not_available` |
+| Pod chết giữa job | Hết `locked_until`, `DurableTaskQueue` giao lại task; import tiếp từ checkpoint; export chạy lại (hoặc tiếp từ cursor nếu cùng pod); quá `max_attempts` thì đối soát đặt `FAILED` |
+| PostgreSQL mất kết nối | Queue ngừng giao việc; handler đang chạy retry trang/chunk rồi ném lỗi (`RETRY_WAIT`); request tạo job trả 503 |
+| Kho file lỗi | Retry 3 lần tại chỗ; hết lượt → ném lỗi để queue retry theo backoff (`RETRY_WAIT`); download trả `job.file_not_available` |
 | Gotenberg chết | Circuit breaker mở; render bằng gotenberg lỗi `report.render_failed`; engine khác không ảnh hưởng |
 | Kafka chết | Event nằm trong outbox, gửi lại khi Kafka sống (`-messaging`) |
-| Đĩa tạm đầy | Job mới không được claim cho tới khi dọn; job đang ghi lỗi → `RETRY_WAIT` |
+| Đĩa tạm đầy | Handler `export.run` kiểm `temp-dir-max-bytes` trước khi bắt đầu; thiếu chỗ thì ném lỗi tạm thời để queue hoãn theo backoff; job đang ghi lỗi → `RETRY_WAIT` |
 | Nguồn quá chậm (truy vấn thiếu index) | Statement timeout của trang (`query-timeout` 30 giây) → lỗi tạm thời, retry; cảnh báo log kèm definition |
 | Tenant spam xuất | `@RateLimited` trên `POST /exports` và `POST /imports` (mặc định 10/phút/user) + giới hạn job đồng thời |
 
@@ -1579,7 +1633,7 @@ Xuất dữ liệu ra file là **xử lý dữ liệu cá nhân** và làm dữ 
 | Template độc (SSTI, đọc file) | Template của tenant chỉ được dùng biến `data`, `#branding`, `#vn`, `#qr`; Thymeleaf chế độ hạn chế (không gọi static method, không `T(...)`); OpenHTMLtoPDF chặn URI ngoài `assets/`; publish template cần quyền riêng và có version, audit |
 | SSRF qua ảnh trong template | `ResourceResolver` chỉ cho phép `assets/` và kho file của tenant |
 | Đọc chéo tenant | Mọi bảng có `tenant_id`; key kho file có prefix tenant, adapter kiểm prefix trước khi ký link; test `TenantIsolationTests` cho repository và download |
-| Lộ secret | `secrets_enc` AES-GCM (khoá `vyforge.export.secrets.key` từ secret store); API chỉ trả cờ "đã đặt" |
+| Lộ secret | `SecretCipher` của `platform-core` (AES-256-GCM, keyring `vyforge.crypto.keys.*`, xoay khoá), context theo tenant; API chỉ trả cờ "đã đặt" |
 | DoS bằng file/xuất lớn | Giới hạn upload, số dòng, job đồng thời, rate limit, timeout render, chặn đĩa tạm |
 
 ### 8.4 Chữ ký số
@@ -1599,8 +1653,8 @@ Xuất dữ liệu ra file là **xử lý dữ liệu cá nhân** và làm dữ 
 
 | Bước | Nội dung | Test |
 |---|---|---|
-| 1 | Khung module: `pom.xml` (version `0.13.0-SNAPSHOT`, thêm vào reactor và `platform-bom`), auto-config, properties, Flyway riêng + DDL, `ExportErrors` + i18n vi/en, `ExportActions` | `ErrorCatalogAssertions`, migration chạy trên PostgreSQL Testcontainers, ArchUnit `TENANT_ISOLATION` |
-| 2 | Job engine: repository JDBC, state machine, claim `SKIP LOCKED`, lease/heartbeat, reaper, worker virtual thread, huỷ, retry, dừng êm, maintenance (expiry, purge) | Unit test state machine (mọi chuyển hợp lệ/không hợp lệ); Testcontainers: 2 worker tranh một job (chỉ một chạy), lease hết hạn → chạy lại, công bằng tenant, huỷ giữa chừng |
+| 1 | Khung module: `pom.xml` (version `0.13.0-SNAPSHOT`, thêm vào reactor và `platform-bom`; phụ thuộc platform 0.12.1 hoặc 0.12.1-SNAPSHOT của forge-35), auto-config, properties, migration qua `StarterSchemaMigrator` + `export.sql` gộp, `ExportErrors` + i18n vi/en, `ExportActions` | `ErrorCatalogAssertions`, migration chạy trên PostgreSQL Testcontainers (bảng `flyway_schema_history_export`), ArchUnit `TENANT_ISOLATION` |
+| 2 | Lớp job trên `DurableTaskQueue`: repository JDBC `data_job`, state machine, `TaskHandler` cho các kind của queue `export`, chạy theo lát, checkpoint, huỷ, retry thủ công, đối soát với `vyforge_task`, maintenance (expiry, purge, xoay khoá secret) | Unit test state machine (mọi chuyển hợp lệ/không hợp lệ); Testcontainers với `DurableTaskQueue` thật: rollback transaction thì không có task, lát nối lát, task `DEAD` → job `FAILED`, huỷ giữa chừng, lỗi vĩnh viễn không bị retry |
 | 3 | Định dạng: CSV (FastCSV, BOM, delimiter, chống injection), XLSX writer (FastExcel, kiểu, format VN, tách sheet, inline string), JSONL, PDF bảng; reader CSV (encoding/delimiter detect) + XLSX (fastexcel-reader) + XLS (POI, optional) | Unit test từng writer/reader; mở lại file bằng POI để kiểm kiểu ô và format; fixture CSV UTF-8/UTF-16/`;`; file zip bomb, XXE |
 | 4 | Xuất: `ExportDefinition`, sources (keyset, stream, jdbc cursor), `ExportService` (AUTO/SYNC/ASYNC), quyền cột, interceptor, `ResultStore` local, REST, event | `@SpringBootTest` + Testcontainers: xuất 200.000 dòng với heap giới hạn (`-Xmx256m` trong test riêng), resume từ checkpoint, tenant A không tải được file tenant B, CSV injection |
 | 5 | Nhập: upload, phát hiện header, auto-mapping (alias không dấu) + mapping lưu, field types VN, staging, validate/validateAll, 3 chế độ commit, file báo lỗi, undo, REST | Testcontainers: K6 (PARTIAL), K7 (ATOMIC rollback), K8 (undo + conflict), worker chết giữa commit → không ghi trùng, nhập lại cùng file UPSERT không trùng |
@@ -1614,7 +1668,7 @@ Xuất dữ liệu ra file là **xử lý dữ liệu cá nhân** và làm dữ 
 
 | Phụ thuộc | Scope | Ghi chú |
 |---|---|---|
-| `platform-core`, `platform-starter-web`, `spring-boot-starter-jdbc`, `platform-starter-scheduling` | compile | Nền |
+| `platform-core` (`SecretCipher`), `platform-starter-web`, `spring-boot-starter-jdbc`, `platform-starter-scheduling` (`DurableTaskQueue`, `@ClusterScheduled`), `platform-starter-jpa` (`StarterSchemaMigrator`) | compile | Nền; bản 0.12.1 |
 | `platform-starter-authz`, `platform-starter-audit`, `platform-starter-messaging` | optional | Thiếu authz thì chỉ kiểm role cấu hình; thiếu messaging thì event chỉ in-process |
 | `org.dhatim:fastexcel`, `fastexcel-reader` 0.20.2; `de.siegmar:fastcsv` 4.4.0 | compile | Nhẹ |
 | `io.github.openhtmltopdf:openhtmltopdf-pdfbox` 1.1.100, `org.thymeleaf:thymeleaf` 3.1.x, `org.jsoup:jsoup` | compile | LGPL: dùng như thư viện, không sửa (cần pháp chế xác nhận, mục 10.2) |
@@ -1650,11 +1704,13 @@ Xuất dữ liệu ra file là **xử lý dữ liệu cá nhân** và làm dữ 
 
 | Quy ước | Thiết kế làm khác | Lý do |
 |---|---|---|
-| Flyway location riêng, dùng `R__` hoặc dải số riêng | Location riêng **và** bảng lịch sử riêng `vyforge_export_schema_history`, Flyway thứ hai chạy trong auto-config | 8 bảng, có index một phần và sẽ có migration tiếp theo: `R__` không hợp. Dải số riêng trong cùng bảng lịch sử vẫn vỡ: dự án đang ở V5 mà starter thêm V9001 thì V6 sau đó của dự án bị Flyway coi là out-of-order; còn dùng số nhỏ thì trùng số với dự án (vấn đề đã ghi trong README của authz). Bảng lịch sử riêng tránh được cả hai. Tắt bằng `vyforge.export.flyway.enabled=false` và tự chép SQL nếu muốn |
-| Cấu hình tenant có secret mã hoá at-rest | Tự mã hoá AES-GCM trong module, khoá từ `vyforge.export.secrets.key` | `platform-core` chưa có tiện ích mã hoá dùng chung (auth-server có `AesGcmCipher` riêng). Khi platform có, chuyển sang; định dạng ciphertext có tiền tố version để chuyển được |
 | Mọi việc bất đồng bộ qua outbox hoặc job | `DataJobProgressed` không qua outbox | Tiến độ là thông tin tạm, mất một lần cập nhật không sao; đưa vào outbox sẽ ghi hàng nghìn dòng `event_publication` cho mỗi job |
 | Phụ thuộc `-files`, `-notification`, `-realtime` | Không phụ thuộc code; dùng port `ResultStore` + event | Các module đó chưa merge (brief yêu cầu); adapter nối thêm sau |
-| JPA entity + `TenantEntity` | `JdbcClient` với `tenantId` tường minh | Không ép dự án dùng JPA (giống `-audit`, `-scheduling`); truy vấn hàng đợi cần SQL riêng (`SKIP LOCKED`, index một phần) |
+| JPA entity + `TenantEntity` | `JdbcClient` với `tenantId` tường minh | Không ép dự án dùng JPA (giống `-audit`, `-scheduling`); đọc staging theo lô và batch insert cần SQL riêng |
+| Việc dài chạy qua `DurableTaskQueue` | `export.run` là một task dài (tới 25 phút), không chia lát | File tạm của writer nằm trên một pod; chia lát phải ghi file nhiều phần lên kho rồi ghép (để bản sau nếu cần). Các việc khác đều chia lát |
+
+Ba khối dùng chung của quy ước mục 5 (`SecretCipher`, `DurableTaskQueue`, `StarterSchemaMigrator`) được dùng đúng như quy ước,
+không lệch.
 
 ### 10.2 Quyết định cần người dùng chọn
 
@@ -1667,6 +1723,8 @@ Trong lúc chờ, thiết kế đi theo phương án đầu tiên của mỗi d�
 | Q3 | Retention mặc định của file kết quả | 7 ngày | 24 giờ (an toàn PII hơn, người dùng dễ mất file) |
 | Q4 | Nhập chạy `PARTIAL` hay `STRICT` khi definition không nói rõ | `STRICT` (không nhập gì nếu còn dòng lỗi) | `PARTIAL` (thuận tiện, dễ nhập dữ liệu dở dang) |
 | Q5 | Người nhận báo cáo định kỳ | Chỉ user/group trong tenant | Cho phép email ngoài (cần quyền riêng, bản sau) |
+| Q6 | (Cho forge-35) `DurableTaskQueue` có cho handler **gia hạn khoá** khi đang chạy, và có cho đặt `lock-duration` theo queue không | Thiết kế chỉ cần `lock-duration` theo queue (30 phút cho `export`); nếu có gia hạn khoá thì `export.run` gia hạn ở mỗi checkpoint và hạ `lock-duration` xuống 2 phút | Không có cả hai: `export.run` buộc phải chia lát (ghi nhiều phần rồi ghép) |
+| Q7 | (Cho forge-35) `TaskContext` có cho biết lần thử hiện tại/`max_attempts` không | Không cần: đối soát `DEAD` → `FAILED` chạy mỗi phút | Có thì handler ghi `FAILED` ngay ở lần thử cuối, không chờ đối soát |
 
 ---
 
@@ -1676,7 +1734,9 @@ Trong lúc chờ, thiết kế đi theo phương án đầu tiên của mỗi d�
 |---|---|
 | `TenantContext`, `tenant_id`, prefix tenant ở kho file, header Kafka | 3.5 (worker), 4.2, 3.8, 8.3 |
 | Outbox Modulith, `TenantAwareEvent`, consumer idempotent | 5.3 |
-| `@ClusterScheduled` | 3.5 (reaper), 3.6 (lịch), 4.5 (maintenance) |
+| `@ClusterScheduled` | 3.5 (đối soát), 3.6 (lịch), 4.5 (maintenance) |
+| `DurableTaskQueue` (mục 5.2) | 3.5 (queue `export`, các kind), 6.7, 7 |
+| `SecretCipher` (mục 5.1) | 4.4, 8.3 |
 | `RestClient` có timeout/retry/circuit breaker | 6.5 (gotenberg) |
 | `@RateLimited` | 7.3 |
 | `@PersonalData`, `LogSafeJson` | 8.2 |
@@ -1684,6 +1744,6 @@ Trong lúc chờ, thiết kế đi theo phương án đầu tiên của mỗi d�
 | `AuditLog` | 8.1, 8.2 |
 | Problem Details + `ErrorCode` vi/en | 5.2 |
 | Cache có TTL theo tenant | 4.4 |
-| Flyway location riêng | 4.5, 10.1 |
+| Flyway riêng, bảng lịch sử `flyway_schema_history_export`, `StarterSchemaMigrator` (mục 5.3) | 4.2, 4.5 |
 | `@vyforge/export` qua `@vyforge/api-client`, `@vyforge/ui`, i18n | 5.4 |
-| Hexagonal, SPI, cấu hình tenant, schema version, hook, state machine, idempotency, dead-letter (`FAILED` + retry tay), metric `vyforge.export.*`, span, health | 3, 4.3, 4.4, 6, 3.5, 7 |
+| Hexagonal, SPI, cấu hình tenant, schema version, hook, state machine, idempotency, dead-letter (`DEAD` của task → `FAILED` + retry tay), metric `vyforge.export.*`, span, health | 3, 4.3, 4.4, 6, 3.5, 7 |
