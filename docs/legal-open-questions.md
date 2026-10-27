@@ -46,14 +46,14 @@ Cần trước khi dự án khu vực công đi vào vận hành.
 
 | # | Câu hỏi | Mặc định đang dùng | Phương án khác | Kết luận |
 |---|---|---|---|---|
-| NĐ 91/2020 | Diễn giải NĐ 91/2020/NĐ-CP về chống tin nhắn rác: tối đa 3 tin quảng cáo/24 giờ cho một người nhận, khung giờ 7h–22h, nhãn `[QC]`, cách từ chối bằng tin nhắn. Con số lấy từ tóm tắt của cơ quan nhà nước, chưa đối chiếu toàn văn; cần theo dõi nghị định thay thế (Bộ Công an đang lấy ý kiến dự thảo). Thiết kế notification mục 8.6 và 10 | `compliance.vn.enabled=true` cho kind `PROMOTIONAL`; mọi con số là cấu hình | — | |
+| NĐ 91/2020 | Diễn giải NĐ 91/2020/NĐ-CP về chống tin nhắn rác: tối đa 3 tin quảng cáo/24 giờ cho một người nhận, khung giờ 7h–22h, nhãn `[QC]`, cách từ chối bằng tin nhắn. Con số lấy từ tóm tắt của cơ quan nhà nước, chưa đối chiếu toàn văn; cần theo dõi nghị định thay thế (Bộ Công an đang lấy ý kiến dự thảo). [notification.md](design/notification.md) mục 8.6 và 10, [ADR-0020 mục notification](adr/0020-shared-application-modules.md#notification) | `compliance.vn.enabled=true` cho kind `PROMOTIONAL`; mọi con số là cấu hình | — | |
 | notification | Tracking mở/click cho tin quảng cáo | Tắt mặc định | Bật sau khi pháp chế xác nhận | |
 
 ## License thư viện LGPL
 
 | # | Câu hỏi | Mặc định đang dùng | Phương án khác | Kết luận |
 |---|---|---|---|---|
-| OpenHTMLtoPDF | OpenHTMLtoPDF (LGPL-2.1+) dùng như thư viện, không sửa, đóng trong sản phẩm giao cho khách on-prem. MODULE_PLAN "Cần chủ sở hữu quyết định" mục 5, thiết kế export mục 10.2 Q1 | Cô lập trong artifact riêng `platform-report-openhtmltopdf`; lõi `platform-report` chỉ Apache/MIT; export kéo adapter để giữ hành vi cũ ([ADR-0020 mục report-engine](adr/0020-shared-application-modules.md#report-engine)) | Mặc định dùng Gotenberg (MIT, thêm một service) | |
+| OpenHTMLtoPDF | OpenHTMLtoPDF (LGPL-2.1+) dùng như thư viện, không sửa, đóng trong sản phẩm giao cho khách on-prem. MODULE_PLAN "Cần chủ sở hữu quyết định" mục 5, [export.md](design/export.md) mục 10.2 Q1, [ADR-0020 mục export](adr/0020-shared-application-modules.md#export) | Cô lập trong artifact riêng `platform-report-openhtmltopdf`; lõi `platform-report` chỉ Apache/MIT; export kéo adapter để giữ hành vi cũ ([ADR-0020 mục report-engine](adr/0020-shared-application-modules.md#report-engine)) | Mặc định dùng Gotenberg (MIT, thêm một service) | |
 | EU DSS | EU DSS 6.5 (LGPL-2.1) cho chữ ký PAdES và bộ kiểm chuẩn ETSI ([ADR-0020 mục esign](adr/0020-shared-application-modules.md#esign)) | Không ở đường mặc định: chỉ trong `platform-starter-esign-dss`, app chủ động thêm; engine mặc định tự làm trên PDFBox + Bouncy Castle | Dùng EU DSS làm mặc định (ít code tự viết hơn) | |
 
 Hai câu hỏi trên trả lời chung một lần (cùng loại license, cùng cách dùng). JobRunr (LGPL-3.0) và JMRTD (LGPL) đã không

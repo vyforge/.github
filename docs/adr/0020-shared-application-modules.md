@@ -11,7 +11,7 @@ nằm ở `docs/design/<module>.md`. Module lớn có ADR riêng: workflow ([ADR
 ([ADR-0025](0025-ai-gateway.md)), api-access ([ADR-0026](0026-api-access.md)), organization
 ([ADR-0022](0022-shared-organization-structure.md)).
 
-Quy ước chung mà mọi module dưới đây đã theo, nên các mục không nhắc lại:
+Quy ước chung mà các module đợt 0.14 (từ jpa-extras trở xuống) đã theo, nên các mục không nhắc lại:
 
 - Lưu trữ bằng `JdbcClient` (không entity JPA) để không lẫn vào `EntityManager` của app; mọi phương thức JDBC nhận
   `tenantId` (ArchUnit `TENANT_ISOLATION`), bảng dùng chung đánh dấu `@TenantExempt`.
@@ -27,12 +27,434 @@ Quy ước chung mà mọi module dưới đây đã theo, nên các mục khôn
 
 ## Mục lục
 
-[jpa-extras](#jpa-extras) · [admin-kit](#admin-kit) · [platform-expression](#platform-expression) ·
+**P1, platform-java 0.13.0:** [notification](#notification) · [files](#files) · [export](#export) · [webhooks](#webhooks) · [features](#features) · [payment](#payment) · [realtime](#realtime)
+
+**Đợt 0.14:** [jpa-extras](#jpa-extras) · [admin-kit](#admin-kit) · [platform-expression](#platform-expression) ·
 [forms](#forms) · [custom-fields](#custom-fields) · [sequence](#sequence) · [master-data](#master-data) ·
 [calendar](#calendar) · [settings](#settings) · [licensing](#licensing) · [privacy-dsr](#privacy-dsr) ·
 [collaboration](#collaboration) · [search](#search) · [ekyc](#ekyc) · [esign](#esign) ·
 [report-engine](#report-engine) · [ops-console](#ops-console) · [cms-content](#cms-content) ·
 [tenant-lifecycle](#tenant-lifecycle)
+
+## notification
+
+- **Thiết kế:** [notification.md](../design/notification.md). **Phát hành:** `platform-starter-notification`
+  (platform-java 0.13.0), `@vyforge/notifications` 0.1.0 (platform-web).
+- **Pilot:** không cần (người dùng quyết định 27/10/2026: platform đi trước nhu cầu).
+
+### Quyết định
+
+1. **Thư viện nhúng, không tự host máy chủ thông báo (Novu…).** Chạy được ba cách: nhúng vào app, trong
+   `platform-services`, hoặc server riêng (cùng image).
+2. **Bảy kênh qua SPI `NotificationProvider`:** email (SMTP), SMS brandname (eSMS là provider đầu tiên; SPI đủ để thêm
+   brandname Viettel, VNPT, VNPT-VinaPhone), Zalo ZNS (gọi thẳng OpenAPI Zalo bằng OA của khách; reseller là provider
+   khác), push (FCM HTTP v1, Web Push VAPID), in-app inbox, chat (Slack, Teams Workflows, Telegram), webhook. Thêm
+   provider hay kênh không sửa lõi.
+3. **Thực thi trên `DurableTaskQueue`** (queue `notification`): bảng `notification_delivery` là nguồn sự thật nghiệp vụ,
+   task chỉ là lịch chạy; handler idempotent. Không dùng outbox Modulith cho việc gửi (thiếu hẹn giờ, backoff từng tin,
+   ưu tiên, huỷ); outbox chỉ cho event công khai.
+4. **Lưu trữ JDBC, partition theo tháng** (`notification`, `notification_delivery`, `notification_delivery_event`), job
+   tạo trước và drop theo retention; schema riêng qua `StarterSchemaMigrator` (`flyway_schema_history_notification`).
+   Lệch quy ước L1 đã được duyệt.
+5. **Template của tenant dùng Liquid (Liqp, MIT)** có giới hạn render và chặn `include`; Thymeleaf chỉ cho template
+   trong code (tránh SSTI). Lệch quy ước L2 đã được duyệt. Biến không có trong schema bị chặn lúc publish.
+6. **Tuỳ chọn người nhận theo mô hình Knock**; `SECURITY`/`CRITICAL` luôn gửi; `PROMOTIONAL` cần opt-in tường minh có
+   bằng chứng hoặc `PromotionalConsent`.
+7. **Secret và địa chỉ mã hoá bằng `SecretCipher`**, tra cứu bằng HMAC (`vyforge.privacy.hash-key` phải cố định).
+   Suppression list chỉ giữ hash.
+8. **Đo mở thư/click không làm** (người dùng quyết định: mặc định tắt). Cần ý kiến pháp chế trước khi bật.
+9. **`tenants-may-override-providers` mặc định `true`.**
+10. **Không phụ thuộc cứng module khác:** files qua `FileContentReader` (`@ConditionalOnBean`, gọi reflection),
+    realtime qua `InboxChanged`/`InboxRealtimeBridge`, webhooks qua `NotificationProvider`, privacy qua
+    `PromotionalConsent`; authz/audit/ratelimit/security là optional.
+11. **Admin MFE:** component ở `@vyforge/notifications/admin` (nhận `can`), endpoint `GET /admin/info`; zone
+    `notification-admin` (`/m/notification`) dựng bằng `pnpm create-admin-zone` khi forge-37 xong.
+
+### Pháp lý: cần pháp chế xác nhận
+
+Mọi giới hạn theo NĐ 91/2020/NĐ-CP là **cấu hình**, giá trị mặc định là cách hiểu hiện tại, chưa đối chiếu toàn văn, và
+**cần pháp chế của dự án xác nhận** trước khi dùng với dữ liệu thật:
+
+| Cấu hình | Mặc định | Cách hiểu |
+|---|---|---|
+| `vyforge.notification.compliance.vn.promo-window` | 07:00–22:00 (giờ Việt Nam) | Khung giờ gửi tin nhắn quảng cáo |
+| `compliance.vn.promo-max-per-24h`, `frequency-channels` | 3, `sms`/`email` | Không quá 3 tin nhắn, 3 thư quảng cáo / 24 giờ / người nhận |
+| `compliance.vn.promo-label`, `label-channels` | `[QC]`, `sms`/`email` | Nhãn bắt buộc của tin quảng cáo |
+| Từ khoá huỷ nhận SMS | `TC`, `HUY`, `STOP` | Từ chối bằng tin nhắn (Điều 16); app tự gửi tin xác nhận |
+| `compliance.zalo-start`/`zalo-end` | 06:00–22:00, trừ OTP | Quy định của Zalo (nguồn reseller) |
+
+Bộ Công an đang lấy ý kiến dự thảo nghị định thay thế NĐ 91/2020 (tên định danh, danh sách DoNotCall); khi ban hành thì
+đổi cấu hình và bổ sung nguồn DNC cho suppression list.
+
+### Thư viện
+
+Liqp 0.9.2.3 (MIT), json-schema-validator 3.0.8 (Apache-2.0), libphonenumber 9.0.42 (Apache-2.0), jsoup 1.23.2 (MIT),
+Angus Mail qua Spring Boot (EPL-2.0/GPL-2.0+CE). FCM và Web Push cài bằng JDK (không kéo firebase-admin, BouncyCastle).
+
+### Còn mở
+
+- Định dạng callback eSMS và chữ ký webhook Zalo chưa kiểm chứng với hệ thống thật; mã lỗi ZNS theo SDK cộng đồng.
+- Chế độ `remote` của starter, `PUT /internal/catalogs/{service}`, `RecipientResolver` đọc danh bạ auth-server khi chạy
+  ở `platform-services` (platform-services mục 6.8).
+- App zone `notification-admin`, `NotificationTypeForm`, `PlatformDefaultsForm`, `TaskQueueTable`.
+- Provider SES (bounce qua SNS), APNs trực tiếp, ZBS gửi theo Zalo UID, Kafka ingress `notification-requests`.
+
+## files
+
+- **Thiết kế:** [files.md](../design/files.md). **Phát hành:** `platform-starter-files` (platform-java 0.13.0),
+  `@vyforge/files` 0.1.0 (platform-web).
+- **Trạng thái:** Chấp nhận, 27/10/2026.
+
+### Quyết định
+
+1. **Byte không đi qua app.** Trình duyệt gửi thẳng lên storage bằng presigned PUT (file nhỏ) hoặc S3 multipart có URL
+   ký cho từng part (file ≥ 64 MB, resume được kể cả sau khi tải lại trang). App ký URL, rồi lúc complete kiểm lại kích
+   thước (`HEAD`) và MIME thật (Tika, 64 KB đầu). Không dùng tus làm giao thức chính vì byte sẽ phải đi qua BFF và
+   backend (ADR-0006); không dùng presigned POST vì AWS SDK Java v2 không hỗ trợ (issue #1493).
+2. **Bucket logic có chính sách** (kích thước, loại file, quét, public/private, dữ liệu cá nhân, chia sẻ, TTL, retention,
+   Object Lock, quyền theo bản ghi cha) khai báo trong cấu hình app. Tenant chỉ thu hẹp được phần an toàn và chỉnh dung
+   lượng trong trần của platform.
+3. **Mô hình dữ liệu:** file logic (`file_object`) – version (`file_version`) – nội dung vật lý (`file_blob`, dedup theo
+   SHA-256 trong cùng tenant và storage, chỉ sau upload). Key bất biến `t/<tenant>/<bucket>/<yyyy>/<MM>/<blobId>`,
+   không chứa tên file. Attachment (`file_attachment`) gắn file vào bản ghi của module khác, không có FK chéo module.
+4. **Việc nền trên `DurableTaskQueue`** (queue `files`, kind `scan`, `transform`, `purge`), enqueue trong transaction
+   complete. File chỉ tải được khi `AVAILABLE`; máy quét lỗi thì file đứng ở `PROCESSING` (fail-closed).
+5. **Quét mã độc bằng ClamAV** (`clamd` INSTREAM, client tự viết vì client Java trên Maven Central đã bỏ từ 2022). Không
+   có máy quét thì bucket `scan: required` từ chối upload.
+6. **Ảnh:** imgproxy (URL ký HMAC, chỉ preset, có `expires`) hoặc biến thể sinh sẵn trong JVM (Thumbnailator); bỏ
+   EXIF/GPS bằng bản `_clean`. Preview trang đầu PDF bằng PDFBox.
+7. **Storage qua SPI `StorageAdapterFactory`:** `s3` (AWS SDK v2; AWS S3, SeaweedFS, RustFS, Ceph, R2, VNG vStorage),
+   `azure` (SAS, Put Block/Put Block List), `gcs` (XML API tương thích S3 với HMAC key, không kéo `google-cloud-storage`),
+   `local` (URL ký HMAC tới endpoint của app). Tenant tự mang storage, secret mã hoá bằng `SecretCipher`. Với endpoint
+   không phải AWS, checksum mặc định của SDK ≥ 2.30 tắt về `WHEN_REQUIRED`.
+8. **Quyền:** action `files:*`; bucket `access: entity` lấy quyền từ bản ghi cha (cấu hình hoặc bean
+   `AttachmentAccessPolicy`). Không có quyền xem thì trả 404. Code chạy nền không có người dùng được coi là gọi hệ thống;
+   `FilesSystemAccess` cho trường hợp tường minh.
+9. **Retention, legal hold, xoá theo chủ thể dữ liệu** (Luật 91/2025/QH15): file của chủ thể bị xoá thật (object, biến
+   thể, tên, metadata); file luật buộc giữ (vd. chứng từ theo NĐ 174/2016/NĐ-CP) được liệt kê kèm căn cứ trong
+   `ErasureReport`. Legal hold có thể đặt thêm ở storage (Object Lock/immutability).
+10. **Schema riêng** qua `StarterSchemaMigrator` (`flyway_schema_history_files`), SQL gộp cho DBA.
+11. **Đóng gói độc lập:** không phụ thuộc module P1 nào. Notification đọc file qua `FileContentReader` (reflection,
+    `@ConditionalOnBean`), export qua `FileService.store`, realtime/webhooks nghe event `com.vyforge.platform.files.event`,
+    features cấp `QuotaProvider`. Admin: component ở `@vyforge/files/admin`, endpoint `GET /api/v1/files/admin/info`;
+    zone `files-admin` (`/m/files`) dựng bằng `pnpm create-admin-zone` khi forge-37 xong.
+
+### Thư viện và license
+
+| Thư viện | Version | License | Phạm vi |
+|---|---|---|---|
+| AWS SDK v2 (`s3`, `url-connection-client`, `cloudfront` tuỳ chọn) | 2.57.3 | Apache-2.0 | bắt buộc |
+| Apache Tika (`tika-core`) | 4.1.0 | Apache-2.0 | bắt buộc |
+| Apache PDFBox | 3.0.8 | Apache-2.0 | tuỳ chọn |
+| Thumbnailator / TwelveMonkeys ImageIO WebP | 0.4.21 / 3.15.3 | MIT / BSD-3 | tuỳ chọn |
+| Azure Storage Blob | 12.36.0 | MIT | tuỳ chọn |
+| ClamAV, imgproxy, SeaweedFS | 1.5.4 / v4.0.19 / 4.51 | GPL-2.0 (daemon riêng) / Apache-2.0 / Apache-2.0 | hạ tầng, không nhúng |
+
+### Việc còn mở
+
+- Chế độ `remote` của starter và API nội bộ dạng stream cho `store`/`open` (platform-services §3.5, §6.8).
+- Sidecar `tusd`, quét qua ICAP, preview Office (Gotenberg), thumbnail video, nhập file từ URL.
+- Job quét object mồ côi trên storage (hiện dọn theo phiên upload hết hạn và lifecycle của bucket).
+- Kiểm với GCS thật (adapter `gcs` chưa chạy trên GCS, chỉ trên SeaweedFS qua cùng mã S3); Viettel IDC, FPT Cloud chưa
+  kiểm tài liệu API S3.
+- Thời hạn xử lý yêu cầu chủ thể dữ liệu (NĐ 356/2025) lấy từ nguồn thứ cấp: pháp chế đối chiếu toàn văn.
+
+## export
+
+- **Thiết kế:** [export.md](../design/export.md). **Phát hành:** `platform-starter-export` (platform-java 0.13.0),
+  `@vyforge/export` (platform-web).
+- **Trạng thái:** Chấp nhận, 27/10/2026.
+
+### Bối cảnh
+
+Gần như dự án nào ở Việt Nam cũng có "Xuất Excel", "Nhập từ Excel" và in chứng từ PDF tiếng Việt. Không nền tảng tham
+chiếu nào có sẵn khối này. Mỗi dự án tự viết thì lặp lại cùng một nhóm lỗi:
+
+- tải cả bảng vào RAM;
+- chạy đồng bộ quá timeout của gateway;
+- link tải không hết hạn;
+- nhập lỗi giữa chừng mà không có file báo lỗi, nhập lại thì sinh bản ghi trùng;
+- PDF mất dấu;
+- CSV injection.
+
+### Quyết định
+
+1. **Một starter cho ba việc** (xuất, nhập, báo cáo), dùng chung một lớp job (`data_job`), một kho file kết quả, một mô hình
+   quyền và một trang "Việc của tôi". Starter nhúng vào app, không phải service: nguồn dữ liệu và đích nhập là code của
+   chính app, cần chung transaction và chung quyền.
+2. **Thực thi trên `DurableTaskQueue`** (queue `export`, platform-java 0.12.1).
+   - Module không có hàng đợi riêng. `data_job` chỉ giữ trạng thái nghiệp vụ người dùng thấy.
+   - Việc chia được (nhập, báo cáo hàng loạt) chạy theo lát có checkpoint.
+   - `export.run` là một task dài, gia hạn khoá bằng `extendLock`.
+   - Một job đối soát chuyển task `DEAD` thành job `FAILED`.
+   - Không dùng Spring Batch: 9 bảng metadata không có tenant mà vẫn phải có bảng job riêng.
+   - Không dùng JobRunr: LGPL-3.0, và các tính năng cần dùng nằm ở bản Pro.
+3. **Streaming từ đầu tới cuối.** Nguồn trả dữ liệu theo trang (keyset, resumable). Writer ghi ra file tạm. Heap tỉ lệ với
+   chunk, không tỉ lệ với số dòng. Định dạng:
+   - XLSX ghi bằng FastExcel, đọc bằng fastexcel-reader (Apache-2.0).
+   - CSV bằng FastCSV (MIT).
+   - `.xls` và template Excel (JXLS) dùng POI 6, là phụ thuộc **tuỳ chọn**.
+4. **Nhập qua bảng staging** (`data_import_row`):
+   - Bốn bước: upload → ghép cột → xem trước → xác nhận.
+   - Ba chế độ commit: `ATOMIC`, `STRICT` (mặc định), `PARTIAL`.
+   - Idempotency ba tầng: job, chunk (trạng thái dòng ghi cùng transaction với dữ liệu), khoá tự nhiên + upsert.
+   - Có file báo lỗi và hoàn tác có điều kiện.
+5. **Báo cáo** dùng engine dạng adapter:
+   - `html-pdf` (Thymeleaf + OpenHTMLtoPDF, nhúng font Be Vietnam Pro/Noto, OFL);
+   - `xlsx-template` (JXLS, tuỳ chọn);
+   - `gotenberg` (service tuỳ chọn).
+   - Ký số qua SPI `DocumentSigner`. Có sẵn PKCS#12 PAdES (PDFBox + Bouncy Castle).
+6. **Không phụ thuộc code của `-files`/`-notification`/`-realtime`.**
+   - Kho file là port `ResultStore` của export. Bản đầu có adapter `local`; adapter sang files thêm sau khi files merge.
+   - Thông báo và tiến độ là event công khai: `DataJobCompleted`/`DataJobFailed` qua outbox, `DataJobProgressed` không qua
+     outbox.
+7. **Dùng khối chung:**
+   - `SecretCipher` mã hoá secret của tenant (context `export:config:<tenant>:<khoá>`);
+   - `StarterSchemaMigrator` với bảng lịch sử `flyway_schema_history_export`;
+   - `Authz` với action catalog `export:*`, cộng với action nghiệp vụ bắt buộc cho từng definition;
+   - `AuditLog` cho việc tải file và cột dữ liệu cá nhân.
+8. **Mặc định:**
+   - file kết quả sống 7 ngày, link tải ký sống 5 phút;
+   - chế độ nhập `STRICT` khi definition không chỉ định;
+   - báo cáo định kỳ chỉ gửi cho user/group trong tenant;
+   - POI là phụ thuộc tuỳ chọn.
+
+### License cần pháp chế xác nhận
+
+**OpenHTMLtoPDF** (`io.github.openhtmltopdf` 1.1.100) dùng license **LGPL-2.1-or-later** và là phụ thuộc compile của
+starter (engine `html-pdf`).
+
+- Platform dùng thư viện này đúng nghĩa thư viện: không sửa mã, liên kết động qua classpath, jar giữ nguyên để người dùng
+  thay được.
+- Việc phân phối kèm sản phẩm on-prem cho khách hàng **phải được pháp chế xác nhận** trước khi đưa lên production.
+- Nếu pháp chế không chấp nhận: chuyển `html-pdf` thành phụ thuộc tuỳ chọn và dùng engine `gotenberg` (MIT) làm mặc định.
+  Lõi không phải sửa.
+
+Các phụ thuộc còn lại:
+
+| License | Thư viện | Ghi chú |
+|---|---|---|
+| Apache-2.0 | FastExcel, POI, JXLS, PDFBox, Thymeleaf | |
+| MIT | FastCSV, Bouncy Castle | |
+| SIL OFL 1.1 | Font Be Vietnam Pro, Noto | Kèm file `OFL.txt` |
+
+Không dùng JasperReports (LGPL-3.0). Carbone (Carbone Community License) chỉ là adapter tuỳ chọn ở bản sau, cũng cần
+pháp chế duyệt.
+
+### Hệ quả
+
+- App chỉ khai báo `ExportDefinition`/`ImportDefinition`/`ReportDataProvider` là có REST, job, file báo lỗi, quyền, audit và
+  giao diện (`ExportButton`, `ImportWizard`, `JobsTable`).
+- Pod chạy worker cần đĩa tạm (`emptyDir` hoặc PVC) cỡ 2 × file lớn nhất × số việc đồng thời.
+- Trước khi `-files` merge, store mặc định là `local` (thư mục dùng chung). Chạy nhiều replica cần volume RWX hoặc chờ
+  adapter files.
+- Để bản sau:
+  - adapter ký từ xa (VNPT SmartCA, Viettel MySign), PAdES-LTA (EU DSS);
+  - sửa dữ liệu trên lưới xem trước;
+  - nhập nhiều sheet có quan hệ;
+  - mã hoá file bằng mật khẩu;
+  - engine Carbone;
+  - partition bảng staging.
+
+## webhooks
+
+- **Thiết kế:** [webhooks.md](../design/webhooks.md). **Phát hành:** `platform-starter-webhooks-inbound`,
+  `platform-starter-webhooks` (platform-java 0.13.0), `@vyforge/webhooks` 0.1.0 (platform-web).
+- **Pilot:** không cần (người dùng quyết định 26/10/2026).
+
+### Quyết định
+
+1. **Engine gửi nhúng trong app trên PostgreSQL, không chạy Svix/Convoy/Outpost.** Chạy được ba cách: nhúng, trong
+   `platform-services`, server riêng (cùng image). Port `WebhookPublisher` chừa chỗ cho adapter Svix khi vượt khoảng 5
+   triệu delivery/ngày.
+2. **Định dạng Standard Webhooks** (`webhook-id`, `webhook-timestamp`, `webhook-signature`; `v1` HMAC-SHA256, `v1a`
+   ed25519). Ký và kiểm tự viết trên JCA; thư viện chính thức `com.standardwebhooks:standardwebhooks` 1.2.0 chỉ dùng làm
+   oracle trong test (nó chỉ có `v1`, nhận `String`, tolerance cố định).
+3. **Hàng đợi riêng `webhook_delivery` + lease theo endpoint (L5), không dùng `DurableTaskQueue`.** Rate limit, số
+   request đồng thời và thứ tự theo key chỉ chính xác khi một endpoint tại một thời điểm do một replica gửi;
+   `DurableTaskQueue` chỉ giới hạn theo queue và tenant, sẽ cần thêm slot trong DB và Valkey, và gấp đôi số lần ghi. Hàm
+   claim `vyforge_webhooks_claim` (`security definer`, `SKIP LOCKED`) là truy vấn xuyên tenant duy nhất (L2).
+4. **Chống SSRF ở bước kết nối:** `DnsResolver` của Apache HttpClient 5 trả đúng IP đã kiểm (chống DNS rebinding),
+   chặn dải IANA đặc biệt, IPv4 nhúng (NAT64, 6to4, IPv4-mapped), dạng IP thập phân/hex; không redirect; ngoại lệ dải
+   nội bộ chỉ do người vận hành cấu hình theo platform hoặc theo tenant; proxy egress tuỳ chọn.
+5. **Secret, header tuỳ chỉnh, khoá mTLS mã hoá bằng `SecretCipher`** (context có tenant và id). Xoay secret có thời gian
+   chồng tối đa 7 ngày, ký bằng mọi secret còn hiệu lực.
+6. **Schema riêng qua `StarterSchemaMigrator`** (`flyway_schema_history_webhooks`, L1); `webhook_message`,
+   `webhook_delivery`, `webhook_attempt` partition theo tháng, drop theo retention lớn nhất; retention theo tenant xoá
+   theo lô.
+7. **Event chứa dữ liệu cá nhân nhạy cảm** chỉ đến endpoint ghi đúng tên type và khi tenant bật `allowSensitiveEvents`
+   (Luật 91/2025/QH15, NĐ 356/2025/NĐ-CP); có `allowedDomains` theo tenant và xoá theo chủ thể dữ liệu.
+8. **Webhook nhận vào là artifact riêng** `platform-starter-webhooks-inbound` (không bảng, không job): `@InboundWebhook`
+   kiểm chữ ký trên body thô trước handler; khối dựng cho VNPay/payOS/MoMo/ZaloPay/SePay; chống trùng qua
+   `processed_messages` (L6).
+9. **Không phụ thuộc cứng module khác:** `-notification` nghe event công khai; kênh webhook của `-notification` gọi
+   `WebhookPublisher` khi có bean; `-payment` dùng artifact inbound (khuyến nghị optional).
+10. **Admin MFE:** component ở `@vyforge/webhooks/admin` (nhận `can`), manifest `contract: 1`, endpoint
+    `GET /admin/info` và `GET /admin/egress` (người vận hành); zone `webhooks-admin` (`/m/webhooks`) dựng bằng
+    `pnpm create-admin-zone` khi forge-37 xong.
+
+### Thư viện
+
+| Thư viện | Phiên bản | License | Dùng cho |
+|---|---|---|---|
+| Apache HttpClient 5 | 5.6.4 (Spring Boot 4.1.1) | Apache-2.0 | Gửi webhook, `DnsResolver`, mTLS |
+| `com.standardwebhooks:standardwebhooks` | 1.2.0 | Apache-2.0 | Chỉ test (oracle tương thích) |
+| Bouncy Castle `bcpkix-jdk18on` | 1.86 | MIT | Chỉ test (sinh CA, chứng chỉ mTLS) |
+
+### Còn mở
+
+- Chế độ `remote` (D8): topic `webhooks-messages`, `PUT /internal/catalogs/{service}`; app zone `webhooks-admin`.
+- Health indicator `webhooks`; che PII trong body phản hồi đã lưu; adapter đích Kafka/SQS; OAuth2 client credentials.
+- `ReplayGuard` của inbound đang dùng UUID name-based (MD5, v3) chứ không phải v5 như thiết kế; chỉ là khoá khử trùng.
+
+## features
+
+- **Phát hành:** `platform-starter-features` (platform-java 0.13.0), `@vyforge/features` (platform-web).
+- **Trạng thái:** Chấp nhận — 26/10/2026. Thiết kế: [docs/design/features.md](../design/features.md).
+- **Bối cảnh:** App cần bật tính năng theo tenant, người dùng, phần trăm, lịch, và tắt nhanh khi sự cố (feature flag); đồng
+  thời cần bán theo gói: quyền theo gói, giới hạn, quota theo kỳ, đo mức dùng, trial, grace (entitlement). MODULE_PLAN mục
+  5 cấm tự host flag server (Unleash: AGPL, thêm service).
+- **Quyết định:**
+  1. Một starter, hai nửa: flag (API công khai là OpenFeature, `dev.openfeature:sdk` 1.23.0) và entitlement (tắt được).
+  2. Engine đánh giá flag là `flagd-core` 3.0.0 nhúng trong app (Apache-2.0). Định nghĩa trong PostgreSQL được biên dịch
+     sang định dạng flagd; cùng snapshot xuất được cho flagd daemon (service ngoài JVM) và OFREP (frontend). Không tự viết
+     JsonLogic hay thuật toán hash; không bắt buộc daemon.
+  3. Thứ tự đánh giá: break-glass → tắt → prerequisite → override theo tenant → rule → rollout mặc định. Không lưu
+     override theo từng người dùng.
+  4. Đánh giá trong bộ nhớ trên snapshot bất biến; đồng bộ giữa replica bằng Valkey pub/sub, dự phòng bằng poll version
+     trong DB (mất Valkey chỉ chậm, không mất thay đổi).
+  5. Entitlement: feature `BOOLEAN | LIMIT | METERED | CONFIG`; gói có version và kế thừa; add-on, override theo tenant,
+     grant (priority, hạn dùng, rollover). Thứ tự giải: override → gói + add-on → gói theo trạng thái → mặc định của
+     code. Quota trừ nguyên tử trên PostgreSQL trong transaction của người gọi, có idempotency key; Valkey chỉ tăng tốc
+     cho feature chọn `FAST`. Kỳ tính theo `Asia/Ho_Chi_Minh`.
+  6. Subscription có state machine `TRIALING, ACTIVE, PAST_DUE, SUSPENDED, CANCELED, EXPIRED`; mốc thời gian là task
+     trên `DurableTaskQueue` của `-scheduling`. Không phụ thuộc `-payment`: payment gọi `SubscriptionService`, nghe
+     `UsagePeriodClosed`.
+  7. Duyệt 4 mắt là SPI `ChangeApprovalPolicy`, mặc định tắt; cài đặt có sẵn `FourEyesApprovalPolicy` (người duyệt khác
+     người tạo, có audit, có hết hạn).
+  8. Policy dựng sẵn `vyforge:FeaturesOperator` (`features:*`) và `vyforge:FeaturesPlanSales`
+     (`subscription:Change`, `grant:Create` + quyền đọc), chỉ ở tenant vận hành, áp qua `Authz.evaluate(..., additional)`
+     nên `Deny` của IAM vẫn thắng.
+  9. Dùng khối chung: `StarterSchemaMigrator` (lịch sử `flyway_schema_history_features`), `DurableTaskQueue`,
+     `SecretCipher` (chưa cần ở 0.13).
+- **Hệ quả:** Không có service mới. Flag rác được kiểm bằng loại flag + hạn dự kiến + báo cáo stale. Bảng
+  `ent_usage_record` cần partition tháng và retention. `flagd-core` còn mới (3.0.0): bọc sau provider của Vyforge, có test
+  tương thích với flagd daemon. Pilot dùng module phải ghi tên ở đây trước khi bật trên production (nguyên tắc 5 của
+  MODULE_PLAN).
+
+## payment
+
+- **Thiết kế:** [payment.md](../design/payment.md). **Phát hành:** `platform-starter-payment` (platform-java 0.13.0),
+  `@vyforge/payment` (platform-web). Thanh toán nội địa và quốc tế.
+
+### Bối cảnh
+
+Dự án thương mại ở VN phải tích hợp VNPay, MoMo, ZaloPay hoặc chuyển khoản VietQR. Mỗi dự án tự làm lại thì hay mắc cùng
+một nhóm lỗi: tin Return URL, không đối chiếu số tiền, xử lý IPN hai lần, mất IPN mà không truy vấn lại, để lộ secret của
+merchant, không đối soát được.
+
+### Quyết định
+
+1. **Starter `platform-starter-payment`.** Starter nhúng vào app, chạy chung transaction với nghiệp vụ. Nó cũng chạy
+   được trong `platform-services` (D7 của platform-services) mà không đổi API.
+2. **Mô hình Stripe/Hyperswitch:** `PaymentIntent` (thu bao nhiêu, cho việc gì) tách khỏi `PaymentAttempt` (thu qua cổng
+   nào). Cả hai có state machine khai báo trong code. Hoàn tiền là trục riêng (`refundState`), không phải trạng thái của
+   intent.
+3. **Bằng chứng mới đổi trạng thái.**
+   - Chỉ IPN/webhook đã kiểm chữ ký, hoặc kết quả truy vấn do server gọi, mới đổi trạng thái tiền.
+   - Return URL chỉ kích hoạt truy vấn rồi chuyển hướng.
+   - Lệch số tiền thì không ghi nhận và intent cần xem xét.
+   - Tiền về sau khi huỷ/hết hạn, hoặc trả trùng, thì không bỏ qua: intent sang `requires_review`.
+4. **Tenant ở đường vào không có token** lấy từ `notify_key` trong URL (256 bit ngẫu nhiên) của merchant account. Việc
+   này chỉ xảy ra **sau khi** kiểm chữ ký bằng secret của chính merchant đó và kiểm mã merchant trong payload. Đây là
+   ngoại lệ có chủ đích của ADR-0015 ("tenant chỉ từ claim"), giới hạn ở các truy vấn `@TenantExempt` của đường IPN,
+   Return URL và trang trạng thái công khai (có client secret).
+5. **Adapter sau SPI `PaymentProvider`**, khai báo capability. Lõi không so tên cổng. Bản 0.13 có VNPay, MoMo, ZaloPay,
+   payOS, SePay, Stripe và `manual`. Adapter gọi REST bằng `RestClient` của platform (không dùng SDK). Lệnh ghi không
+   tự gửi lại: lỗi thì thành `unknown`, rồi janitor truy vấn.
+6. **Khử trùng ba lớp:**
+   - `Idempotency-Key` khi tạo intent và hoàn tiền;
+   - `payment_provider_event` unique theo (merchant, khoá của cổng);
+   - khoá idempotent của bút toán sổ cái.
+   Mọi thay đổi tiền khoá dòng intent rồi attempt theo thứ tự cố định.
+7. **Sổ cái bút toán kép trong PostgreSQL.**
+   - Constraint trigger deferred từ chối giao dịch lệch nợ/có lúc COMMIT; trigger khác chặn UPDATE/DELETE.
+   - Tài khoản nóng không giữ số dư (số dư = snapshot + bút toán), nên không tranh khoá.
+   - Ví trả trước và công nợ chỉ có mẫu hạch toán, không có API (chờ pháp chế).
+8. **Khối dùng chung của platform:**
+   - `SecretCipher` (credentials, token mandate, client secret);
+   - `StarterSchemaMigrator` (`flyway_schema_history_payment`);
+   - `DurableTaskQueue` queue `payment` (janitor, đối soát, lịch thu, tự hoàn);
+   - `@ClusterScheduled` cho các job quét.
+9. **Tuân thủ:**
+   - Chỉ redirect, QR hoặc deeplink, không nhận số thẻ: đủ điều kiện SAQ A của PCI DSS v4.0.1. Có luật ArchUnit cấm field
+     dữ liệu thẻ.
+   - Payload gốc của cổng giữ 10 năm làm chứng từ (Luật Kế toán, NĐ 174/2016), PII được che sau 2 năm (Luật 91/2025).
+   - App là đơn vị chấp nhận thanh toán, không cung ứng trung gian thanh toán (TT 40/2024, sửa bởi TT 41/2025 và
+     TT 22/2026; cần pháp chế đọc toàn văn TT 22/2026).
+10. **Không phụ thuộc module P1 nào.** Điểm nối là event qua outbox: realtime, notification, webhooks, einvoice. Quản trị
+    là zone `/m/payment` theo Multi-Zones (platform-services D1–D10); component ở `@vyforge/payment/admin`; có
+    `GET /api/v1/payments/admin/info`.
+
+### Hệ quả
+
+- Thêm cổng mới chỉ cần thêm adapter và test vector, không phải sửa lõi hay migration.
+- Chi tiết giao thức của MoMo và ZaloPay lấy từ mẫu code chính thức và đoạn trích tài liệu, vì trang tài liệu chặn truy cập
+  tự động. Phải đối chiếu toàn văn trước khi lên production; test vector đã có để kiểm nhanh.
+- Chưa có chế độ `remote` (app gọi payment ở `platform-services` qua interface Java). Khi chạy ở server, app nhận kết quả
+  qua topic `payment-events`.
+
+## realtime
+
+- **Thiết kế:** [realtime.md](../design/realtime.md). **Phát hành:** `platform-starter-realtime` (platform-java 0.13.0),
+  `@vyforge/realtime` 0.1.0 (platform-web); `platform-gateway` thêm Apache HttpClient 5 (branch `feat/realtime-proxy`).
+
+### Quyết định
+
+1. **Realtime là kênh báo tin, không phải nguồn dữ liệu.** Tin chỉ giữ ngắn hạn (mặc định 5 phút / 5.000 tin mỗi tenant,
+   trần 1 giờ). Không vá được khoảng mất tin thì client nhận `reset` và tải lại từ API.
+2. **SSE mặc định (K15), WebSocket là transport thứ hai trên cùng hub,** tắt mặc định. Lý do: platform-gateway
+   (Spring Cloud Gateway Server WebMVC 5.0) chưa proxy được WebSocket, phải chờ 5.1 (Spring Cloud 2026.0). Không dùng
+   STOMP: simple broker không chạy nhiều node, còn broker relay cần thêm RabbitMQ.
+3. **Topic `<namespace>:<path>`, tenant không nằm trong tên** (luôn lấy từ token). Namespace khai báo bằng code, mang
+   quyền subscribe (action IAM + VRN), cách recovery (`STREAM`, `CACHE`, `NONE`), presence, publish từ client, cờ nhạy
+   cảm. Có sẵn `user`, `tenant`, `job`, `res`.
+4. **Một luồng tin cho mỗi tenant, `Last-Event-ID` là vị trí trong luồng** (học Mercure). Một kết nối gộp nhiều topic
+   nên chỉ cần một vị trí.
+5. **Broker theo deployment, không theo tenant** (đã duyệt): `memory` (một replica), `valkey` (Stream + pub/sub có shard;
+   publish bằng một script Lua; id đã cắt ghi vào `…:trimmed` để phát hiện mất tin), `kafka` (key là tenant). Pub/sub
+   đứt rồi nối lại thì hub vá tin từ Stream cho từng kết nối.
+6. **Publish best-effort sau commit** (đã duyệt), không đi qua outbox. Tin phải tới chắc chắn thì publish từ listener
+   outbox kèm `dedupKey`.
+7. **Quyền kiểm khi subscribe và kiểm lại khi IAM đổi.** Kết nối đóng trước `exp` của token. Không cache quyền suốt kết
+   nối (tránh lỗi của Supabase Realtime).
+8. **Vé dùng một lần, sống 30 giây** cho WebSocket và SSE thẳng, thay cho access token trên URL.
+9. **Cấu hình theo tenant** (`realtime_tenant_settings`, `realtime_namespace_override`) qua `StarterSchemaMigrator`
+   (`flyway_schema_history_realtime`). Không có secret trong DB.
+10. **Không phụ thuộc cứng vào module P1 nào.** Hợp đồng với notification, export, files, payment, features là topic,
+    type và schema (thiết kế §5.3). Bên kia publish qua `ObjectProvider<RealtimePublisher>` hoặc `@RealtimeEvent`.
+11. **Ngưỡng chuyển sang Centrifugo** (adapter để bản sau): > 20.000 kết nối đồng thời hoặc > 2.000 tin/giây.
+
+### Thư viện
+
+| Thư viện | Phiên bản | License | Dùng cho |
+|---|---|---|---|
+| Spring MVC `SseEmitter`, Spring WebSocket | Spring Framework 7.0 (Boot 4.1) | Apache-2.0 | Transport |
+| Spring Data Redis (Lettuce) | theo Boot 4.1 | Apache-2.0 | Broker Valkey |
+| kafka-clients | theo Boot 4.1 | Apache-2.0 | Broker Kafka |
+| Apache HttpClient 5 | theo Boot 4.1 | Apache-2.0 | platform-gateway: read-timeout giữa hai gói cho SSE |
+| eventsource-parser | 4.1.3 | MIT | `@vyforge/realtime`: đọc SSE trên `fetch` |
+| Centrifugo (tham khảo, adapter sau) | v6.10.2 | Apache-2.0 | Khi vượt ngưỡng |
+| Mercure (không dùng) | v1.1.5 | AGPL-3.0 | Hub AGPL, quyền trong JWT khó khớp IAM có `Condition` |
+
+### Còn mở
+
+- Adapter Centrifugo và transport `@vyforge/realtime/centrifugo`.
+- App zone `platform-admin/apps/realtime-admin` (`pnpm create-admin-zone realtime`) sau khi forge-37 có template.
+  Component đã có ở `@vyforge/realtime/admin`.
+- Gateway: WebSocket qua gateway khi lên Spring Cloud 2026.0. Rule mở luồng hiện vẫn tính thêm vào bucket chung, vì
+  `-ratelimit` chưa loại trừ path được.
+- Valkey Cluster (sharded pub/sub) chưa hỗ trợ; Valkey một instance hoặc Sentinel.
 
 ## jpa-extras
 

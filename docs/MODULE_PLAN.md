@@ -484,7 +484,13 @@ publish package rồi cập nhật `pnpm-lock.yaml` của platform-admin).
 
 | Module | Java | Web | Admin | Trạng thái | Quyết định |
 |---|---|---|---|---|---|
-| notification, files, export, webhooks, features, payment, realtime | `platform-starter-*` | có | — | Đã phát hành 0.13.0 | ADR-0020 (mục của các module này chưa ghép vào nhánh chính) |
+| notification | `platform-starter-notification` | `@vyforge/notifications` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#notification) |
+| files | `platform-starter-files` | `@vyforge/files` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#files) |
+| export | `platform-starter-export` | `@vyforge/export` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#export) |
+| webhooks | `platform-starter-webhooks`, `platform-starter-webhooks-inbound` | `@vyforge/webhooks` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#webhooks) |
+| features | `platform-starter-features` | `@vyforge/features` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#features) |
+| payment | `platform-starter-payment` | `@vyforge/payment` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#payment) |
+| realtime | `platform-starter-realtime` | `@vyforge/realtime` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#realtime) |
 | jpa-extras | `platform-core`, `-jpa`, `-scheduling`, `-authz` | `@vyforge/trash`, `i18n`, `api-client`, `ui` (main) | `/m/trash` (main) | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#jpa-extras) |
 | admin-kit | `-web`, `-audit`, `-scheduling` | `@vyforge/admin-kit` (main) | — | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#admin-kit) |
 | platform-expression | `platform-expression` | — | — | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#platform-expression) |
