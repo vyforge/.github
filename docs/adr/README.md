@@ -20,4 +20,10 @@ Mẫu: `NNNN-tieu-de.md` với các mục **Trạng thái · Bối cảnh · Quy
 - [ADR-0012: IdP mở rộng — passkey, SAML 2.0, LDAP/AD, Zalo — cấu hình trong database](0012-idp-extensions.md)
 - [ADR-0014: CI/CD và registry trung lập với nền tảng git](0014-neutral-ci-cd.md)
 - [ADR-0015: Tenant ở tầng dữ liệu, `platform-core` và mặc định cho lời gọi ra ngoài](0015-tenant-data-isolation-platform-core.md)
+- [ADR-0020: Module ứng dụng dùng chung (mỗi module một mục)](0020-shared-application-modules.md)
 - [ADR-0022: Cơ cấu tổ chức dùng chung](0022-shared-organization-structure.md)
+- [ADR-0024: Workflow phê duyệt nhúng Flowable 8](0024-workflow-flowable.md)
+- [ADR-0025: Module AI: use case, cổng dữ liệu, ngân sách, Spring AI 2.0](0025-ai-gateway.md)
+- [ADR-0026: API key, ứng dụng đối tác và phantom token qua gateway](0026-api-access.md)
+
+Câu hỏi pháp chế mà các ADR và thiết kế đang chờ: [legal-open-questions.md](../legal-open-questions.md).

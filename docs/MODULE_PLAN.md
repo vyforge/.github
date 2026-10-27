@@ -12,7 +12,7 @@ theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo 
 - [Quy hoạch danh mục module và lộ trình](research/2026-10-quy-hoach-vyforge.md): bằng chứng trong code cho từng quyết
   định, kiến trúc runtime đích, rủi ro.
 
-## Tiến độ (cập nhật 26/10/2026, tối)
+## Tiến độ (cập nhật 27/10/2026)
 
 | Việc | Trạng thái |
 |---|---|
@@ -27,7 +27,9 @@ theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo 
 | Chart `platform-observability`, `platform-policies` | Xong: platform-helm-charts v0.4.0 |
 | Image đầu tiên của service | gateway 0.1.0, admin 0.1.0, auth-server 0.1.1 (0.1.0 bị chặn do Bouncy Castle 1.84), iam-server 0.12.0 |
 | Template | template-spring-boot v2.1.0, template-nextjs v2.1.0 |
-| Module P1 (notification, files, export, webhooks, features, payment, realtime) | Đang nghiên cứu và thiết kế song song (`docs/design/`), sau đó triển khai ở platform-java 0.13.0 |
+| Module P1 (notification, files, export, webhooks, features, payment, realtime) | Xong: platform-java 0.13.0 |
+| Module ứng dụng đợt 0.14 (mục "Trạng thái module ứng dụng") | 16 module và hai phần mở rộng nền (jpa-extras, admin-kit) đã phát hành ở platform-java 0.14.0; 5 module đang tích hợp; automation, billing đang làm; 7 module hoãn theo yêu cầu người dùng. ADR: [ADR-0020](adr/0020-shared-application-modules.md), [ADR-0022](adr/0022-shared-organization-structure.md), [ADR-0024](adr/0024-workflow-flowable.md), [ADR-0025](adr/0025-ai-gateway.md), [ADR-0026](adr/0026-api-access.md) |
+| Câu hỏi pháp chế đang chờ | Gom ở [legal-open-questions.md](legal-open-questions.md) |
 
 ## Tóm tắt quyết định
 
@@ -42,8 +44,8 @@ theo thứ tự nào. Lý do chi tiết và số liệu nằm ở hai báo cáo 
 | **Phạm vi** | Làm toàn bộ danh sách P0 và P1, chạy song song nhiều luồng; mỗi module nghiên cứu và thiết kế kỹ trước khi code (nguyên tắc 5). P2 làm khi có hợp đồng hoặc yêu cầu cụ thể. |
 | **Hai nhóm quản trị** | `platform-admin` dành cho người vận hành platform. Quản trị viên của khách hàng quản lý phân quyền trong chính app nghiệp vụ, chỉ trong tenant của mình. |
 | **CI/CD trung lập** | Git server chỉ chứa code. Logic CI nằm trong `vyforge-ci`; mọi registry, token và khoá ký là tham số. Bộ on-prem tham chiếu: Forgejo + Forgejo Runner + registry của Forgejo (Maven, npm) + Harbor (image, chart) + cosign với OpenBao + Renovate self-host + Argo CD. Phải sửa 70 file trong 10 repo. |
-| **Không tự xây** | Máy chủ thông báo, search engine, workflow engine, feature-flag server, secret store, CMS, Backstage, service mesh. Mục 5 có lý do. |
-| **Số repo** | Hiện 12 repo; cuối 2027 có 13 repo đang hoạt động: bớt 3 (`nextjs-ui`, `spring-boot-starter`, `platform-iam-server`); `.github` thành `platform-ci` + `platform-docs` (thêm 1); thêm `template-infra`, `platform-infra`, `template-expo`. Không chuyển sang một monorepo chung cho cả org. |
+| **Không tự xây** | Máy chủ thông báo, search engine, workflow engine, feature-flag server, secret store, Backstage, service mesh. Mục 5 có lý do. CMS đã đổi: tự xây module `cms-content` trên nền platform, không nhúng Payload ([ADR-0020](adr/0020-shared-application-modules.md#cms-content)). |
+| **Số repo** | Hiện 12 repo; cuối 2027 có 13 repo đang hoạt động: bớt 3 (`nextjs-ui`, `spring-boot-starter`, `platform-iam-server`); `.github` thành `platform-ci` + `platform-docs` (thêm 1); thêm `template-infra`, `platform-infra`, `template-expo` (`template-expo` đang hoãn theo yêu cầu người dùng). Không chuyển sang một monorepo chung cho cả org. |
 
 ## Nguyên tắc
 
@@ -322,7 +324,7 @@ flowchart TB
     iamsrv["platform-iam-server<br/>(chuyển từ repo riêng)"]:::moved
     jp0["P0: scheduling · ratelimit<br/>privacy (tối thiểu) · tenant trong jpa"]:::new
     jp1["P1, theo pilot: notification · files<br/>export · webhooks · features · payment · realtime"]:::new
-    jp2["P2: ai · einvoice"]:::new
+    jp2["Module ứng dụng 0.14<br/>ai · workflow · search · forms · cms-content…<br/>(ADR-0020, 0022, 0024–0026)"]:::new
   end
 
   subgraph WEB["platform-web (monorepo npm, version lockstep)"]
@@ -460,24 +462,90 @@ Thứ tự ưu tiên (đã rút gọn theo mục "Năng lực và phạm vi"):
 | `platform-starter-realtime` | starter | SSE cho thông báo, tiến độ xuất file, trạng thái thanh toán | Spring SSE + Redis pub/sub | P1 · Q2/2027 |
 | chart `platform-policies` | chart | Kyverno kiểm chữ ký image, bắt buộc digest, non-root | Kyverno 1.19, cosign 3 | P1 · Q2/2027 (Enforce từ Q3) |
 | `platform-starter-ai` | starter | Gọi LLM, pgvector, chặn PII trước khi gửi ra ngoài | Spring AI 2.0 | P2 |
-| `template-expo` | template | App mobile dùng chung `@vyforge/*`, đăng nhập qua auth-server | Expo SDK 58 | P2 · Q3/2027 |
+| `template-expo` | template | App mobile dùng chung `@vyforge/*`, đăng nhập qua auth-server | Expo SDK 58 | P2 · **hoãn** theo yêu cầu người dùng (27/10/2026) |
 | `platform-starter-einvoice`, adapter eKYC | starter | Hoá đơn điện tử, eKYC theo nhà cung cấp của khách hàng | Adapter mỏng | P2 |
 
-Tìm kiếm không cần module riêng: mặc định dùng PostgreSQL FTS với `unaccent` + trigram, nằm trong `-jpa`. Secrets không
-cần module code: dùng ESO + OpenBao hoặc secret manager của cloud, khai báo trong `template-infra`.
+Tìm kiếm: phần bỏ dấu và trigram cơ bản nằm trong `-jpa`; module `platform-starter-search` (đã có, mặc định vẫn engine
+PostgreSQL, OpenSearch/Meilisearch là adapter tuỳ chọn) theo [ADR-0020 mục search](adr/0020-shared-application-modules.md#search).
+Secrets không cần module code: dùng ESO + OpenBao hoặc secret manager của cloud, khai báo trong `template-infra`.
+
+Hàng `platform-starter-ai` (P2) và `platform-starter-einvoice`, adapter eKYC (P2) ở bảng trên đã được xây sẵn theo quyết
+định "platform đi trước nhu cầu"; trạng thái ở mục tiếp theo.
+
+## Trạng thái module ứng dụng (27/10/2026)
+
+Trạng thái tính theo phần Java (platform-java). Cột Web và Admin ghi package `@vyforge/*` và admin zone `/m/<module>`:
+"main" là đã merge vào nhánh chính của platform-web/platform-admin, "nhánh" là xong trên nhánh riêng, chờ merge (cần
+publish package rồi cập nhật `pnpm-lock.yaml` của platform-admin).
+
+- **Đã phát hành 0.14.0:** có trong tag `v0.14.0` của platform-java.
+- **Đang tích hợp:** nhánh module đã xong, đang ghép vào `integ/0.14` (sau 0.14.0), chưa phát hành.
+- **Đang làm:** đang triển khai.
+
+| Module | Java | Web | Admin | Trạng thái | Quyết định |
+|---|---|---|---|---|---|
+| notification | `platform-starter-notification` | `@vyforge/notifications` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#notification) |
+| files | `platform-starter-files` | `@vyforge/files` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#files) |
+| export | `platform-starter-export` | `@vyforge/export` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#export) |
+| webhooks | `platform-starter-webhooks`, `platform-starter-webhooks-inbound` | `@vyforge/webhooks` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#webhooks) |
+| features | `platform-starter-features` | `@vyforge/features` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#features) |
+| payment | `platform-starter-payment` | `@vyforge/payment` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#payment) |
+| realtime | `platform-starter-realtime` | `@vyforge/realtime` | — | Đã phát hành 0.13.0 | [ADR-0020](adr/0020-shared-application-modules.md#realtime) |
+| jpa-extras | `platform-core`, `-jpa`, `-scheduling`, `-authz` | `@vyforge/trash`, `i18n`, `api-client`, `ui` (main) | `/m/trash` (main) | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#jpa-extras) |
+| admin-kit | `-web`, `-audit`, `-scheduling` | `@vyforge/admin-kit` (main) | — | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#admin-kit) |
+| platform-expression | `platform-expression` | — | — | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#platform-expression) |
+| organization | `platform-starter-organization` | main | main | Đã phát hành 0.14.0 | [ADR-0022](adr/0022-shared-organization-structure.md) |
+| sequence | `platform-starter-sequence` | main | main | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#sequence) |
+| master-data | `platform-starter-master-data` | main | main | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#master-data) |
+| forms | `platform-forms-core`, `platform-starter-forms` | main | main | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#forms) |
+| licensing | `platform-core`, `platform-starter-licensing`, `tools/license-cli` | main | main | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#licensing) |
+| privacy-dsr | `platform-starter-privacy-dsr` | `@vyforge/privacy` (main) | `/m/privacy` (main) | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#privacy-dsr) |
+| ai | `platform-starter-ai` | main | main | Đã phát hành 0.14.0 | [ADR-0025](adr/0025-ai-gateway.md) |
+| collaboration | `platform-starter-collaboration` | main | nhánh | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#collaboration) |
+| settings | `platform-core`, `platform-starter-settings` | nhánh | nhánh | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#settings) |
+| calendar | `platform-starter-calendar` | nhánh | nhánh | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#calendar) |
+| search | `platform-starter-search` + adapter OpenSearch, Meilisearch | nhánh | nhánh | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#search) |
+| ekyc | `platform-starter-ekyc` | nhánh | nhánh | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#ekyc) |
+| api-access | `platform-api-access-core`, `-starter-`, `-gateway` | nhánh | nhánh | Đã phát hành 0.14.0; auth-server đã có điểm nối; route gateway đang làm | [ADR-0026](adr/0026-api-access.md) |
+| workflow | `platform-starter-workflow` | nhánh | nhánh | Đã phát hành 0.14.0 | [ADR-0024](adr/0024-workflow-flowable.md) |
+| custom-fields | `platform-starter-custom-fields` | nhánh | nhánh | Đã phát hành 0.14.0 | [ADR-0020](adr/0020-shared-application-modules.md#custom-fields) |
+| ops-console | `platform-starter-ops` | nhánh | nhánh | Đang tích hợp | [ADR-0020](adr/0020-shared-application-modules.md#ops-console) |
+| report-engine | `platform-report`, `platform-report-openhtmltopdf` | — | — | Đang tích hợp | [ADR-0020](adr/0020-shared-application-modules.md#report-engine) |
+| cms-content | `platform-starter-cms-content` | nhánh | nhánh | Đang tích hợp | [ADR-0020](adr/0020-shared-application-modules.md#cms-content) |
+| tenant-lifecycle | `platform-starter-tenant-lifecycle` | nhánh | nhánh | Đang tích hợp | [ADR-0020](adr/0020-shared-application-modules.md#tenant-lifecycle) |
+| esign | `platform-starter-esign`, `platform-starter-esign-dss` | nhánh | nhánh | Đang tích hợp (ghép sau report-engine) | [ADR-0020](adr/0020-shared-application-modules.md#esign) |
+| automation | `platform-automation-api`, `platform-starter-automation` | `@vyforge/automation` | `/m/automation` | Đang làm | Thiết kế [automation.md](design/automation.md) |
+| billing, einvoice | `platform-starter-billing`, `platform-starter-einvoice` | `@vyforge/billing`, `@vyforge/einvoice` | `/m/billing` | Đang làm | Thiết kế [billing.md](design/billing.md) |
+
+Lệch thiết kế và việc còn mở của từng module ghi trong mục ADR tương ứng. Câu hỏi pháp chế:
+[legal-open-questions.md](legal-open-questions.md).
+
+### Module hoãn theo yêu cầu người dùng (27/10/2026)
+
+Không thiết kế, không triển khai cho tới khi người dùng mở lại. Các module đã xây chỉ để sẵn port, không có adapter:
+
+| Module | Bài toán (từ [gap analysis](research/2026-10-gap-analysis.md)) | Điểm chờ ở module đã có |
+|---|---|---|
+| `antibot` | Captcha tự host, chống lạm dụng form công khai | SPI `HumanVerification` của forms và tenant-lifecycle; widget ALTCHA của forms |
+| `analytics` | Dashboard, BI nhúng theo tenant | — |
+| `telemetry` | Product analytics, tracking event | Consent `telemetry` của privacy-dsr (thiết kế §3.13) |
+| `helpdesk` | Ticket, chăm sóc khách hàng, SLA | Collaboration (lớp `PUBLIC`), calendar (SLA), organization |
+| `booking` | Đặt lịch hẹn, tài nguyên | Calendar (`CalendarFeedContributor`, gán lịch cho tài nguyên) |
+| `template-expo` + mobile-config | Golden path mobile và cấu hình app mobile | `@vyforge/auth/core` chưa tách; ADR golden path mobile chuyển sang số 0027 |
+| Support impersonation | "Đăng nhập thay" có đồng ý và audit ở auth-server | Token exchange RFC 8693 hiện có |
 
 ## 5. Không làm
 
 | Không làm | Thay bằng | Lý do |
 |---|---|---|
 | Máy chủ thông báo riêng, tự host Novu | `-notification` chạy trong app, dùng outbox | Thêm một service phải trực on-call; phần `enterprise/` của Novu có license thương mại |
-| Elasticsearch/OpenSearch mặc định | PostgreSQL FTS; search engine riêng phải có ADR | Dự án tier 0–1 không cần |
-| Workflow engine tự viết; Camunda 8 | Flowable hoặc Temporal, chỉ khi có dự án cần | Camunda 8 cần license cho production |
+| Elasticsearch/OpenSearch mặc định | PostgreSQL FTS; OpenSearch/Meilisearch chỉ là adapter tuỳ chọn của module search ([ADR-0020](adr/0020-shared-application-modules.md#search)) | Dự án tier 0–1 không cần |
+| Workflow engine tự viết; Camunda 8 | Flowable 8 nhúng sau lớp nghiệp vụ của Vyforge ([ADR-0024](adr/0024-workflow-flowable.md)) | Camunda 8 cần license cho production |
 | Feature-flag server; Unleash tự host | flagd | Vận hành nhẹ hơn, không có ràng buộc AGPL |
 | Vault; secret store tự viết | OpenBao hoặc secret manager của cloud, qua ESO | Vault đã chuyển sang BUSL-1.1 |
 | Spring Cloud Config server | Biến môi trường + ESO | Không có lợi gì so với GitOps |
 | Backstage (trong 2027) | Site tài liệu tĩnh từ `.github/docs` | Chỉ đáng khi có khoảng 5 team cần self-service |
-| Framework admin chung, CMS nhúng | Khối admin trong `@vyforge/ui`; Payload CMS khi dự án cần | Admin của mỗi dự án quá khác nhau |
+| Framework admin chung (react-admin, Refine); CMS nhúng (Payload, Strapi, Directus) | `@vyforge/admin-kit` cho màn quản trị; module `cms-content` tự xây trên nền platform ([ADR-0020](adr/0020-shared-application-modules.md#cms-content)). Payload chỉ còn là lựa chọn cho website đơn lẻ không cần tenant/IAM (vẫn đăng nhập qua `platform-auth-server`) | Admin của mỗi dự án quá khác nhau; CMS phải dùng chung tenant, IAM, audit, outbox, admin shell, và tenant phải tự thêm content type lúc chạy |
 | `platform-mongo-migrations` | Bỏ khỏi kế hoạch | ADR-0007 đã chọn PostgreSQL |
 | Gateway làm BFF | Next.js BFF như hiện tại | Gateway đã nhận vai trò khác (ADR-0010) |
 | Service mesh, mTLS/SPIFFE | `client_credentials` + token exchange | Chưa có tier 3 |
@@ -553,9 +621,13 @@ chung.
 | 0017 | Chuỗi cung ứng và quan sát: ký image, provenance, Kyverno, observability, SLO và on-call | Q1/2027 |
 | 0018 | Bảo mật vận hành: pentest (ASVS), DR/BCP, điều kiện để auth-server ra 1.0, so sánh định kỳ với Keycloak | Q1/2027 |
 | 0019 | Bảo vệ dữ liệu cá nhân: phân định trách nhiệm platform và khách hàng; `-privacy` | Q1/2027 |
-| 0020 | Module ứng dụng dùng chung: một ADR, mỗi module một mục (thư viện, license, pilot cần đến), bổ sung khi bắt đầu từng module | Theo từng module |
+| 0020 | Module ứng dụng dùng chung: một ADR, mỗi module một mục (thư viện, license, pilot cần đến), bổ sung khi bắt đầu từng module | Đã có mục cho các module 0.14; bổ sung theo từng module |
 | 0021 | Thanh toán nội địa: IPN, idempotent, đối soát | Khi có pilot cần |
-| 0022 | Golden path mobile: `template-expo`, OIDC native app | Khi có dự án mobile |
+| 0022 | Cơ cấu tổ chức dùng chung (`organization`). Số này ban đầu dành cho golden path mobile | Đã viết |
+| 0024 | Workflow phê duyệt nhúng Flowable 8 | Đã viết |
+| 0025 | Module AI: use case, cổng dữ liệu, ngân sách, Spring AI 2.0 | Đã viết |
+| 0026 | API key, ứng dụng đối tác, phantom token qua gateway | Đã viết |
+| 0027 | Golden path mobile: `template-expo`, OIDC native app (chuyển từ số 0022) | Khi người dùng mở lại `template-expo` (đang hoãn) |
 | 0023 | IAM giai đoạn tiếp theo: hợp nhất audit, lọc danh sách theo policy, quản trị uỷ quyền theo tenant | Q1/2027 |
 
 Danh sách này gộp khoảng 23 ADR trong bản nháp của [báo cáo quy hoạch](research/2026-10-quy-hoach-vyforge.md) thành 11
