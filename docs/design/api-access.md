@@ -69,7 +69,7 @@ Các kịch bản K3, K4, K5, K6, K7, K9, K11, K13 và K15 là đặc thù Việ
 | K6 | **Gói dịch vụ**: gói Free 1.000 request/ngày và 5 request/giây; gói Pro 100.000/ngày và 50/giây; đối tác Enterprise có hạn mức riêng theo hợp đồng | Rate: rule của `-ratelimit` chọn theo *API plan* của app. Quota: entitlement `METERED` `api.requests` của `-features` (theo gói của tenant, override theo hợp đồng). Gateway giữ bộ đếm nhanh, `-features` giữ số gốc (mục 3.7) |
 | K7 | **Mùa cao điểm 11.11, Tết**: một đối tác gọi dồn làm chậm cả hệ thống | Rate theo key và theo app, có burst; giới hạn đồng thời theo app; người vận hành *tạm khoá* app (`SUSPENDED`) bằng một lệnh, có hiệu lực ở mọi replica gateway trong vài giây (pub/sub) |
 | K8 | **Xoay key định kỳ 90 ngày** theo chính sách bảo mật của khách, không gián đoạn | `rotate` tạo key mới, key cũ còn hiệu lực trong `overlap` (mặc định 24 giờ, tối đa 7 ngày như Stripe). Chính sách tenant `max_key_lifetime` bắt buộc có hạn. Nhắc trước 14, 3, 1 ngày |
-| K9 | **Đối tác kế toán** (kiểu MISA, Fast) làm *ứng dụng marketplace*: người dùng của tenant bấm "Kết nối", đồng ý quyền, ứng dụng gọi API thay người dùng | App `PUBLIC` có OAuth client loại authorization code + PKCE trên auth-server, `require-consent=true`. Danh sách app được duyệt hiện ở trang "Ứng dụng tích hợp" của tenant (marketplace). Người vận hành duyệt app trước khi lên danh sách (`REVIEW → PUBLISHED`) |
+| K9 | **Đối tác kế toán** (kiểu MISA, Fast) làm *ứng dụng marketplace*: người dùng của tenant bấm "Kết nối", đồng ý quyền, ứng dụng gọi API thay người dùng | App `PUBLIC` có OAuth client loại authorization code + PKCE trên auth-server, `require-consent=true`. Danh sách app được duyệt hiện ở trang "Ứng dụng tích hợp" của tenant (marketplace). Người vận hành duyệt app trước khi lên danh sách (`REVIEW → PUBLISHED`). App truyền `tenant=<slug>` ở `/oauth2/authorize`; tenant phải đã cài app; người dùng đồng ý theo từng tenant (mục 3.12) |
 | K10 | **Developer portal**: lập trình viên của đối tác đọc tài liệu OpenAPI gộp từ nhiều service, thử API trên console bằng key sandbox, tải SDK Java/TypeScript | Spec gộp chỉ gồm operation được đánh dấu công khai (`x-vyforge-audience: partner`), có version theo ADR-0005. UI dùng Scalar (MIT). Console chỉ chạy với key `test`. SDK sinh bằng lệnh `openapi-sdk` của `platform-ci` (OpenAPI Generator) |
 | K11 | **Môi trường thử**: đối tác tích hợp trên dữ liệu giả trước khi chạy thật, như sandbox của Stripe | Key có `environment` `test`/`live`, tiền tố khác nhau. Key `test` chỉ đổi được token cho *tenant sandbox* ghép đôi với tenant thật (`acme` ↔ `acme-sandbox`, ADR-0011). Dữ liệu tách hẳn theo tenant, không cần cờ trong từng bảng |
 | K12 | **Thống kê**: tenant admin xem app nào gọi bao nhiêu, lỗi bao nhiêu, endpoint nào chậm; đối tác xem mức dùng của chính mình | Gateway gom số liệu theo phút (app, key, route, nhóm mã trạng thái, độ trễ), đẩy về module; bảng rollup phút/giờ/ngày, partition theo ngày. API `/usage` lọc theo app, key, khoảng thời gian |
@@ -474,9 +474,11 @@ Hôm nay auth-server chỉ cấp token cho tenant của client. Phần mở rộ
    `invalid_grant`.
 3. Token có `sub=app:<appId>`, `tenant_id=<tenant cài>`, `vyf_inst=<installationId>`, hạn 10 phút như hiện tại.
 
-**Authorization code cho app gọi thay người dùng** (K9): đã có ở auth-server (`require-consent`, PKCE). Module chỉ tạo client
-với redirect URI đã kiểm (https, không wildcard, không IP nội bộ) và danh sách scope. Token của người dùng có `azp` là app,
-nên `-authz` vẫn kiểm quyền của *người dùng*, giới hạn thêm bởi scope (ranh giới ở mục 3.6).
+**Authorization code cho app gọi thay người dùng** (K9): client `multiTenant` có `authorization_code` + PKCE,
+`require-consent`. Module tạo client với redirect URI đã kiểm (https, không wildcard, không IP nội bộ) và danh sách scope.
+Chọn tenant bằng tham số `tenant`, bắt buộc installation `ACTIVE`, consent của người dùng theo tenant, claim `vyf_inst` và
+thu hồi khi gỡ cài: xem [mục 3.12](#312-authorization-code-cho-app-multi-tenant-ở-tenant-khác-k9). Token của người dùng có
+`client_id`/`azp` là app, nên `-authz` vẫn kiểm quyền của *người dùng*, giới hạn thêm bởi scope (ranh giới ở mục 3.6).
 
 **Cấp OAuth client** qua `OAuthClientProvisioner`: module là nguồn sự thật về app; auth-server giữ `RegisteredClient`.
 Tạo/sửa/xoá app → task `api-access.client-sync` trên `DurableTaskQueue` gọi API quản trị của auth-server (idempotent theo
@@ -556,6 +558,374 @@ flowchart LR
 | Thu hồi key | Commit → event `ApiKeyRevoked` → pub/sub `vyforge:api-access:revoked` → mọi gateway xoá cache theo `keyId`. Mất pub/sub thì chậm tối đa TTL cache (60 s). Token đã đổi chỉ gateway giữ, nên không có token "mồ côi" ngoài biên |
 | Đồng bộ OAuth client lỗi | Task retry; `DEAD` → trạng thái `clientSync=FAILED` trên app, nút thử lại, event `ApplicationClientSyncFailed` |
 | Đẩy usage lỗi | Gateway giữ tối đa `usage.buffer-max` (mặc định 10.000 dòng gom) rồi bỏ dòng cũ nhất, đếm `vyforge.api_access.usage.dropped` |
+
+### 3.12 Authorization code cho app multi-tenant ở tenant khác (K9)
+
+Bổ sung 27/10/2026. Trước bản này, mục 3.8 coi K9 là "đã có ở auth-server". Thực tế `TenantSelectionPolicy.select` luôn ép
+client đã gắn tenant về tenant nhà, mà client `app_*` của app `PUBLIC` gắn với tenant của *nhà phát triển*. Người dùng của
+tenant cài app không phải thành viên tenant nhà, nên bị chặn 403 ngay ở `/oauth2/authorize`. Mục này chốt bốn điểm còn
+thiếu: chọn tenant, kiểm installation và scope, consent, claim và thu hồi.
+
+Phạm vi: client có cờ `multiTenant` (client của app `PUBLIC`, mục 3.8) dùng grant `authorization_code` (+ `refresh_token`)
+để gọi API **thay người dùng** của một tenant đã cài app. Client credentials theo installation (K3) giữ nguyên như mục 3.8.
+App `PRIVATE` và client không `multiTenant` không đổi gì.
+
+#### 3.12.1 Chọn tenant: tham số `tenant` ở `/oauth2/authorize`
+
+**Quyết định:** app truyền `tenant=<slug>` ở `/oauth2/authorize`, đúng cơ chế "theo tham số" của ADR-0011 §2. Với client
+`multiTenant`, tham số được phép khác tenant nhà; khi đó tenant đó phải có installation hợp lệ của app (3.12.2). Không có
+tham số thì như hôm nay: tenant nhà của client.
+
+| Phương án | Đánh giá |
+|---|---|
+| **Tham số `tenant` (chọn)** | Dùng lại `TenantParameter`, `TenantAccessFilter`, ADR-0011 §2; không thêm màn hình. App luôn biết tenant: nút "Kết nối" bắt đầu từ trang marketplace của tenant, từ webhook `ApplicationInstalled` hoặc `GET /self/installations`. Token và refresh giữ đúng tenant đã chọn nhờ `issuedTenant` như client dùng chung |
+| Chọn tenant sau đăng nhập (màn hình ở auth-server) | ADR-0011 ghi là "chưa làm". Thêm một bước cho mọi lần đăng nhập, phải lọc danh sách tenant theo installation (lộ tenant nào đã cài app cho chính người dùng thì chấp nhận được, nhưng là UI mới phải i18n, a11y, test). Để sau: khi có màn hình chọn tenant chung, client `multiTenant` gửi `tenant` rỗng sẽ dùng nó (3.12.8) |
+| Suy ra theo installation | Người dùng thuộc nhiều tenant cùng cài app thì không xác định được; app không chủ động chọn được tenant; dễ cấp nhầm tenant mà người dùng không để ý. Loại |
+
+Cách app có `slug` để truyền:
+
+- **Từ marketplace** (khuyến nghị): app khai `initiateLoginUri` (tuỳ chọn, kiểm như redirect URI: https, không wildcard,
+  không IP nội bộ). Nút "Mở ứng dụng" trên trang app đã cài chuyển tới
+  `<initiateLoginUri>?iss=<issuer>&tenant=<slug>&target_link_uri=…` theo *third-party initiated login* (OIDC Core 1.0 §4).
+  App bắt đầu authorization request với đúng `tenant` đó. `iss` phải khớp issuer app đã cấu hình, không khớp thì app bỏ qua.
+- **Từ dữ liệu của app:** webhook `ApplicationInstalled` (có `tenantId`) hoặc `GET /self/installations`.
+
+`tenant` không phải dữ liệu tin cậy từ phía app: auth-server kiểm lại membership, trạng thái tenant và installation. App
+phải đọc `tenant_id` trong token trả về, không dựa vào giá trị mình đã gửi.
+
+Thay đổi ở auth-server (`TenantSelectionPolicy`):
+
+```java
+/** Client multiTenant: tenant khác tenant nhà được phép, kèm điều kiện installation do lớp gọi kiểm (3.12.2). */
+public static Selection select(@Nullable String clientTenant, boolean multiTenant, @Nullable String requested);
+
+/** requiresInstallation = tenant đã chọn khác tenant nhà của client multiTenant. */
+public record Selection(String tenant, boolean requiresInstallation) {}
+```
+
+- Client không `multiTenant`: giữ nguyên hành vi `select(clientTenant, requested)` (khác tenant nhà → từ chối).
+- `forRefresh(issued, clientTenant, multiTenant)`: client `multiTenant` được giữ `issued` khác tenant nhà, với
+  `requiresInstallation=true`; client thường giữ quy tắc cũ.
+- `InstallationTokenPolicy.installationTenant` (K3) dùng cùng hàm để hai grant chọn tenant như nhau.
+
+#### 3.12.2 Installation bắt buộc và scope của token
+
+**Installation phải `ACTIVE` ở tenant đã chọn**, kiểm bằng `InstallationPolicy.check(clientId, tenant)` (cùng
+`/internal/installations:check` của K3, kết quả đã gồm hạn đồng ý `consent_expires_at`). Kiểm ở **mọi** điểm:
+
+| Điểm kiểm | Vì sao |
+|---|---|
+| `/oauth2/authorize`, sau khi người dùng đăng nhập và qua `TenantAccessFilter` | Báo lỗi cho app trước khi hiện consent; không hỏi người dùng đồng ý cho app chưa được cài |
+| Đổi code lấy token | Installation có thể bị gỡ giữa lúc consent và lúc đổi code |
+| Mỗi lần refresh | Gỡ cài, khoá, hết hạn đồng ý phải chặn refresh ngay cả khi bước dọn (3.12.4) chưa chạy |
+
+Tenant nhà của nhà phát triển không cần installation (nhân viên của đối tác dùng app của chính mình), giống K3.
+api-access không trả lời → không cấp (fail-closed), như K3.
+
+**Scope của token:**
+
+```
+scope(token) = scope xin
+             ∩ scope đăng ký của client            — SAS đã kiểm (invalid_scope nếu xin ngoài danh sách)
+             ∩ grantedScopes của installation       — tenant admin đồng ý khi cài (trần của tenant)
+             ∩ scope người dùng đồng ý ở tenant đó  — consent của người dùng (3.12.3)
+```
+
+**Không giao với quyền người dùng lúc cấp token.** Quyền của người dùng được kiểm *ở mỗi request*:
+
+```
+được phép ⇔ Allow(policy IAM của người dùng trong tenant, theo role trong token)
+          ∧ action ∈ actions(scope của token)            — ranh giới PermissionBoundary (mục 3.6)
+          ∧ không Deny nào khớp
+```
+
+Lý do:
+
+- Auth-server không biết policy IAM (ADR-0009/0010: IAM ở `-authz` và gateway). Giao lúc cấp phải gọi IAM với mọi action
+  của mọi scope, chậm và cũ ngay khi admin đổi policy trong vòng đời refresh token (có thể nhiều ngày).
+- Kiểm ở request là đúng mô hình *delegation*: app không bao giờ làm được nhiều hơn người dùng hiện tại, kể cả khi
+  quyền người dùng bị thu hẹp sau khi đồng ý.
+- Màn hình consent vẫn *đánh dấu* scope mà người dùng hiện không đủ quyền (gọi `Authz.holds` qua api-access, 3.12.3) để
+  người dùng không tưởng nhầm. Đánh dấu chỉ để hiển thị, không lọc scope.
+
+Thiếu `PermissionBoundary` (bản `-authz` cũ) thì token của app có toàn quyền của người dùng trong tenant, scope chỉ còn là
+nhãn. Vì vậy **chỉ bật K9 khi service đích có `PermissionBoundary`**: auth-server từ chối tạo client `multiTenant` có grant
+`authorization_code` nếu `vyforge.auth.api-access.user-delegation.enabled=false` (mặc định `false` tới khi `-authz` phát
+hành SPI). Đây là cờ một chiều, ghi trong vận hành.
+
+Giao rỗng ở `/oauth2/authorize` → `invalid_scope`. Giao rỗng khi refresh (tenant thu hẹp hết) → `invalid_grant`; thu hẹp
+một phần thì token mới chỉ còn phần giao, không lỗi (RFC 6749 §6 cho phép scope hẹp hơn).
+
+#### 3.12.3 Consent: hai tầng, hai màn hình
+
+| Tầng | Ai đồng ý | Màn hình | Lưu ở | Phạm vi |
+|---|---|---|---|---|
+| **Cài app** (tenant) | Tenant admin, người giữ mọi action của scope (chống leo quyền, ADR-0026 §6) | `ConsentScreen` của `@vyforge/api-access` trong admin MFE | `api_installation`, `api_installation_scope` (api-access) | Trần scope cho cả tenant, hạn `consent_expires_at` |
+| **Uỷ quyền** (người dùng) | Từng người dùng | Trang consent của auth-server (`/oauth2/consent`, Thymeleaf, `layout.html`, vi/en) | `oauth2_tenant_consent` (auth-server, mới) | Scope người dùng cho app dùng thay mình, trong một tenant |
+
+Vì sao trang consent của người dùng ở auth-server, không dùng `ConsentScreen`:
+
+- Bước consent nằm giữa luồng chuyển hướng OAuth, cùng origin và phiên đăng nhập với auth-server (OAuth 2.1 §4.1.1,
+  RFC 9700 §4.4 về clickjacking: trang có `frame-ancestors 'none'`). `ConsentScreen` chạy trong app Next.js của tenant,
+  không có phiên auth-server.
+- Hai việc khác nhau: `ConsentScreen` cho admin chọn scope `optional`, thời hạn, webhook; trang của auth-server chỉ cho
+  người dùng đồng ý hoặc bỏ chọn scope trong trần đã có.
+- SAS chỉ cần `consentPage("/oauth2/consent")`; giữ trang mặc định của SAS thì không i18n và không hiện tenant.
+
+Nội dung trang consent: tên và logo app, nhà phát triển (tên tenant nhà), **tenant đang vào** (tên + slug, để người dùng
+thuộc nhiều tenant thấy rõ), danh sách scope theo tiêu đề vi/en kèm nhãn dữ liệu cá nhân (`personal-data`, mục 8.2) và nhãn
+"bạn hiện chưa có quyền này", link chính sách bảo mật của app, thời hạn (nếu installation có `consent_expires_at`).
+Dữ liệu lấy từ `installations:check` mở rộng (3.12.6), cache theo `(clientId, tenant)` 60 giây.
+
+**Khoá consent là `(client, người dùng, tenant)`, không phải `(client, người dùng)` như SAS.** `OAuth2AuthorizationConsent`
+của SAS khoá theo `registeredClientId + principalName` và gộp scope đã đồng ý trước đó vào lần sau. Người dùng thuộc hai
+tenant cùng cài app sẽ mang consent của tenant này sang tenant kia. Cách làm:
+
+- Bảng `oauth2_tenant_consent(registered_client_id, principal_name, tenant_id, installation_id, scopes, consented_at,
+  expires_at)`, khoá chính ba cột đầu. Đây là nguồn sự thật cho client `multiTenant`.
+- `OAuth2AuthorizationCodeRequestAuthenticationProvider.setAuthorizationConsentRequired(...)`: với client `multiTenant`,
+  cần consent khi không có dòng của `(client, sub, tenant)` hoặc dòng không phủ scope (sau giao installation) đang xin.
+- `OAuth2AuthorizationConsentAuthenticationProvider.setAuthorizationConsentCustomizer(...)`: ghi dòng
+  `oauth2_tenant_consent` bằng đúng scope người dùng chọn ở lần này (tenant lấy từ authorization request đã lưu), và đặt
+  authority của consent SAS bằng đúng tập đó (không gộp scope của tenant khác).
+- Auth-server **tính lại `scope` của token** ở `TokenClaimsCustomizer` theo công thức 3.12.2, không tin
+  `authorizedScopes` của authorization. Nếu SAS vẫn gộp scope ở đâu đó, token vẫn đúng.
+
+**Khi nào hỏi lại người dùng:**
+
+| Tình huống | Hỏi lại? |
+|---|---|
+| Lần đầu `(client, người dùng, tenant)` | Có |
+| App xin thêm scope chưa có trong consent (sau giao installation) | Có, chỉ hiện scope mới cùng scope cũ đã tick sẵn |
+| Tenant admin mở rộng `grantedScopes` | Không tự cấp thêm: token vẫn giới hạn bởi consent của người dùng; app phải xin scope mới → hỏi |
+| Tenant admin thu hẹp `grantedScopes` | Không hỏi; token tự hẹp theo giao |
+| Installation bị gỡ rồi cài lại (`installationId` khác) | Có: dòng consent gắn `installation_id`, gỡ cài xoá dòng (3.12.4) |
+| Consent người dùng hết hạn (`expires_at` = min(`consent_expires_at` của installation, `consent_max_age` của tenant), K4) | Có |
+| App gửi `prompt=consent` | Có (OIDC Core §3.1.2.1) |
+| `prompt=none` mà cần consent | Không hiện màn hình; trả `consent_required` |
+| Người dùng rút consent ở trang tài khoản | Có, ở lần sau |
+| Người dùng chuyển sang tenant khác (cùng app) | Có, consent tách theo tenant |
+| Chỉ đổi role người dùng | Không (quyền kiểm ở request) |
+
+**Rút consent:** trang tài khoản của auth-server thêm mục "Ứng dụng đã cấp quyền" liệt kê dòng `oauth2_tenant_consent`
+(app, tenant, scope, ngày). Rút → xoá dòng và thu hồi mọi authorization của `(client, sub, tenant)`. Đây là quyền rút lại
+sự đồng ý của chủ thể dữ liệu (Luật 91/2025/QH15, mục 8.2); ghi audit `oauth2:consent:Revoke` ở auth-server.
+
+#### 3.12.4 Claim, refresh token và `InstallationRevoked`
+
+**Access token của người dùng qua app multi-tenant:**
+
+| Claim | Giá trị | Ghi chú |
+|---|---|---|
+| `sub` | ID tài khoản người dùng | Như mọi token người dùng; **không** phải `app:<id>` |
+| `tenant_id` | Tenant đã chọn (tenant cài) | ADR-0015 |
+| `roles` | Role của membership trong tenant đó | Như hôm nay |
+| `client_id`, `azp` | `app_<applicationId>` | RFC 9068 §2.2; service và audit biết request đi qua app nào |
+| `scope` | Theo 3.12.2 | |
+| `aud` | `client_id` + audience của client + audience của scope được cấp (như K3) | Không gồm audience của API auth-server |
+| `vyf_inst` | `installationId` | **Có**, chỉ khi tenant khác tenant nhà. Dùng cho chặn token đã phát (dưới), audit, `ScopeBoundary` |
+| `auth_time`, `amr` | Như hôm nay | Service kiểm step-up như với người dùng |
+| `act` | Không có | Đây là uỷ quyền OAuth thông thường, không phải token exchange |
+
+ID token: thêm `tenant_id` như hôm nay, không có `vyf_inst` (ID token là cho app biết người dùng, không dùng gọi API).
+
+**Refresh token:** mỗi lần refresh auth-server kiểm lại theo thứ tự: tài khoản còn hoạt động → tenant đang hoạt động và còn
+membership (`requireGranted`) → installation `ACTIVE` (đã gồm hạn đồng ý) → consent của người dùng còn hạn → tính lại
+scope. Bất kỳ bước nào không đạt → `invalid_grant`, authorization giữ nguyên (refresh token không dùng được nữa vì mọi lần
+đều kiểm). Refresh token xoay vòng (`reuseRefreshTokens(false)` đã bật), đúng yêu cầu OAuth 2.1 §4.3.1 cho client công khai.
+
+**Khi `InstallationRevoked`** (tenant gỡ app, app bị xoá, operator gỡ):
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant T as Tenant admin
+  participant M as api-access
+  participant Q as DurableTaskQueue
+  participant A as auth-server
+  participant G as platform-gateway
+  participant P as App đối tác
+  T->>M: POST /installations/{id}:revoke
+  M->>M: installation REVOKED, thu hồi key, gỡ policy IAM (một transaction)
+  M-->>G: pub/sub vyforge:api-access:revoked "installation:<id>" (đã có)
+  M->>Q: task api-access.installation-revoke {clientId, tenant, installationId} (sau commit)
+  Q->>A: POST /api/v1/admin/clients/{clientId}/tenants/{tenant}:revoke-authorizations (scope auth.clients.partner)
+  A->>A: xoá oauth2_authorization của client có tenant_id = tenant<br/>xoá oauth2_tenant_consent (client, tenant)
+  A-->>Q: 200 {revoked: n} (idempotent: lần sau n = 0)
+  G->>G: thêm vyf_inst vào danh sách chặn, TTL = access-token-ttl
+  P->>G: request với access token cũ (vyf_inst = id)
+  G-->>P: 401 invalid_token
+  P->>A: grant_type=refresh_token
+  A->>A: không còn authorization (hoặc installations:check → inactive)
+  A-->>P: 400 invalid_grant
+```
+
+- **Dọn chủ động** (task trên `DurableTaskQueue`, retry có backoff, `DEAD` thì hiện ở app như `client-sync`): xoá
+  authorization và consent của `(client, tenant)`. Không có task này thì vẫn an toàn nhờ kiểm installation mỗi lần refresh;
+  task chỉ dọn dữ liệu và làm introspection/userinfo trả "không hợp lệ" ngay.
+- **API mới ở auth-server** `POST /api/v1/admin/clients/{clientId}/tenants/{tenant}:revoke-authorizations`: scope
+  `auth.admin` hoặc `auth.clients.partner` (chỉ client `app_*`, như `PartnerClientPolicy`). Dùng
+  `RevokeAuthorizationsUseCase.revokeAllForClientInTenant(clientId, tenant)` mới: lọc theo claim `tenant_id` của access
+  token đã lưu trong authorization.
+- `OAuthClientProvisioner` thêm `revokeAuthorizations(String clientId, String tenant)` (mặc định không làm gì, `NONE` bỏ
+  qua).
+- **Access token đã phát** (JWT, tối đa `access-token-ttl`): gateway đã nghe `installation:<id>` để xoá cache key; mở rộng
+  để giữ danh sách chặn `vyf_inst` trên Valkey (TTL = `access-token-ttl`), JWT có `vyf_inst` trong danh sách → 401
+  `invalid_token` (RFC 6750 §3.1). Không có Valkey thì chấp nhận tối đa `access-token-ttl`, như khi khoá tài khoản (ghi ở
+  `RevokeAuthorizationsUseCase`).
+- **`SUSPENDED`, hết hạn đồng ý:** không dọn authorization (mở khoá hoặc gia hạn thì dùng tiếp), chỉ chặn ở refresh và ở
+  gateway như trên. `renew-consent` không cần người dùng đồng ý lại nếu `installationId` không đổi, trừ khi consent của
+  người dùng cũng hết hạn.
+- **Người dùng bị gỡ khỏi tenant, tài khoản bị khoá, client bị xoá:** đã có (`requireGranted` khi refresh,
+  `AccountEventsListener`, `SasClientStore.delete`).
+
+#### 3.12.5 Luồng đầy đủ
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as Người dùng (tenant acme)
+  participant P as App kế toán (client app_X, multiTenant)
+  participant A as auth-server
+  participant M as api-access
+  participant G as gateway / service
+  U->>P: Mở app từ marketplace của acme (initiateLoginUri?iss&tenant=acme)
+  P->>A: GET /oauth2/authorize?response_type=code&client_id=app_X&redirect_uri&scope=openid invoices.read<br/>&state&nonce&code_challenge(S256)&tenant=acme
+  A->>A: SAS kiểm client, redirect_uri (khớp chính xác), PKCE
+  A->>U: chưa đăng nhập → /login (mật khẩu, passkey, IdP, MFA)
+  U->>A: đăng nhập
+  A->>A: TenantAccessFilter: tenant acme hợp lệ, đang hoạt động, U là thành viên (sai → trang 403)
+  A->>M: installations:check {clientId: app_X, tenant: acme} (cache 60 s)
+  M-->>A: active, installationId, grantedScopes, scopes {title, personalData, userHolds}
+  A->>A: scope = xin ∩ client ∩ granted (rỗng → redirect invalid_scope)
+  alt cần consent (không có dòng (app_X, U, acme) phủ scope, prompt=consent, hết hạn)
+    A->>U: /oauth2/consent: app, nhà phát triển, tenant acme, scope
+    U->>A: đồng ý (có thể bỏ bớt scope)
+    A->>A: ghi oauth2_tenant_consent (app_X, U, acme, installationId, scope)
+  end
+  A-->>P: 302 redirect_uri?code&state&iss
+  P->>A: POST /oauth2/token grant_type=authorization_code, code, code_verifier, client auth
+  A->>M: installations:check (lại)
+  A->>A: membership, roles, scope = xin ∩ granted ∩ consent<br/>JWT sub=U, tenant_id=acme, client_id=app_X, vyf_inst
+  A-->>P: access_token, refresh_token, id_token (tenant_id=acme)
+  P->>G: GET /api/v1/invoices/… Bearer JWT
+  G->>G: chữ ký, aud, vyf_inst không bị chặn
+  G->>G: Authz: policy của U trong acme ∧ action ∈ scope (PermissionBoundary)
+  G-->>P: 200
+```
+
+#### 3.12.6 Thay đổi hợp đồng `installations:check`
+
+Thêm trường tuỳ chọn (auth-server cũ bỏ qua, api-access cũ không trả thì trang consent hiện scope bằng tên kỹ thuật):
+
+```json
+{
+  "active": true, "applicationId": "0192…", "installationId": "0193…", "tenantId": "acme",
+  "grantedScopes": ["invoices.read", "invoices.write"], "audiences": ["invoices"],
+  "consentExpiresAt": "2027-04-25T00:00:00Z",
+  "application": { "name": "Kế toán X", "developer": "Công ty X", "logoUri": "https://…", "policyUri": "https://…" },
+  "scopes": [ { "name": "invoices.read", "title": { "vi": "Đọc hoá đơn", "en": "Read invoices" },
+                "personalData": "BASIC" } ]
+}
+```
+
+Request thêm `subject` (tuỳ chọn): có thì api-access trả thêm `scopes[].userHolds` (người dùng có giữ mọi action của scope
+trong tenant hay không, bằng `Authz.holds` trong `TenantContext.run(tenant)`), chỉ dùng để hiển thị. `reason` khi
+`active=false`: `not_installed`, `pending_consent`, `suspended`, `consent_expired`, `application_suspended`.
+
+#### 3.12.7 Mã lỗi
+
+Lỗi ở `/oauth2/authorize` chỉ chuyển hướng về app khi `client_id` và `redirect_uri` đã hợp lệ (RFC 6749 §4.1.2.1); lỗi
+về người dùng và tenant hiện trang lỗi ở auth-server để không lộ thông tin tenant cho app hay người ngoài (ADR-0011).
+Kiểm installation chạy trong `authenticationValidator` của SAS (sau khi SAS đã kiểm `client_id`, `redirect_uri`, nên lỗi
+chuyển hướng được). SAS gọi validator cả ở lượt chưa đăng nhập; validator bỏ qua bước kiểm installation khi principal chưa
+xác thực, và lượt sau đăng nhập (SAS phát lại request đã lưu) mới kiểm, sau `TenantAccessFilter`. Nhờ vậy chỉ thành viên
+của tenant mới biết app đã cài hay chưa.
+
+| Tình huống | Điểm | Phản hồi | `error_description` / ghi chú |
+|---|---|---|---|
+| `tenant` sai định dạng hoặc lặp | authorize | Trang 403 | Như ADR-0011 |
+| Tenant không có, bị khoá, người dùng không phải thành viên | authorize | Trang 403 | Như ADR-0011; không chuyển hướng |
+| Installation không có, `PENDING_CONSENT`, `REVOKED` | authorize | 302 `error=access_denied` | `installation_inactive` |
+| Installation hoặc app `SUSPENDED` | authorize | 302 `error=access_denied` | `installation_suspended` |
+| Hết hạn đồng ý của installation | authorize | 302 `error=access_denied` | `consent_expired` |
+| Scope giao rỗng | authorize | 302 `error=invalid_scope` | `scope_not_granted` |
+| Người dùng từ chối consent | authorize | 302 `error=access_denied` | Mặc định SAS |
+| `prompt=none`, cần consent | authorize | 302 `error=consent_required` | OIDC Core §3.1.2.6 |
+| `prompt=none`, chưa đăng nhập | authorize | 302 `error=login_required` | OIDC Core §3.1.2.6 |
+| api-access không trả lời | authorize | 302 `error=temporarily_unavailable` | Fail-closed |
+| Installation mất hiệu lực giữa authorize và đổi code | token | 400 `invalid_grant` | `installation_inactive` |
+| Refresh sau gỡ cài, khoá, hết hạn đồng ý | token | 400 `invalid_grant` | Lý do như trên |
+| Refresh khi người dùng bị gỡ khỏi tenant, tenant bị khoá | token | 400 `invalid_grant` | Như hôm nay |
+| Refresh khi scope giao rỗng | token | 400 `invalid_grant` | `scope_not_granted` |
+| api-access không trả lời khi đổi code hoặc refresh | token | 503 `temporarily_unavailable` | Lệch RFC 6749 §5.2 (không có mã này ở token endpoint), giữ như K3 đang làm; app nên retry có backoff |
+| Client `multiTenant` có `authorization_code` khi `user-delegation.enabled=false` | admin API | 400 Problem Details `oauth2.client_invalid` | Như mọi lỗi cấu hình client (`PartnerClientPolicy`) |
+| Access token có `vyf_inst` đã bị gỡ | gateway | 401 `invalid_token` | `WWW-Authenticate: Bearer error="invalid_token"` (RFC 6750 §3.1) |
+| Thiếu quyền người dùng hoặc ngoài scope | service | 403 `authz.forbidden` | Như mọi request |
+
+`error_description` là mã máy đọc được (ổn định, tiếng Anh, không chứa tên tenant); trang 403 và trang consent dùng
+message vi/en.
+
+#### 3.12.8 Đối chiếu chuẩn
+
+| Chuẩn | Áp dụng |
+|---|---|
+| OAuth 2.1 (draft-ietf-oauth-v2-1) §4.1, §7.5 | PKCE `S256` bắt buộc mọi client; redirect URI khớp chính xác; không implicit, không ROPC |
+| RFC 9700 (OAuth 2.0 Security BCP) | PKCE, kiểm `iss` ở phản hồi (RFC 9207), chống clickjacking trang consent, refresh token xoay vòng hoặc ràng buộc |
+| RFC 9207 | Trả `iss` trong phản hồi authorization để app chống mix-up giữa nhiều issuer (app đa nền tảng) |
+| RFC 6749 §4.1.2.1, §5.2, §6 | Lỗi chuyển hướng chỉ khi redirect URI hợp lệ; mã lỗi token endpoint; refresh với scope hẹp hơn |
+| RFC 9068 | `client_id` trong JWT access token |
+| RFC 6750 §3.1 | `invalid_token` cho token đã bị chặn |
+| RFC 7009 | App gọi `/oauth2/revoke` khi người dùng ngắt kết nối phía app; auth-server xoá authorization của `(client, sub, tenant)` |
+| OIDC Core 1.0 §3.1.2.1, §3.1.2.6, §4 | `prompt=consent/none`, `consent_required`/`login_required`, third-party initiated login (`initiateLoginUri`) |
+| ADR-0011 §2 | Tham số `tenant`; mở rộng cho client `multiTenant` |
+
+Để sau: màn hình chọn tenant (client `multiTenant` gửi `tenant=` rỗng hoặc không gửi mà người dùng không thuộc tenant
+nhà); Rich Authorization Requests (RFC 9396) cho consent theo bản ghi (ví dụ chỉ một chi nhánh); DPoP (RFC 9449).
+
+#### 3.12.9 Test chấp nhận (K9.x)
+
+Auth-server: test tích hợp với `InstallationPolicy` giả (như `PartnerClientTests`). api-access: test của
+`InstallationService` và task. Gateway: test của bộ lọc với WireMock/Valkey.
+
+| Mã | Kịch bản | Kỳ vọng |
+|---|---|---|
+| K9.1 | U thuộc `acme`, app_X (nhà `devco`) cài ở `acme` `ACTIVE`; authorize `tenant=acme` → consent → code → token | JWT `sub=U`, `tenant_id=acme`, `client_id=app_X`, `vyf_inst=<id>`, `roles` của U ở acme, `scope` = xin ∩ granted ∩ đồng ý; ID token `tenant_id=acme` |
+| K9.2 | Như K9.1 nhưng không gửi `tenant` | Tenant nhà `devco`; U không thuộc devco → trang 403, không chuyển hướng |
+| K9.3 | `tenant=acme`, app_X chưa cài ở acme | 302 `access_denied`, `installation_inactive`; không hiện consent |
+| K9.4 | U không thuộc `acme` (app đã cài ở acme) | Trang 403 (không lộ trạng thái installation) |
+| K9.5 | Client không `multiTenant` gắn `devco` gửi `tenant=acme` | Trang 403 như hôm nay (không hồi quy) |
+| K9.6 | Installation `SUSPENDED` / hết `consent_expires_at` | 302 `access_denied` `installation_suspended` / `consent_expired` |
+| K9.7 | Xin `invoices.write` không có trong granted | Token chỉ có phần giao; xin toàn scope ngoài granted → 302 `invalid_scope` |
+| K9.8 | U bỏ chọn `invoices.write` ở consent | Token không có `invoices.write`; lần sau xin lại `invoices.write` → hỏi lại |
+| K9.9 | U đã đồng ý ở `acme`, authorize `tenant=beta` (cũng cài app_X) | Hiện consent cho `beta`; consent của acme không áp sang beta; token beta không mang scope chỉ đồng ý ở acme |
+| K9.10 | Đăng nhập lần hai ở acme, cùng scope | Không hiện consent; `prompt=consent` thì hiện; `prompt=none` khi chưa có consent → `consent_required` |
+| K9.11 | Gỡ installation sau khi đã có token; app refresh | 400 `invalid_grant`; task `installation-revoke` xoá authorization và consent của (app_X, acme), authorization ở `beta` còn nguyên |
+| K9.12 | Gỡ cài khi task chưa chạy (auth-server tắt API quản trị) | Refresh vẫn `invalid_grant` nhờ kiểm installation; task retry tới khi xong, chạy hai lần không lỗi |
+| K9.13 | Gỡ cài, gọi API bằng access token cũ qua gateway có Valkey | 401 `invalid_token` trong vòng vài giây; không Valkey thì hợp lệ tới hết `access-token-ttl` |
+| K9.14 | Cài lại sau khi gỡ (`installationId` mới) | Phải consent lại; token mới mang `vyf_inst` mới |
+| K9.15 | Installation `SUSPENDED` rồi mở lại | Refresh bị từ chối lúc khoá; sau mở lại refresh token cũ (nếu chưa hết hạn) dùng được, không phải consent lại |
+| K9.16 | Tenant admin thu hẹp granted còn `invoices.read` | Lần refresh sau token chỉ còn `invoices.read`; thu hẹp hết → `invalid_grant` |
+| K9.17 | U bị gỡ khỏi acme | Refresh `invalid_grant` (hồi quy của ADR-0011) |
+| K9.18 | api-access không trả lời | authorize 302 `temporarily_unavailable`; token 503 `temporarily_unavailable`; không cấp token |
+| K9.19 | U có quyền `invoices:invoice:List` nhưng không có `invoices:invoice:Create`; token có `invoices.write` | Tạo hoá đơn → 403 `authz.forbidden`; consent đã đánh dấu "chưa có quyền" cho `invoices.write` |
+| K9.20 | Token có scope `invoices.read`, U là admin | Gọi API ngoài scope → 403 (PermissionBoundary) |
+| K9.21 | U rút consent ở trang tài khoản | Authorization của (app_X, U, acme) bị xoá; refresh `invalid_grant`; lần sau phải consent |
+| K9.22 | Tạo client `multiTenant` + `authorization_code` khi `user-delegation.enabled=false` | 400 `oauth2.client_invalid` |
+| K9.23 | Không PKCE, `code_challenge_method=plain`, redirect URI khác một ký tự | Từ chối như OAuth 2.1 (SAS), không chuyển hướng với redirect URI sai |
+| K9.24 | Trang consent | Có `frame-ancestors 'none'`, hiện tên tenant đang vào, i18n vi/en, a11y (axe) không lỗi |
+| K9.25 | Phản hồi authorize | Có `iss` (RFC 9207) |
+| K9.26 | Client credentials K3 với cùng client sau thay đổi `TenantSelectionPolicy` | Hành vi như trước (`PartnerClientTests` không đổi) |
+
+#### 3.12.10 Việc triển khai
+
+| Repo | Việc |
+|---|---|
+| `platform-auth-server` | `TenantSelectionPolicy.select/forRefresh` có `multiTenant`; kiểm installation trong `authenticationValidator` của SAS và ở `TokenClaimsService` (code, refresh); bảng `oauth2_tenant_consent` (migration oauth2), `consentPage` + template vi/en, `authorizationConsentRequired` + `authorizationConsentCustomizer`; tính lại `scope` và thêm `vyf_inst`, `client_id` ở `TokenClaimsCustomizer`; API `…/tenants/{tenant}:revoke-authorizations` và `revokeAllForClientInTenant`; mục "Ứng dụng đã cấp quyền" ở trang tài khoản; cờ `vyforge.auth.api-access.user-delegation.enabled`; bật `iss` ở phản hồi authorize nếu SAS chưa trả |
+| `platform-java` (`-api-access`) | `installations:check` thêm `application`, `scopes`, `consentExpiresAt`, `subject` → `userHolds`; `initiateLoginUri` của app (kiểm như redirect URI); task `api-access.installation-revoke` + `OAuthClientProvisioner.revokeAuthorizations`; `AuthServerClientProvisioner` gọi API mới |
+| `platform-java` (`-api-access-gateway`) | Danh sách chặn `vyf_inst` theo pub/sub `installation:<id>`, TTL `access-token-ttl` |
+| `platform-java` (`-authz`) | `PermissionBoundary` (đã có trong 9.4), điều kiện để bật cờ `user-delegation` |
+| `platform-web` (`@vyforge/api-access`) | Nút "Mở ứng dụng" trong `MarketplaceGrid`/trang app đã cài dùng `initiateLoginUri`; trường `initiateLoginUri` trong `ApplicationForm` |
 
 ---
 
@@ -1387,7 +1757,8 @@ cấp công cụ:
    Thêm vào `platform-gateway` (worktree của repo gateway, tin nhắn TRIỂN KHAI sẽ chỉ).
 7. Usage: `/internal/usage:ingest`, rollup, partition, `UsageQueries`, `FeaturesQuotaBridge`.
 8. Auth-server: `ApiKeySubjectTokenValidator` (token exchange subject type mới), `InstallationPolicy` cho client credentials
-   có `tenant`, `vyforge_key_policy` trong phản hồi. Repo `platform-auth-server`.
+   có `tenant`, `vyforge_key_policy` trong phản hồi. Repo `platform-auth-server`. Authorization code cho client
+   `multiTenant` (K9) theo mục 3.12.10, sau khi `-authz` có `PermissionBoundary`.
 9. `OAuthClientProvisioner` (adapter auth-server), task `client-sync`; app PUBLIC, duyệt, marketplace, consent.
 10. `WebhooksBridge`, `NotificationBridge` (có điều kiện).
 11. Portal: `OpenApiAggregator`, snapshot, diff, endpoint portal, `try-keys`.
@@ -1404,7 +1775,7 @@ Bước 1–7 là bản dùng được cho K1, K5–K8, K12, K13, K15, K16. Bư�
 | Testcontainers PostgreSQL | Migration, verify theo hash, xoay có overlap, thu hồi, hết hạn, partition và rollup usage, idempotency của `usage:ingest`, xoá theo retention |
 | Testcontainers Valkey | Quota Lua (đồng thời 100 luồng không vượt trần), rate theo key và app, pub/sub thu hồi xoá cache |
 | Tích hợp gateway | WireMock cho auth-server: cache hit/miss/âm, 503 khi auth-server lỗi (fail-closed), IP sau proxy tin cậy, gỡ key khỏi header |
-| Tích hợp auth-server | Token exchange với subject type API key (module giả), JWT đúng claim; client credentials theo installation; installation bị gỡ → `invalid_grant` |
+| Tích hợp auth-server | Token exchange với subject type API key (module giả), JWT đúng claim; client credentials theo installation; installation bị gỡ → `invalid_grant`; authorization code ở tenant khác: K9.1–K9.26 (mục 3.12.9) |
 | Contract (Pact) | gateway ↔ auth-server (phản hồi có `vyforge_key_policy`), auth-server ↔ module (`keys:verify`, `installations:check`), gateway ↔ module (`usage:ingest`) |
 | Kiến trúc (ArchUnit) | `platform-api-access-core` không import Spring; `TENANT_ISOLATION` (truy vấn xuyên tenant chỉ ở `verify`, đánh dấu `@TenantExempt`); `PERSONAL_DATA_ANNOTATED` |
 | Bảo mật | Không endpoint nào trả `hash`; key không xuất hiện trong log (test bắt log); so sánh hằng thời gian |
@@ -1420,7 +1791,7 @@ Không thêm thư viện Java mới: CRC32 (`java.util.zip`), HMAC (`javax.crypt
 
 | Phụ thuộc | Phiên | Không có thì |
 |---|---|---|
-| `PermissionBoundary` trong `-authz` | `-authz` | Key không thu hẹp được hơn app (vẫn an toàn nhờ policy quản lý theo scope) |
+| `PermissionBoundary` trong `-authz` | `-authz` | Key không thu hẹp được hơn app (vẫn an toàn nhờ policy quản lý theo scope). K9 không bật được (cờ `user-delegation`, mục 3.12.2) |
 | Subject token API key, `InstallationPolicy`, scope `auth.clients.partner` | auth-server | Không có đường gateway; chỉ chạy chế độ `local`. App PUBLIC chưa lấy token theo installation |
 | Bộ lọc trong `platform-gateway` | gateway | Như trên |
 | `Entitlements.record`, feature `api.requests` | `-features` | Chỉ có rate limit, không có quota |
@@ -1602,6 +1973,9 @@ khai không qua filter này.
 8. **Portal dùng Scalar làm component**, spec gộp có snapshot và diff; SDK do `platform-ci` sinh.
 9. **Không nhận key qua query string.**
 10. **Test/live bằng tenant sandbox ghép đôi**, không thêm cột môi trường vào dữ liệu nghiệp vụ.
+11. **K9: tham số `tenant` + installation bắt buộc + consent người dùng theo tenant ở auth-server** (mục 3.12). Scope token =
+    xin ∩ granted ∩ đồng ý; quyền người dùng kiểm ở request, không giao lúc cấp. Gỡ cài thu hồi authorization của
+    `(client, tenant)` và chặn `vyf_inst` ở gateway.
 
 ### 11.3 Cần người dùng hoặc phiên điều phối chọn
 
