@@ -2245,7 +2245,7 @@ Phụ thuộc mới (chốt version lúc triển khai): `net.jqwik:jqwik` (EPL-2
 
 ## 11. Đóng gói và triển khai độc lập
 
-Theo mục 6 của quy ước module và kiến trúc đã chốt trong [platform-services](../../../gh--psvc/docs/design/platform-services.md)
+Theo mục 6 của quy ước module và kiến trúc đã chốt trong [platform-services](platform-services.md)
 (D1–D10, §4.11–4.12, §5.1–5.2): Next.js Multi-Zones, zone `/m/<module>`, khung `@vyforge/admin-shell`, component ở
 `@vyforge/<module>/admin`, app `platform-admin/apps/<module>-admin`, endpoint `GET /api/v1/<module>/admin/info`.
 Billing và einvoice là **hai đơn vị triển khai**, mỗi đơn vị ba phần.
