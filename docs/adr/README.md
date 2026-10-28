@@ -25,5 +25,6 @@ Mẫu: `NNNN-tieu-de.md` với các mục **Trạng thái · Bối cảnh · Quy
 - [ADR-0024: Workflow phê duyệt nhúng Flowable 8](0024-workflow-flowable.md)
 - [ADR-0025: Module AI: use case, cổng dữ liệu, ngân sách, Spring AI 2.0](0025-ai-gateway.md)
 - [ADR-0026: API key, ứng dụng đối tác và phantom token qua gateway](0026-api-access.md)
+- [ADR-0027: Giấy phép module cho bản cài on-prem](0027-module-licensing.md)
 
 Câu hỏi pháp chế mà các ADR và thiết kế đang chờ: [legal-open-questions.md](../legal-open-questions.md).
