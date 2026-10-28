@@ -701,7 +701,9 @@ merchant, không đối soát được.
 ## master-data
 
 - **Thiết kế:** [master-data.md](../design/master-data.md). **Phát hành:** `platform-starter-master-data`,
-  `tools/masterdata-packs` (platform-java 0.14.0); `@vyforge/master-data` 0.1.0; zone `/m/master-data`.
+  `tools/masterdata-packs` (platform-java 0.14.0); `@vyforge/master-data` 0.1.0; zone `/m/master-data`. Đợt bổ sung
+  (forge-111, chờ merge): adapter geo thương mại, XLSX, pack VSIC/dân tộc/đơn vị tính, tỷ giá `sbv`/`file`, nén
+  revision, hạn mức theo entitlement, ký pack trong CI (`vyforge-ci masterdata-packs-sign`); `@vyforge/master-data` 0.2.0.
 
 ### Quyết định
 
@@ -715,12 +717,24 @@ merchant, không đối soát được.
 5. Đọc từ snapshot bất biến trong bộ nhớ, ETag/304, đồng bộ Valkey + poll; `mode: remote`.
 6. Địa chỉ VN là value object (`VnAddress`, `AddressColumns`), app tự lưu; geocoding/autocomplete là SPI; tỷ giá là
    chuỗi thời gian riêng có chính sách theo mục đích.
+7. Nhà cung cấp geo thương mại (`vietmap`, `goong`, `google`) chỉ là adapter sau SPI, tắt mặc định, khoá theo tenant;
+   kết quả luôn ánh xạ lại về mã ĐVHC bằng parser của module (không tin mã của nhà cung cấp). `google` không cache.
+8. Danh mục lấy từ văn bản pháp lý dựng từ **file gốc của phụ lục** (docx trên cổng nhà nước, ghim sha256), không từ
+   bộ dữ liệu của bên thứ ba: VSIC 2025 (QĐ 36/2025, 22 ngành cấp 1) và VSIC 2018 (vế trái bảng chuyển đổi
+   CV 3061/CTK-CSCL) trong một danh mục, cạnh kế thừa cấp 5 (RECODE/MERGE/SPLIT) hiệu lực 15/11/2025.
+9. Ký pack: khoá riêng chỉ ở CI phát hành; CI ký lại pack đã commit (không dựng lại từ nguồn) trước `maven-publish`.
+   Repo chưa có secret thì bỏ qua, pack đóng sẵn vẫn tin theo classpath.
+10. Nén lịch sử chỉ cho danh mục tenant (`compact(list, keepFrom)`), có mốc `compactedBefore`: đọc hay revert về
+    revision đã nén trả `410 masterdata.revision.compacted` thay vì trả dữ liệu thiếu. Danh mục dùng chung giữ trọn.
 
 ### Phương án đã loại
 
 - Bảng địa chỉ trong module: thành kho PII thứ hai.
 - Chờ release platform mỗi lần ĐVHC đổi.
 - Index `pg_trgm` cho tìm danh mục: tìm trên snapshot.
+- Dùng bộ VSIC dựng sẵn trên GitHub (không có giấy phép) hoặc OCR văn bản PDF: phụ lục docx chính thức đọc được bằng máy.
+- POI cho XLSX: `fastexcel` (đã có trong BOM, streaming, nhẹ) đủ cho một trang tính.
+- Mở rộng `ImportPayload` để chở byte XLSX: XLSX được đọc ngay khi nhận thành bảng rồi đi tiếp như CSV.
 
 ### Lệch so với thiết kế
 
@@ -729,11 +743,18 @@ merchant, không đối soát được.
 - `AddressColumns` lưu mã cũ ở ba cột `addr_legacy_*` thay vì JSONB.
 - Export và nhập pack chạy đồng bộ; import CSV/JSON chạy nền. Seed danh mục rỗng áp thẳng vào `md_item`.
 - Cho phép chữ hoa sau ký tự đầu trong mã danh mục (`holiday-day:VN-GOV`).
+- Thêm `RateType.CUSTOMS` (tỷ giá tính chéo tính thuế XNK của NHNN, theo tuần); `sbv` đọc trang HTML
+  `sbv.gov.vn/vi/tỷ-giá` (NHNN không có API), chỉ có số liệu mới nhất. Nguồn `file` đọc CSV ngày từ thư mục/URL.
+- Đơn vị tính dùng mã UN/ECE Rec 20, mã bao bì Rec 21 có tiền tố `X` (như EN 16931) và mã `vn.*` cho đơn vị đếm của VN
+  (kèm `rec20` tương đương). Dân tộc: 54 mã theo QĐ 121-TCTK/PPCĐ.
+- `compactedBefore` lưu trong `md_list.attributes`, không thêm cột.
 
 ### Còn mở
 
-- Adapter geo `vietmap`, `goong`, `google`; XLSX; danh mục VSIC, nghề nghiệp, dân tộc, đơn vị tính; tỷ giá `sbv`.
-- Ký pack seed bằng khoá thật trong CI phát hành; pháp chế xác nhận dữ liệu phụ lục văn bản và BIN/SWIFT (Q4).
+- Kiểm adapter geo với tài khoản thật (vietmap, goong, google): hiện chỉ test bằng máy chủ giả theo tài liệu công khai.
+- Danh mục nghề nghiệp (QĐ 34/2020/QĐ-TTg): chưa tìm được file phụ lục máy đọc được từ nguồn chính thức.
+- Tạo cặp khoá thật (`PackBuilder --keygen`), đặt secret `MASTERDATA_PACK_KEY`/variable `MASTERDATA_PACK_KID` ở
+  platform-java và `trusted-keys` ở app; pháp chế xác nhận dữ liệu phụ lục văn bản và BIN/SWIFT (Q4).
 
 ## calendar
 
