@@ -923,7 +923,9 @@ merchant, không đối soát được.
 ## privacy-dsr
 
 - **Thiết kế:** [privacy-dsr.md](../design/privacy-dsr.md). **Phát hành:** SPI trong `platform-starter-privacy`,
-  engine `platform-starter-privacy-dsr` (platform-java 0.14.0); `@vyforge/privacy` 0.1.0; zone `/m/privacy`.
+  engine `platform-starter-privacy-dsr` (platform-java 0.14.0); `@vyforge/privacy` 0.1.0; zone `/m/privacy`. Đợt bổ sung
+  (forge-115c, chờ merge): adapter notification/files/calendar, giới hạn cấu hình theo câu hỏi pháp lý còn chờ, checklist
+  vận hành và mẫu thư trả lời (`platform-starter-privacy-dsr/OPERATIONS.md`).
 
 ### Quyết định
 
@@ -934,6 +936,21 @@ merchant, không đối soát được.
 3. Căn cứ pháp lý theo purpose; erasure theo loại dữ liệu (DELETE/ANONYMIZE/PSEUDONYMIZE/RETAIN).
 4. State machine cố định có hook và event cho DSR; hạn tính qua cổng `WorkingDays`.
 5. Q1/Q2/Q3/Q6/Q8 là cấu hình với mặc định của thiết kế; tenant chỉ siết chặt hơn hạn luật định.
+6. Câu hỏi pháp lý có trạng thái (forge-115c): `vyforge.privacy.dsr.legal.<q>.status` mặc định `PENDING_LEGAL`,
+   `CONFIRMED` bắt buộc kèm `reference`. Khi còn chờ, chỉ phương án an toàn được dùng: cấu hình platform lỏng hơn
+   (`execute-day-kind=WORKING`, `clock-start=VERIFIED`, giữ bằng chứng dưới 5 năm, ngưỡng Q6 trên 100.000, dời hạn ngày
+   lịch qua ngày nghỉ) thì app không khởi động; settings của tenant (`VERIFIED`, giữ bằng chứng ngắn hơn) và quy tắc
+   residency của platform ở `ENFORCE` bị từ chối `422 privacy.legal_pending`. Dashboard trả `legalReview`.
+7. Adapter nằm trong privacy-dsr (`integration.<module>`, dependency optional), privacy giữ port:
+   - `NotificationPrivacyNotifier`: khoá mẫu là type notification (`privacy.yml`, vi/en, OTP đánh dấu `otp`); ghi nhận sau
+     khi transaction của privacy commit, trong transaction riêng; lỗi notification chỉ ghi log. Người nhận: `user:<sub>`,
+     liên hệ của form công khai, identifier email/phone của chủ thể khác, DPO theo `dpoChannels`.
+   - `PrivacyPromotionalConsent`: notification hỏi consent tin quảng cáo từ purpose của privacy (ánh xạ category hoặc
+     `marketing.<channel>`); có purpose thì chỉ `GRANTED` mới gửi, không có thì notification tự quyết.
+   - `FilesPackageStore`: bucket `privacy-packages` (nhạy cảm, không chia sẻ, không quét, không thùng rác, chỉ ZIP, 2 GB),
+     gọi files với quyền hệ thống vì quyền tải do privacy kiểm. `packaging.store=auto|files|jdbc`.
+   - `CalendarWorkingDays`: lịch của tenant, quy tắc `LEGAL`, năm chưa có dữ liệu tính `CONSERVATIVE`; calendar lỗi thì chỉ
+     trừ T7/CN. Ngày lịch (Q1) mặc định không dời qua ngày nghỉ.
 
 ### Phương án đã loại
 
@@ -944,7 +961,19 @@ merchant, không đối soát được.
 ### Hệ quả
 
 - Mặc định `WeekendOnlyWorkingDays` chỉ trừ thứ Bảy, Chủ nhật; dashboard cảnh báo khi chưa nối lịch nghỉ lễ.
-- Checklist vận hành cho dự án: DPO, lịch nghỉ lễ, backup và xoá, mẫu thư trả lời vi/en.
+- Checklist vận hành cho dự án (DPO, lịch nghỉ lễ, thư và OTP, gói tải về, backup và xoá, câu hỏi pháp lý) và mẫu thư
+  trả lời vi/en gửi tay: `platform-starter-privacy-dsr/OPERATIONS.md` (forge-115c).
+- platform-java phụ thuộc optional vào notification, files, calendar; calendar khai `exclusions` toàn bộ để không kéo
+  organization, workflow, search vào classpath của privacy-dsr.
+
+### Phương án đã loại (bổ sung)
+
+- Đặt adapter trong notification/files/calendar (như `WorkingDays` Javadoc cũ gợi ý): ba module đó sẽ phụ thuộc ngược
+  privacy-dsr; giữ port ở privacy giống automation.
+- Gửi thư trong transaction của privacy: `Notifications.send` là `@Transactional`, lỗi (type thiếu, sai schema) đánh dấu
+  rollback cả việc của privacy. Gửi sau commit đổi lại khả năng mất thư nếu app dừng đúng lúc đó.
+- Chỉ ghi cảnh báo khi cấu hình vượt mặc định chưa được pháp chế xác nhận: dễ chạy production với hạn dài hơn luật mà
+  không ai biết.
 
 ### Lệch so với thiết kế
 
@@ -954,8 +983,10 @@ merchant, không đối soát được.
 
 ### Còn mở
 
-- Contributor của các module P1; adapter notification/files/calendar; màn DPIA, RoPA, so sánh version thông báo,
-  ghi consent thay chủ thể, quyết định review retention; e2e.
+- Contributor của các module P1; màn DPIA (editor JSON Schema), RoPA (ActivityEditor), so sánh version thông báo, ghi
+  consent thay chủ thể, quyết định review retention, hiển thị `legalReview`; e2e. Adapter export không làm (Q5: privacy
+  tự đóng gói).
+- Thư gửi sau commit chưa có outbox riêng: app dừng giữa commit và lúc ghi nhận thì mất thư.
 - Câu hỏi pháp chế Q1, Q2, Q3, Q6, Q8 ([danh sách](../legal-open-questions.md)).
 
 ## collaboration
