@@ -268,7 +268,7 @@ Lý do tách ba artifact Java (nguyên tắc 1 của MODULE_PLAN: tách khi ph�
 | `KeyLeakReporter`: nhận báo rò rỉ | REST `/leaks` (người vận hành, hoặc hệ thống quét nội bộ) | Endpoint tương thích GitHub secret scanning partner (bản sau, ký ECDSA của GitHub) |
 | `PortalSpecSource`: nguồn OpenAPI của từng service | `HttpSpecSource`: đọc `/v3/api-docs` của service khai trong `vyforge.api-access.portal.sources` | `FileSpecSource` (spec đã build sẵn trong artifact, cho on-prem không cho service tự lộ spec) |
 | `WebhookSubscriptionPort` | `WebhooksBridge` → `WebhookEndpoints` | Không cài `-webhooks`: app không khai báo được event |
-| `PermissionBoundary` (đề xuất thêm vào `-authz`) | Không có: `-authz` bỏ qua scope | `ScopeBoundary` của module (mục 3.6) |
+| `PermissionBoundaryProvider` (SPI của `-authz`) | `ScopeBoundaryProvider` của module: scope của token, installation và key (mục 3.6) | Tắt bằng `vyforge.api-access.authz.permission-boundary=false`: chỉ còn policy quản lý theo scope |
 
 ### 3.4 Định dạng key và cách lưu
 
@@ -385,20 +385,34 @@ Quyền thực tế của một request bằng key:
 - Khi tạo app riêng, module **tự gắn** một policy quản lý (`api-access:app/<appId>`) cho principal `app:<appId>` với đúng
   action của các scope được cấp. Tenant admin có thể gắn thêm policy có `Condition` (vd. chỉ chi nhánh Hà Nội:
   `resource.branch == "HN"`), dùng đúng cơ chế `-authz` đang có.
-- Hai điều kiện về scope là **ranh giới quyền** (permission boundary, như AWS IAM). `-authz` chưa có khái niệm này. Đề xuất
-  thêm vào `-authz` một SPI nhỏ:
+- Hai điều kiện về scope là **ranh giới quyền** (permission boundary, như AWS IAM). **Đã có trong `-authz`** (forge-104,
+  28/10/2026), khác chữ ký đề xuất ban đầu (`Optional<Predicate<String>> boundaryFor(AuthzPrincipal)`):
 
   ```java
-  /** Ranh giới quyền: action phải được mọi boundary cho phép, ngoài policy của principal. */
-  public interface PermissionBoundary {
-      /** empty = không áp ranh giới cho principal này. */
-      Optional<Predicate<String>> boundaryFor(AuthzPrincipal principal);
+  /** Ranh giới = tập policy (như AWS): Allow ⇔ policy ∧ mọi ranh giới Allow; Deny ở đâu cũng thắng. */
+  public record PermissionBoundary(String id, String name, List<PolicySource> policies) {
+      static PermissionBoundary ofActions(String id, String name, Collection<String> actions); // rỗng → chặn hết
+  }
+
+  public interface PermissionBoundaryProvider {
+      Set<String> claims();   // claim của token cần đọc; Authz chỉ chuyển các claim này và cache theo giá trị
+      List<PermissionBoundary> boundaries(String tenantId, String principalId, Map<String, String> claims);
   }
   ```
 
-  Module cài `ScopeBoundary`: đọc claim `scope` của JWT (hoặc của `ApiKeyAuthentication`), mở rộng `includes`, trả
-  predicate `action ∈ actions(scopes)`. Thiếu SPI (bản `-authz` cũ) thì service vẫn an toàn nhờ policy quản lý ở trên chỉ
-  cho đúng action của scope app; chỉ mất khả năng *key* thu hẹp hơn app. Đây là phụ thuộc vào phiên `-authz`, ghi ở mục 9.
+  Lý do đổi: ranh giới là policy nên dùng được `Deny`, `Resource`, `Condition` và hiện được từng phần trong Policy
+  Simulator (`policyOutcome`, `boundaries`, nhập `claims`); provider khai claim cần đọc nên `Authz` cache được ranh giới
+  (theo tenant, provider, `sub`, claim; xoá cùng thế hệ tenant với policy) và lưu claim vào việc nền
+  (`RequestPrincipal.claims`) để kiểm lại khi chạy. Ranh giới áp cho `check`/`allowed`, `@RequiresPermission`,
+  `hasPermission`, `holds` (token scope hẹp không uỷ quyền được rộng hơn) và `/api/v1/iam/me/evaluate`; ở chế độ
+  `remote` đánh giá vẫn chạy trong service nên ranh giới áp như `local`. Provider lỗi → từ chối.
+
+  Module cài `ScopeBoundaryProvider` cho token app (`vyf_kid`/`vyf_inst`, `sub=app:<id>`, `client_id=app_<id>`), ba
+  ranh giới: `api-access:token` (claim `scope`, mở `includes`; thiếu claim → chặn hết), `api-access:installation/<id>`
+  (scope installation **đọc lại từ kho**; installation không `ACTIVE`, hết hạn đồng ý hoặc app bị khoá → chặn hết),
+  `api-access:key/<id>` (scope riêng của key từ kho; key thu hồi/hết hạn → chặn hết). Đổi hay thu hồi key, installation,
+  app xoá cache ranh giới của tenant (`ApplicationPermissions.changed`); hết hạn đồng ý/key chậm tối đa `cache-ttl`.
+  Service không có module (chỉ nhận JWT) vẫn an toàn nhờ policy quản lý ở trên, chỉ mất khả năng *key* thu hẹp hơn app.
 
 - `aud` của JWT là tập `audience` của các scope, nên token đổi từ key chỉ dùng được ở service cần thiết.
 
@@ -649,9 +663,11 @@ Lý do:
   người dùng không tưởng nhầm. Đánh dấu chỉ để hiển thị, không lọc scope.
 
 Thiếu `PermissionBoundary` (bản `-authz` cũ) thì token của app có toàn quyền của người dùng trong tenant, scope chỉ còn là
-nhãn. Vì vậy **chỉ bật K9 khi service đích có `PermissionBoundary`**: auth-server từ chối tạo client `multiTenant` có grant
-`authorization_code` nếu `vyforge.auth.api-access.user-delegation.enabled=false` (mặc định `false` tới khi `-authz` phát
-hành SPI). Đây là cờ một chiều, ghi trong vận hành.
+nhãn. Vì vậy **chỉ bật K9 khi service đích có `PermissionBoundary`** và `ScopeBoundaryProvider` (token người dùng có
+`client_id=app_<id>` và `vyf_inst` được nhận ra là token app): auth-server từ chối tạo client `multiTenant` có grant
+`authorization_code` nếu `vyforge.auth.api-access.user-delegation.enabled=false` (mặc định `false`; SPI đã có từ forge-104,
+bật khi service đích đã lên bản platform-java có SPI). Service đích không nhúng module api-access thì chỉ có ranh giới
+nếu tự khai `PermissionBoundaryProvider`. Đây là cờ một chiều, ghi trong vận hành.
 
 Giao rỗng ở `/oauth2/authorize` → `invalid_scope`. Giao rỗng khi refresh (tenant thu hẹp hết) → `invalid_grant`; thu hẹp
 một phần thì token mới chỉ còn phần giao, không lỗi (RFC 6749 §6 cho phép scope hẹp hơn).
@@ -723,7 +739,7 @@ sự đồng ý của chủ thể dữ liệu (Luật 91/2025/QH15, mục 8.2); 
 | `client_id`, `azp` | `app_<applicationId>` | RFC 9068 §2.2; service và audit biết request đi qua app nào |
 | `scope` | Theo 3.12.2 | |
 | `aud` | `client_id` + audience của client + audience của scope được cấp (như K3) | Không gồm audience của API auth-server |
-| `vyf_inst` | `installationId` | **Có**, chỉ khi tenant khác tenant nhà. Dùng cho chặn token đã phát (dưới), audit, `ScopeBoundary` |
+| `vyf_inst` | `installationId` | **Có**, chỉ khi tenant khác tenant nhà. Dùng cho chặn token đã phát (dưới), audit, `ScopeBoundaryProvider` |
 | `auth_time`, `amr` | Như hôm nay | Service kiểm step-up như với người dùng |
 | `act` | Không có | Đây là uỷ quyền OAuth thông thường, không phải token exchange |
 
@@ -924,7 +940,7 @@ Auth-server: test tích hợp với `InstallationPolicy` giả (như `PartnerCli
 | `platform-auth-server` | `TenantSelectionPolicy.select/forRefresh` có `multiTenant`; kiểm installation trong `authenticationValidator` của SAS và ở `TokenClaimsService` (code, refresh); bảng `oauth2_tenant_consent` (migration oauth2), `consentPage` + template vi/en, `authorizationConsentRequired` + `authorizationConsentCustomizer`; tính lại `scope` và thêm `vyf_inst`, `client_id` ở `TokenClaimsCustomizer`; API `…/tenants/{tenant}:revoke-authorizations` và `revokeAllForClientInTenant`; mục "Ứng dụng đã cấp quyền" ở trang tài khoản; cờ `vyforge.auth.api-access.user-delegation.enabled`; bật `iss` ở phản hồi authorize nếu SAS chưa trả |
 | `platform-java` (`-api-access`) | `installations:check` thêm `application`, `scopes`, `consentExpiresAt`, `subject` → `userHolds`; `initiateLoginUri` của app (kiểm như redirect URI); task `api-access.installation-revoke` + `OAuthClientProvisioner.revokeAuthorizations`; `AuthServerClientProvisioner` gọi API mới |
 | `platform-java` (`-api-access-gateway`) | Danh sách chặn `vyf_inst` theo pub/sub `installation:<id>`, TTL `access-token-ttl` |
-| `platform-java` (`-authz`) | `PermissionBoundary` (đã có trong 9.4), điều kiện để bật cờ `user-delegation` |
+| `platform-java` (`-authz`) | `PermissionBoundary` (đã làm ở forge-104, mục 3.6), điều kiện để bật cờ `user-delegation` |
 | `platform-web` (`@vyforge/api-access`) | Nút "Mở ứng dụng" trong `MarketplaceGrid`/trang app đã cài dùng `initiateLoginUri`; trường `initiateLoginUri` trong `ApplicationForm` |
 
 ---
@@ -1758,7 +1774,7 @@ cấp công cụ:
 7. Usage: `/internal/usage:ingest`, rollup, partition, `UsageQueries`, `FeaturesQuotaBridge`.
 8. Auth-server: `ApiKeySubjectTokenValidator` (token exchange subject type mới), `InstallationPolicy` cho client credentials
    có `tenant`, `vyforge_key_policy` trong phản hồi. Repo `platform-auth-server`. Authorization code cho client
-   `multiTenant` (K9) theo mục 3.12.10, sau khi `-authz` có `PermissionBoundary`.
+   `multiTenant` (K9) theo mục 3.12.10, khi service đích đã có `PermissionBoundary` (forge-104).
 9. `OAuthClientProvisioner` (adapter auth-server), task `client-sync`; app PUBLIC, duyệt, marketplace, consent.
 10. `WebhooksBridge`, `NotificationBridge` (có điều kiện).
 11. Portal: `OpenApiAggregator`, snapshot, diff, endpoint portal, `try-keys`.
@@ -1791,7 +1807,7 @@ Không thêm thư viện Java mới: CRC32 (`java.util.zip`), HMAC (`javax.crypt
 
 | Phụ thuộc | Phiên | Không có thì |
 |---|---|---|
-| `PermissionBoundary` trong `-authz` | `-authz` | Key không thu hẹp được hơn app (vẫn an toàn nhờ policy quản lý theo scope). K9 không bật được (cờ `user-delegation`, mục 3.12.2) |
+| `PermissionBoundary` trong `-authz` | `-authz` | **Đã có** (forge-104, mục 3.6). Trước đó: key không thu hẹp được hơn app (vẫn an toàn nhờ policy quản lý theo scope), K9 không bật được (cờ `user-delegation`, mục 3.12.2) |
 | Subject token API key, `InstallationPolicy`, scope `auth.clients.partner` | auth-server | Không có đường gateway; chỉ chạy chế độ `local`. App PUBLIC chưa lấy token theo installation |
 | Bộ lọc trong `platform-gateway` | gateway | Như trên |
 | `Entitlements.record`, feature `api.requests` | `-features` | Chỉ có rate limit, không có quota |
@@ -1983,7 +1999,8 @@ Không có câu hỏi chặn triển khai bước 1–7. Các điểm cần xác
 
 1. **Scope hẹp `auth.clients.partner` ở auth-server** thay cho `auth.admin` của client module (khuyến nghị: có, làm cùng
    bước 8). Không làm thì client `vyforge-api-access` giữ quyền quản trị đầy đủ của auth-server.
-2. **`PermissionBoundary` trong `-authz`** (khuyến nghị: có; SPI nhỏ, giá trị lớn cho cả token OAuth có scope).
+2. **`PermissionBoundary` trong `-authz`** — **đã chốt và làm** (forge-104): ranh giới là tập policy + SPI
+   `PermissionBoundaryProvider` khai claim, khác chữ ký `Predicate` đề xuất; lý do ở mục 3.6.
 3. **Tenant sandbox ghép đôi** cần auth-server/tenant directory có quan hệ `sandbox_of` (ADR-0011 chưa có). Thay thế: key
    `test` chỉ là nhãn, app tự xử lý. Khuyến nghị: thêm quan hệ ở auth-server, làm ở bản 0.13.x sau.
 4. **ADR:** một mục `api-access` trong ADR-0020 chung (như features), hay ADR riêng vì có thay đổi ở auth-server và gateway
