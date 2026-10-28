@@ -797,8 +797,10 @@ merchant, không đối soát được.
 ## settings
 
 - **Thiết kế:** [settings.md](../design/settings.md). **Phát hành:** `core.settings` ở `platform-core`,
-  `platform-starter-settings` (platform-java 0.14.0); `@vyforge/settings` và zone `/m/settings` xong trên nhánh, chờ
-  merge.
+  `platform-starter-settings` (platform-java 0.14.0); `@vyforge/settings` 0.1.0 và zone `/m/settings`. Đợt bổ sung
+  (forge-111c, chờ merge): tầng ORG_UNIT, cầu nối thật với `LocaleChain`/`RetentionPolicyResolver` của
+  platform-starter-jpa và privacy-dsr, duyệt bốn mắt, PrometheusRule trong `platform-observability`;
+  `@vyforge/settings` 0.2.0.
 
 ### Quyết định
 
@@ -811,6 +813,12 @@ merchant, không đối soát được.
 4. Một bảng giá trị + bảng revision chỉ thêm; khôi phục là ghi revision mới.
 5. Giá trị nhạy cảm mã hoá `SecretCipher`, API không trả bản rõ hay bản mã; mức lộ PUBLIC/MEMBER/ADMIN.
 6. Event `SettingChanged` không mang giá trị; ghi theo lịch (`effectiveAt`); danh mục `CoreSettings` dùng chung.
+7. Duyệt bốn mắt (forge-111c): định nghĩa `attribute("approval", "required")` hoặc khoá khớp
+   `vyforge.settings.approval.keys`; cả lô thành yêu cầu `setting_approval` (secret giữ dạng mã hoá, chụp version), người
+   khác người gửi có `settings:approval:Decide` duyệt thì kiểm lại và áp với khoá lạc quan; hết hạn 72 giờ. Code nền
+   (`asSystem`) và tầng USER không qua duyệt.
+8. Tầng ORG_UNIT do organization cài (`SettingScopeResolver`): đơn vị chính của người dùng tại thời điểm đọc rồi các cha;
+   đơn vị truyền tường minh (`withUnits`) thắng.
 
 ### Phương án đã loại
 
@@ -818,16 +826,27 @@ merchant, không đối soát được.
 - Một cờ `IsVisibleToClients` kiểu ABP: không đủ cho trang công khai của tenant.
 - victools cho JSON Schema: `platform-core` không thêm dependency; schema dạng Map, record map bằng reflection.
 
+### Phương án đã loại (bổ sung)
+
+- Dùng chung engine change request của features cho duyệt bốn mắt: settings không phụ thuộc features; bảng riêng nhỏ,
+  cùng ngữ nghĩa (người khác người gửi, hết hạn, xung đột khi giá trị đã đổi).
+- Đặt settings trước `JpaTextAutoConfiguration` để thay `LocaleChain`: tạo vòng thứ tự với audit; dùng bean `@Primary`.
+
 ### Lệch so với thiết kế
 
 - `jpa.trash.retention.*` mặc định P30D với trần tuyệt đối P365D thay cho `atMost(cha)`.
 - Path khoá/khôi phục `/values/{scope}/{key}/lock`, `/revisions/{id}/restore` thay cho `:lock`, `:restore`.
 - `remote` đọc snapshot USER bằng client credentials (không token exchange); interceptor chỉ chạy ở app sở hữu định nghĩa.
 - Giới hạn ghi USER in-memory theo node.
+- Duyệt bốn mắt không dùng mô hình change request của features (xem phương án đã loại); một khoá cần duyệt thì cả lô chờ.
+- `jpa.trash.retention.*` chưa đặt ở tầng nào thì giữ hạn của entity (`@SoftDeletable(retention)`) thay vì 30 ngày của
+  định nghĩa, để bật settings không đổi hạn đang chạy.
 
 ### Còn mở
 
-- Resolver ORG_UNIT thật, auth-server đọc branding, duyệt bốn mắt, nối jpa-extras/privacy-dsr/admin-kit.
+- Auth-server đọc `branding.*`/`security.*` qua API nội bộ (vẫn dùng `Branding` riêng).
+- Zone `/m/settings` chuyển từ client mỏng sang `@vyforge/settings` khi bản 0.2.0 (có API duyệt) được phát hành.
+- So sánh hai tenant, "về mặc định" theo nhóm, plugin `settings:metadata`, đẩy thay đổi qua realtime (thiết kế 9.5).
 
 ## licensing
 
