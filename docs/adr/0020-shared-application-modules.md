@@ -631,7 +631,8 @@ merchant, không đối soát được.
 
 - **Thiết kế:** [custom-fields.md](../design/custom-fields.md). **Phát hành:** `platform-starter-custom-fields`, hợp
   đồng `Extensible` ở `platform-core`/`-jpa` (platform-java 0.14.0); `@vyforge/custom-fields` 0.1.0 và zone
-  `/m/custom-fields` xong trên nhánh, chờ merge.
+  `/m/custom-fields` xong trên nhánh, chờ merge. Bản tiếp (forge-116): migration mã hoá/COPY/legacy,
+  `conditionAttributes`, Valkey, `Vyforge-Warnings` + `@ExtensibleView`, `ACCEPT_UNVERIFIED`, bảng phân vùng, benchmark.
 
 ### Quyết định
 
@@ -643,26 +644,51 @@ merchant, không đối soát được.
 5. Đổi kiểu, điền mặc định, dọn trường là migration trên `DurableTaskQueue` (keyset, dry run, hoàn tác 30 ngày); xoá
    trường là xoá mềm 15 ngày; không đổi tên khoá.
 6. Luôn nhúng trong app sở hữu bảng, không có `mode: remote`.
+7. Bật/tắt mã hoá trường đã có dữ liệu là migration `ENCRYPT`/`DECRYPT` riêng (không gộp với đổi kiểu), **không** ghi
+   bản rõ vào `cf_value_backup`; hoàn tác là migration ngược chiều. Sau khi xoay khoá, `REKEY` mã hoá lại theo
+   `SecretCipher.needsRotation`, trường vẫn ghi được trong lúc chạy.
+8. Đổi kiểu ngoài ma trận = tạo trường mới rồi `COPY` (qua ma trận, không có cặp thì qua chữ); không ghi đè bản ghi đã
+   có giá trị. `onInvalid: KEEP_AS_LEGACY` giữ giá trị cũ ở `cf._legacy.<key>` (chỉ đọc, mất khi nhập giá trị mới).
+9. Điều kiện tham chiếu thuộc tính gốc qua `conditionAttributes` (`branchId` → `branch_id`): `SaveContext` của
+   `platform-core` thêm `attributes`, listener JPA điền từ entity, `ConditionAttributeSource` cho thuộc tính tính toán;
+   trong "form ảo" chúng là field ẩn đứng trước, không bao giờ lưu vào `cf`.
+10. Cache schema xoá qua kênh Valkey `vyforge:customfields:changed` (sau commit) khi có `RedisConnectionFactory`; không
+    có thì hỏi lại revision theo chu kỳ.
+11. Master-data không trả lời khi kiểm giá trị đổi: `lookup-failure` theo tenant, `REJECT` (503) mặc định hoặc
+    `ACCEPT_UNVERIFIED` (nhận, cảnh báo, `cf_pending_verification`, job kiểm lại 10 phút).
+12. Bảng phân vùng: chỉ mục cha `on only` + chỉ mục từng partition `concurrently` + `attach partition`; unique chỉ theo
+    từng partition.
+13. Trần theo benchmark có giới hạn (README của starter): giữ 300 trường mỗi loại bản ghi (p95 kiểm 0,82 ms ở 50 trường,
+    5,45 ms ở 300); `index.max-per-table` mặc định 50 (200 chỉ mục làm mọi lần ghi của bảng chậm 40–80%).
 
 ### Phương án đã loại
 
 - EAV: mọi truy vấn phải join/pivot.
 - Thêm cột thật (DDL lúc chạy): cần quyền ALTER, khoá bảng.
 - Chặn mọi lần lưu khi thêm trường bắt buộc (kiểu Salesforce).
+- Sao lưu giá trị cũ của `ENCRYPT` để hoàn tác bằng `ROLLBACK`: để bản rõ của dữ liệu nhạy cảm 30 ngày trong bảng sao
+  lưu.
+- Thuộc tính gốc cho điều kiện lấy bằng truy vấn lại bản ghi trong guard: không có giá trị của bản ghi mới, và thêm một
+  truy vấn mỗi lần lưu.
 
 ### Lệch so với thiết kế
 
 - `options.source` theo dạng chuỗi của forms (`lookup:bank`).
 - Trường ẩn theo điều kiện giữ nguyên giá trị khi lưu.
-- Bật/tắt mã hoá và `KEEP_AS_LEGACY` bị từ chối (bản sau).
 - Trường `unique` ACTIVE ngay, chưa chờ chỉ mục READY.
+- Unique trên bảng phân vùng chỉ theo từng partition (trùng giữa partition chặn bằng kiểm khi lưu); partition tạo sau
+  cần dựng lại chỉ mục unique.
 - Lọc ngày `To` không gồm ngày đó (khớp admin-kit).
-- Cấu hình theo tenant qua SPI `CustomFieldsSettings`; cache schema bằng `ConcurrentHashMap` + kiểm revision.
+- Cấu hình theo tenant qua SPI `CustomFieldsSettings`; cache schema bằng `ConcurrentHashMap` (+ Valkey khi có).
+- `index.max-per-table` mặc định 50 thay vì 200 của thiết kế (theo số đo).
+- Header `Vyforge-Warnings` dạng `key:code, …` (tối đa 20 mục), không có tham số.
 
 ### Còn mở
 
-- ENCRYPT/DECRYPT/REKEY, COPY, `conditionAttributes`, invalidation qua Valkey, header `Vyforge-Warnings`,
-  `@ExtensibleView`, chỉ mục trên bảng phân vùng, bộ nối search/export/privacy-dsr/master-data/settings.
+- Bộ nối search (`dynamicFields`), export, privacy-dsr, master-data, settings (nằm ở module đó; custom-fields đã có
+  event, API và SPI).
+- `@vyforge/custom-fields`: hiện `legacy` như ghi chú chỉ đọc, đọc header `Vyforge-Warnings`, điền
+  `conditionAttributes` khi renderer đánh giá điều kiện ở client.
 
 ## sequence
 
