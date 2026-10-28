@@ -8,6 +8,9 @@
 
 Thiết kế: [privacy-dsr.md](design/privacy-dsr.md) mục 10; ADR: [ADR-0020 mục privacy-dsr](adr/0020-shared-application-modules.md#privacy-dsr).
 
+Trong lúc chờ, engine chặn các phương án lỏng hơn mặc định (forge-115c). Trả lời xong: đặt
+`vyforge.privacy.dsr.legal.<q>.status=CONFIRMED` và `reference=<văn bản>`, rồi mới đổi cấu hình.
+
 | # | Câu hỏi | Mặc định đang dùng | Phương án khác | Kết luận |
 |---|---|---|---|---|
 | privacy-dsr Q1 | "Ngày" trong hạn thực hiện yêu cầu của chủ thể (NĐ 356/2025 Điều 5, văn bản không ghi "làm việc") là ngày lịch hay ngày làm việc | Ngày lịch | Ngày làm việc (dài hơn, rủi ro hơn) | |
