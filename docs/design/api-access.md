@@ -763,7 +763,7 @@ sequenceDiagram
   participant P as App đối tác
   T->>M: POST /installations/{id}:revoke
   M->>M: installation REVOKED, thu hồi key, gỡ policy IAM (một transaction)
-  M-->>G: pub/sub vyforge:api-access:revoked "installation:<id>" (đã có)
+  M-->>G: pub/sub vyforge:api-access:revoked "installation:<id>" (đã có), "installation-revoked:<id>"
   M->>Q: task api-access.installation-revoke {clientId, tenant, installationId} (sau commit)
   Q->>A: POST /api/v1/admin/clients/{clientId}/tenants/{tenant}:revoke-authorizations (scope auth.clients.partner)
   A->>A: xoá oauth2_authorization của client có tenant_id = tenant<br/>xoá oauth2_tenant_consent (client, tenant)
@@ -785,13 +785,16 @@ sequenceDiagram
   token đã lưu trong authorization.
 - `OAuthClientProvisioner` thêm `revokeAuthorizations(String clientId, String tenant)` (mặc định không làm gì, `NONE` bỏ
   qua).
-- **Access token đã phát** (JWT, tối đa `access-token-ttl`): gateway đã nghe `installation:<id>` để xoá cache key; mở rộng
-  để giữ danh sách chặn `vyf_inst` trên Valkey (TTL = `access-token-ttl`), JWT có `vyf_inst` trong danh sách → 401
+- **Access token đã phát** (JWT, tối đa `access-token-ttl`): gateway đã nghe `installation:<id>` để xoá cache key; khi gỡ
+  cài module phát thêm `installation-revoked:<id>` (riêng, vì `installation:<id>` cũng phát khi đổi scope) và gateway giữ
+  danh sách chặn `vyf_inst` trên Valkey (TTL = `access-token-ttl`), JWT có `vyf_inst` trong danh sách → 401
   `invalid_token` (RFC 6750 §3.1). Không có Valkey thì chấp nhận tối đa `access-token-ttl`, như khi khoá tài khoản (ghi ở
   `RevokeAuthorizationsUseCase`).
 - **`SUSPENDED`, hết hạn đồng ý:** không dọn authorization (mở khoá hoặc gia hạn thì dùng tiếp), chỉ chặn ở refresh và ở
-  gateway như trên. `renew-consent` không cần người dùng đồng ý lại nếu `installationId` không đổi, trừ khi consent của
-  người dùng cũng hết hạn.
+  service: ranh giới installation của `PermissionBoundary` đọc lại trạng thái installation ở mỗi request nên token còn
+  hạn bị chặn ngay. Danh sách chặn của gateway chỉ dành cho gỡ cài, vì mở khoá xong token cũ phải dùng tiếp được.
+  `renew-consent` không cần người dùng đồng ý lại nếu `installationId` không đổi, trừ khi consent của người dùng cũng hết
+  hạn.
 - **Người dùng bị gỡ khỏi tenant, tài khoản bị khoá, client bị xoá:** đã có (`requireGranted` khi refresh,
   `AccountEventsListener`, `SasClientStore.delete`).
 
@@ -935,13 +938,20 @@ Auth-server: test tích hợp với `InstallationPolicy` giả (như `PartnerCli
 
 #### 3.12.10 Việc triển khai
 
+**Trạng thái (28/10/2026): đã code đủ các dòng dưới.** Test chấp nhận K9.x nằm ở `UserDelegationTests`,
+`UserDelegationPolicyTests`, `PartnerClientTests` (auth-server), `ApiAccessIntegrationTests`,
+`PermissionBoundaryIntegrationTests`, `InstallationBlockFilterTests`, `RedisIntegrationTests` (platform-java) và test của
+`@vyforge/api-access`; K9.24 phần a11y (axe) chưa tự động. Cờ `user-delegation.enabled` mặc định tắt; gateway chỉ chặn
+`vyf_inst` khi dùng bản `platform-api-access-gateway` sau 0.15.0.
+
 | Repo | Việc |
 |---|---|
 | `platform-auth-server` | `TenantSelectionPolicy.select/forRefresh` có `multiTenant`; kiểm installation trong `authenticationValidator` của SAS và ở `TokenClaimsService` (code, refresh); bảng `oauth2_tenant_consent` (migration oauth2), `consentPage` + template vi/en, `authorizationConsentRequired` + `authorizationConsentCustomizer`; tính lại `scope` và thêm `vyf_inst`, `client_id` ở `TokenClaimsCustomizer`; API `…/tenants/{tenant}:revoke-authorizations` và `revokeAllForClientInTenant`; mục "Ứng dụng đã cấp quyền" ở trang tài khoản; cờ `vyforge.auth.api-access.user-delegation.enabled`; bật `iss` ở phản hồi authorize nếu SAS chưa trả |
 | `platform-java` (`-api-access`) | `installations:check` thêm `application`, `scopes`, `consentExpiresAt`, `subject` → `userHolds`; `initiateLoginUri` của app (kiểm như redirect URI); task `api-access.installation-revoke` + `OAuthClientProvisioner.revokeAuthorizations`; `AuthServerClientProvisioner` gọi API mới |
-| `platform-java` (`-api-access-gateway`) | Danh sách chặn `vyf_inst` theo pub/sub `installation:<id>`, TTL `access-token-ttl` |
-| `platform-java` (`-authz`) | `PermissionBoundary` (đã làm ở forge-104, mục 3.6), điều kiện để bật cờ `user-delegation` |
+| `platform-java` (`-api-access-gateway`) | Danh sách chặn `vyf_inst` theo pub/sub `installation-revoked:<id>` (tách khỏi `installation:<id>`, vốn cũng phát khi đổi scope), TTL `access-token-ttl`; cache cục bộ + Valkey dùng chung giữa replica |
+| `platform-java` (`-authz`) | `PermissionBoundary` (đã có trong 9.4), điều kiện để bật cờ `user-delegation` |
 | `platform-web` (`@vyforge/api-access`) | Nút "Mở ứng dụng" trong `MarketplaceGrid`/trang app đã cài dùng `initiateLoginUri`; trường `initiateLoginUri` trong `ApplicationForm` |
+| `platform-gateway` | `vyforge.gateway.api-key.installation-block` (`GATEWAY_INSTALLATION_BLOCK_ENABLED`, TTL `AUTH_ACCESS_TOKEN_TTL`) |
 
 ---
 

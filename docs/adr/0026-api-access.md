@@ -107,7 +107,10 @@ ADR-0015); gateway đang gỡ mọi header danh tính không ký.
   `/api/v1/api-access/**`, public path portal.
 - `NotificationBridge`, entitlement `api.max-plan`/`api.keys.max`, gauge key, mẫu che
   key trong `-privacy`, Pact, endpoint secret scanning.
-- K9 (quyết định 9) chưa code: auth-server (`TenantSelectionPolicy` có `multiTenant`, kiểm installation khi authorize và
-  refresh, trang consent và `oauth2_tenant_consent`, `vyf_inst`, API thu hồi theo tenant), api-access
-  (`installations:check` mở rộng, `initiateLoginUri`, task `installation-revoke`), gateway (chặn `vyf_inst`). Test chấp
-  nhận K9.1–K9.26 ở [api-access.md §3.12.9](../design/api-access.md#3129-test-chấp-nhận-k9x).
+- K9 (quyết định 9) đã code (28/10/2026): auth-server (`TenantSelectionPolicy` có `multiTenant`, kiểm installation khi
+  authorize, đổi code và refresh, trang consent và `oauth2_tenant_consent`, `vyf_inst`, `iss` ở phản hồi authorize, API
+  thu hồi theo tenant, trang "Ứng dụng đã cấp quyền"), api-access (`installations:check` mở rộng, `initiateLoginUri`, task
+  `installation-revoke`), gateway (chặn `vyf_inst`), `@vyforge/api-access` (nút "Mở ứng dụng", trường `initiateLoginUri`).
+  Test chấp nhận K9.1–K9.26 ở [api-access.md §3.12.9](../design/api-access.md#3129-test-chấp-nhận-k9x). Còn lại khi
+  deploy: bật `vyforge.auth.api-access.user-delegation.enabled` sau khi service đích có `PermissionBoundary`; gateway nâng
+  `platform-api-access-gateway` lên bản sau 0.15.0.
