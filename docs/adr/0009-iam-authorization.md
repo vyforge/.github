@@ -23,10 +23,14 @@ kiểm chứng và quen thuộc: policy JSON gồm `Effect`/`Action`/`Resource`/
 - **Kiểm tra trong code**: `@RequiresPermission(action = "...", resource = "...")`, `hasPermission(...)` trong `@PreAuthorize`, hoặc bean `Authz`; từ chối → 403 Problem Details. Frontend gọi `POST /api/v1/iam/me/evaluate` (kiểm tra nhiều quyền một lần) qua helper `can()`/`requirePermission()` của `@vyforge/auth` — chỉ để ẩn/hiện giao diện, backend vẫn là nơi quyết định.
 - **Quản trị**: REST API `/api/v1/iam/**` (policy, group, gắn policy, danh mục action, Policy Simulator) được bảo vệ bởi chính IAM (action `iam:*`); role bootstrap `vyforge.authz.admin-roles` (mặc định `IAM_ADMIN`) có quyền `iam:*`. Thao tác quản trị ghi audit log. Component giao diện dùng chung nằm trong `@vyforge/iam` (platform-web).
 - Token vẫn chỉ mang `sub`, `aud`, `scope`, role thô và `tenant_id` (ADR-0008); không nhét permission vào token.
+- **Ranh giới quyền** (permission boundary, bổ sung 28/10/2026): bean `PermissionBoundaryProvider` trả các
+  `PermissionBoundary` (tập policy) theo claim của token, vd. scope của token app ([ADR-0026](0026-api-access.md) quyết
+  định 10). Quyền = policy ∧ mọi ranh giới; Deny ở đâu cũng thắng; ranh giới không cấp thêm quyền. Policy Simulator hiện
+  kết quả từng ranh giới.
 
 ### Chưa làm (khi có dự án cần)
 
-Permission boundary, policy cấp tổ chức kiểu SCP, session policy, phân quyền theo tag, điều kiện thời gian thực từ dịch vụ ngoài.
+Policy cấp tổ chức kiểu SCP, session policy, phân quyền theo tag, điều kiện thời gian thực từ dịch vụ ngoài.
 
 ## Hệ quả
 

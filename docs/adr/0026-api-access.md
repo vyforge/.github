@@ -43,7 +43,7 @@ ADR-0015); gateway đang gỡ mọi header danh tính không ký.
    - Tenant khác tenant nhà bắt buộc installation `ACTIVE` (còn hạn đồng ý), kiểm ở authorize, đổi code và mỗi lần
      refresh; không kiểm được thì không cấp. Scope token = xin ∩ scope của client ∩ granted ∩ người dùng đồng ý. Quyền
      người dùng không giao lúc cấp mà kiểm ở mỗi request (policy IAM ∧ `PermissionBoundary` theo scope); vì vậy K9 chỉ
-     bật (`vyforge.auth.api-access.user-delegation.enabled`) khi `-authz` có `PermissionBoundary`.
+     bật (`vyforge.auth.api-access.user-delegation.enabled`) khi service đích có `PermissionBoundary` (đã có, quyết định 10).
    - Hai tầng consent: tenant admin đồng ý khi cài (`ConsentScreen` của api-access); người dùng đồng ý ở trang consent
      của auth-server, khoá `(client, người dùng, tenant)` trong bảng `oauth2_tenant_consent` (không dùng khoá
      `(client, người dùng)` của SAS). Hỏi lại khi lần đầu ở tenant, xin thêm scope, cài lại, hết hạn, `prompt=consent`,
@@ -51,6 +51,16 @@ ADR-0015); gateway đang gỡ mọi header danh tính không ký.
    - Token người dùng có `sub` người dùng, `tenant_id` tenant cài, `client_id` app, `vyf_inst`. `InstallationRevoked` →
      task gọi `POST /api/v1/admin/clients/{clientId}/tenants/{tenant}:revoke-authorizations` xoá authorization và
      consent của `(client, tenant)`; refresh trả `invalid_grant`; gateway chặn access token còn hạn theo `vyf_inst`.
+
+10. **Ranh giới quyền (`PermissionBoundary`, bổ sung 28/10/2026)**, chi tiết ở
+    [api-access.md §3.6](../design/api-access.md#36-scope-iam-và-ranh-giới-quyền):
+    - `-authz`: ranh giới là **tập policy** (`PermissionBoundary`), SPI `PermissionBoundaryProvider` khai claim cần đọc.
+      Allow ⇔ policy ∧ mọi ranh giới; Deny ở đâu cũng thắng; ranh giới không cấp thêm quyền. Áp cho mọi đường kiểm quyền
+      (cả `holds`, việc nền, Policy Simulator), cache cùng policy.
+    - api-access: `ScopeBoundaryProvider` = scope của token ∧ scope installation ∧ scope key, hai phần sau đọc lại từ kho
+      (key thu hồi, installation gỡ có hiệu lực với token còn hạn).
+    - Khác đề xuất ban đầu (`Optional<Predicate<String>> boundaryFor(AuthzPrincipal)`): cần Deny/Condition, giải thích
+      được trong simulator, và khoá cache/lưu vào việc nền theo claim.
 
 ## Phương án đã loại
 
@@ -66,14 +76,16 @@ ADR-0015); gateway đang gỡ mọi header danh tính không ký.
 | K9: chọn tenant sau đăng nhập bằng màn hình ở auth-server | Màn hình chọn tenant chưa có (ADR-0011), thêm bước cho mọi lần đăng nhập; để sau, dùng chung khi có |
 | K9: suy tenant từ installation | Mơ hồ khi người dùng thuộc nhiều tenant cùng cài app; app không chủ động chọn được |
 | K9: consent của người dùng bằng `ConsentScreen` của api-access | Bước consent phải ở origin và phiên của auth-server giữa luồng chuyển hướng |
+| Ranh giới quyền dạng `Predicate<String>` trên action | Không có Deny/Resource/Condition; simulator không giải thích được; không biết claim nào để cache và lưu vào việc nền |
 | K9: giao scope với quyền người dùng lúc cấp token | Auth-server không giữ IAM; quyền đổi trong vòng đời refresh token; kiểm ở request đúng và rẻ hơn |
 
 ## Hệ quả
 
 - Thu hồi key có hiệu lực sau tối đa khoảng 15 giây (cache auth-server) cộng pub/sub ở gateway.
 - Bảng usage partition theo ngày, tạo khi nhận lô (và job tạo trước 7 ngày), không có partition default.
-- Ranh giới quyền thật của key thu hẹp scope cần `PermissionBoundary` trong `-authz`; hiện key thu hẹp chỉ phản ánh
-  trong claim `scope`/`aud`.
+- Key thu hẹp scope có ranh giới quyền thật ở service có module api-access (`PermissionBoundary`, quyết định 10); service
+  chỉ nhận JWT mà không nhúng module thì key thu hẹp chỉ phản ánh trong claim `scope`/`aud` (vẫn bị chặn bởi policy quản lý
+  của app).
 
 ## Lệch so với thiết kế
 
@@ -93,7 +105,7 @@ ADR-0015); gateway đang gỡ mọi header danh tính không ký.
   `vyforge.auth.api-access.*` và client `platform-gateway` (grant `token_exchange`) khi deploy.
 - `platform-gateway`: dependency `platform-api-access-gateway`, `vyforge.gateway.api-key.*`, route
   `/api/v1/api-access/**`, public path portal.
-- `PermissionBoundary` (`-authz`), `NotificationBridge`, entitlement `api.max-plan`/`api.keys.max`, gauge key, mẫu che
+- `NotificationBridge`, entitlement `api.max-plan`/`api.keys.max`, gauge key, mẫu che
   key trong `-privacy`, Pact, endpoint secret scanning.
 - K9 (quyết định 9) chưa code: auth-server (`TenantSelectionPolicy` có `multiTenant`, kiểm installation khi authorize và
   refresh, trang consent và `oauth2_tenant_consent`, `vyf_inst`, API thu hồi theo tenant), api-access
