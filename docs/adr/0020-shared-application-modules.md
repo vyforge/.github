@@ -34,7 +34,7 @@ Quy ước chung mà các module đợt 0.14 (từ jpa-extras trở xuống) đ�
 [calendar](#calendar) · [settings](#settings) · [licensing](#licensing) · [privacy-dsr](#privacy-dsr) ·
 [collaboration](#collaboration) · [search](#search) · [ekyc](#ekyc) · [esign](#esign) ·
 [report-engine](#report-engine) · [ops-console](#ops-console) · [cms-content](#cms-content) ·
-[tenant-lifecycle](#tenant-lifecycle)
+[tenant-lifecycle](#tenant-lifecycle) · [automation](#automation)
 
 ## notification
 
@@ -1235,3 +1235,78 @@ Payload vẫn dùng được cho website đơn lẻ không cần tenant/IAM (v�
 - Wizard đăng ký nhiều bước, Playwright, PrometheusRule, `TemplateSource` từ CMS, ký số biên bản, verified domain.
 - Runbook: khôi phục backup phải chạy lại ERASE cho tenant đã `DELETED` sau thời điểm backup.
 - Pháp chế xác nhận các thời hạn retention ([danh sách](../legal-open-questions.md)).
+
+## automation
+
+- **Thiết kế:** [automation.md](../design/automation.md) (A1–A16, Q1–Q5). **Phát hành:** `platform-automation-api`,
+  `platform-starter-automation` (platform-java 0.15.0; adapter module ở bản kế tiếp); `@vyforge/automation` 0.1.0;
+  zone `/m/automation`.
+
+### Quyết định
+
+1. Luật ECA chạy xong ngay: một trigger, một điều kiện, tối đa 10 hành động tuần tự; không có bước chờ (đó là việc của
+   workflow). Hẹn giờ thể hiện bằng trigger (`SCHEDULE`, `RECORD_DATE`) hoặc tham số của hành động.
+2. Trigger so khớp trong transaction nghiệp vụ (`BEFORE_COMMIT`), chỉ ghi `aut_run` và enqueue vào `DurableTaskQueue`
+   (queue `automation`); CEL đánh giá ở worker trên bản chụp lúc trigger. Luật lỗi không làm hỏng nghiệp vụ, rollback
+   thì không có run.
+3. Một ngôn ngữ biểu thức (`platform-expression`, CEL) cho điều kiện, tham số `$expr` và chuỗi `{{ }}`; kiểu sinh từ JSON
+   Schema của trigger, kiểm lúc publish.
+4. Chống vòng lặp ba lớp: chuỗi nhân quả `AutomationChain` (đi qua thread và propagator `automation.chain`), giới hạn
+   tần suất theo tenant/luật/bản ghi, tự `SUSPENDED` khi `LOOP` hoặc lỗi liên tiếp vượt ngưỡng.
+5. Version luật bất biến (nháp, publish, khôi phục = version mới); run ghi version đã dùng.
+6. Quyền của luật là quyền người publish (A8): kiểm khi publish và kiểm lại định kỳ lúc chạy; mất quyền thì `SUSPENDED`.
+   Hành động chạy với actor `automation:<key>` thay mặt người publish.
+7. Không có hành động gọi URL tuỳ ý; ra ngoài chỉ qua `webhook.emit` (module webhooks) hoặc hành động app khai báo.
+8. Annotation `@AutomationEvent`/`@AutomationRecord` ở `platform-automation-api` (không Spring) để module khác khai
+   báo trigger mà không kéo starter.
+9. Module khác nối qua port do automation sở hữu (`AutomationScheduler`, `AutomationTodos`, `AutomationWorkflows`,
+   `ConsentChecker`, `PrincipalDirectory`, `AutomationEntitlements`, `AutomationAuditTrail`, `TenantStatus`); adapter
+   nằm ở `integration.<module>` của automation, bật bằng `@ConditionalOnClass` + `@ConditionalOnBean`, app khai bean cùng
+   kiểu để thay. Vắng module thì có bản thay thế tối thiểu (cron dự phòng, không giới hạn gói, không ghi audit, coi
+   tenant đang hoạt động, đếm tần suất trong bộ nhớ) hoặc hành động/hàm tương ứng không có.
+
+### Phương án đã loại
+
+- Gộp vào workflow: automation không có trạng thái chạy dài; gộp sẽ thành engine quy trình thứ hai.
+- JSONLogic làm ngôn ngữ điều kiện thứ hai: không kiểm kiểu; trình dựng lưu cây JSON rồi biên dịch sang CEL.
+- Luật "chặn" giao dịch kiểu filter hook (Directus): tenant viết được logic làm hỏng nghiệp vụ; chỗ đó là hook trong code.
+- Hành động gọi URL tuỳ ý (n8n, Zapier): SSRF và rò dữ liệu.
+- Lưu token của người publish để chạy hành động: thay bằng kiểm quyền theo principal (`isAllowed(sub, roles, …)`).
+- Adapter nằm ở module đích (calendar, collaboration… phụ thuộc automation): làm module nền phụ thuộc module ứng dụng;
+  giữ theo mẫu calendar (bên dùng giữ phần tích hợp với bên cung cấp).
+
+### Hệ quả
+
+- Điều kiện không thấy trường `SENSITIVE` (không lưu trong bản chụp); trường `BASIC` lưu, che khi trả qua API, xoá sau 7
+  ngày.
+- Không có -ratelimit (hoặc Redis) thì giới hạn tần suất lỏng theo số replica.
+- Lịch theo ngày làm việc và độ lệch `bd`/`bh` chỉ có khi app có calendar; luật dùng chúng không publish được nếu thiếu.
+- `RECORD_DATE` theo ngày làm việc tự tính lại khi lịch đổi (`BusinessCalendarChanged`), chỉ trên instance nhận event.
+
+### Lệch so với thiết kế
+
+- Mọi bảng dùng JDBC với `tenant_id` tường minh, kể cả `aut_rule`, `aut_rule_version` (thiết kế ghi `TenantEntity`);
+  JPA chỉ dùng tuỳ chọn cho listener `@AutomationRecord`.
+- Bản chụp bỏ trường `SENSITIVE`, giữ `BASIC` (điều kiện đánh giá ở worker cần chúng).
+- Thêm `aut_rule.owner_roles`, `permissions_checked_at`; `PrincipalDirectory.isAllowed` nhận `roles`.
+- `AutomationChain` dùng ThreadLocal (propagator cần `Scope` đóng được), không dùng ScopedValue.
+- REST `/admin/expressions/check`, `/admin/rules/import` thay `:check`, `:import`; `catalog/functions` là POST.
+- `calendarSpec` chỉ có `NTH_BUSINESS_DAY`, `EVERY_BUSINESS_DAY` (calendar chưa có `rrule`); luật chỉ có cron vẫn chạy
+  bằng tick dự phòng dù có calendar.
+- `comment.post` qua collaboration dùng actor `system:automation` (port không mang actor), tên luật ở thuộc tính
+  `automationAuthor`; bình luận hệ thống không có chống trùng theo `clientRef`.
+- Contributor DSR giữ dòng run và người tạo/publish luật (`Retained`, nhật ký xử lý), chỉ xoá bản chụp, hẹn giờ và mẫu
+  payload.
+- `SharedRateGuard` kiểm lần lượt từng giới hạn, không nguyên tử như bản trong bộ nhớ.
+- `CelEditor` bản đầu là textarea (CodeMirror để sau).
+
+### Còn mở
+
+- Chạy ở `platform-services` (`mode: remote`, Kafka `remote-topics`, `/internal/*`).
+- Listener `UserDeactivated` (IAM chưa phát event) và `FeatureEntitlementChanged` (features chỉ có
+  `SubscriptionChanged`); `AuthzPrincipalDirectory.isActive` luôn `true`, app hoặc iam-server cài `PrincipalDirectory`
+  riêng thì K17 mới tự tạm dừng.
+- Hàm `inUnit`/`managerOf` (organization), trường tuỳ biến (custom-fields `RecordTypeExtension`).
+- Việc "chuyển chủ luật" cho tenant admin khi luật bị tạm dừng vì người publish (hiện chỉ có thông báo).
+- JMH và tải 200 run/giây; Playwright cho zone; mục "Việc nền" và "Nhật ký" trong zone dùng `TaskAdminEndpoint`,
+  `ModuleAuditEndpoint` mới.
