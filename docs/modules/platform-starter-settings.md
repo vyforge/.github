@@ -83,7 +83,7 @@ ZoneId zone = settings.get(CoreSettings.TIMEZONE);
 | `vyforge.settings.remote.url` | — | URL server (client registration `vyforge-settings`, scope `settings.internal`) |
 | `vyforge.settings.defaults.<key>` | — | Giá trị mặc định ở tầng `application.yml` |
 | `vyforge.settings.cache.near-ttl` | `5m` | Không có Valkey thì replica khác thấy giá trị mới sau tối đa chừng này |
-| `vyforge.settings.cache.stale-max` | (cần xác nhận) | Dùng snapshot cũ tối đa bao lâu khi DB/server lỗi |
+| `vyforge.settings.cache.stale-max` | `1h` | Dùng snapshot cũ tối đa bao lâu khi DB/server lỗi |
 | `vyforge.settings.admin.operator-tenant` | `default` | Tầng PLATFORM chỉ ghi từ tenant này |
 | `vyforge.settings.approval.enabled` | `true` | `false` tắt hẳn duyệt 4 mắt |
 | `vyforge.settings.approval.keys` | — | Mẫu khoá cần duyệt (`*` ở cuối) |
