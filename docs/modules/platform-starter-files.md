@@ -116,8 +116,8 @@ DownloadLink link = files.downloadLink(stored.id(), DownloadOptions.ATTACHMENT);
 
 ## 7. Chế độ triển khai, quyền, sự kiện
 
-- **embedded** hoặc trong **`platform-services`** (`deployment: services`). Chế độ `remote` cho app khác (cần xác nhận:
-  không thấy auto-config remote trên `origin/main`).
+- **embedded** hoặc trong **`platform-services`** (`deployment: services`, chỉ để báo ở `/admin/info`). Chưa có client
+  `remote` trên `origin/main`: app khác dùng REST của server qua `@vyforge/files`.
 - **Quyền IAM** (`FilesActions`): `files:file:Upload|List|Get|Download|Update|Delete|Purge|PutLegalHold`,
   `files:share:Create|List|Revoke`, `files:attachment:Manage`, `files:settings:Get|Update`, `files:storage:Manage`,
   `files:task:Manage`, `files:subject:Get`. Thuộc tính tài nguyên: `resource.bucket`, `resource.ownerSub`,
