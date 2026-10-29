@@ -45,7 +45,7 @@ README là ví dụ).
   `/api/auth/*`. Đăng xuất ở shell làm zone mất phiên. Chuyển module là tải lại trang.
 - Hai chế độ: `operator` (tenant vận hành + role vận hành + MFA) và `tenant`; menu/trang có `audience`.
 - Mỗi trang và Server Action của zone gọi `requireModuleAccess(manifest, path)` / `requireOperator` /
-  `requireMfa` trước (B13) — chỉ chặn sớm, backend vẫn kiểm từng thao tác.
+  `requireStepUp` trước (B13) — chỉ chặn sớm, backend vẫn kiểm từng thao tác.
 
 ## 4. Cách dùng nhanh — chạy local và tạo zone mới
 

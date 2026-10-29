@@ -31,7 +31,7 @@ Thiết kế: `docs/design/platform-services.md` §4–5.
 - **Phiên** (`createAdminAuth` ở `/server`): Better Auth cùng `baseURL` (URL shell), cùng secret, cùng OIDC client — zone
   đọc cookie của shell, không mount `/api/auth/*`; `getSession`, `requireUser`, `getAccessToken`, `hasRole`, `loginUrl`.
 - **Kiểm quyền** (`createAdminAccess`): `requireModuleAccess(manifest, path)` (chế độ trong `audiences` + thoả
-  `minPermission`), `requireOperator`, `requireMfa` (thao tác tiền/secret), `can` gom theo request
+  `minPermission`), `requireOperator`, `requireStepUp` (thao tác tiền/secret), `can` gom theo request
   (`/iam/me/evaluate`); thiếu quyền mặc định `notFound()`.
 - **Cấu hình zone** (`createAdminZone` ở `/config`): `basePath: /m/<module>`, output standalone, header bảo mật,
   `deploymentId`, `serverActions.allowedOrigins`.
