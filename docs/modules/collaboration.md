@@ -75,11 +75,11 @@ Frontend: `<Chatter subject={{ type: 'crm:order', id }} … />` từ `@vyforge/c
 | `vyforge.collaboration.web.base-path` | `/api/v1/collaboration` | Gốc REST |
 | `vyforge.collaboration.max-body-chars` / `max-mentions` / `max-group-expansion` | 20.000 / 50 / 200 | |
 | `vyforge.collaboration.time-zone` | `Asia/Ho_Chi_Minh` | |
-| `vyforge.collaboration.moderation.authority-normal|urgent|critical` | 24h / 6h / 3h | SLA yêu cầu gỡ |
+| `vyforge.collaboration.moderation.authority-normal\|urgent\|critical` | 24h / 6h / 3h | SLA yêu cầu gỡ |
 | `vyforge.collaboration.moderation.user-complaint` | 48h | |
 | `vyforge.collaboration.timeline.audit.enabled` | (cần xác nhận) | Đưa audit log vào timeline |
 | `vyforge.collaboration.ingest.enabled` / `topic` | `false` / `collaboration-activities` | Server nhận activity từ app remote |
-| `vyforge.collaboration.integrations.<notification|realtime|files|webhooks|privacy>.enabled` | `true` | Tắt từng adapter |
+| `vyforge.collaboration.integrations.<notification\|realtime\|files\|webhooks\|privacy>.enabled` | `true` | Tắt từng adapter |
 
 Tenant ghi đè qua `/admin/settings` và `/admin/subject-types/{type}/settings` (chỉ thu hẹp phần an toàn).
 

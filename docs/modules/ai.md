@@ -106,7 +106,7 @@ Frontend: route handler `createAiChatRoute()` + `useAiChat({ endpoint, useCase }
 | `vyforge.ai.budget.flush-interval` / `counter-store` | `10s` / tự chọn | `jdbc` để tắt Valkey |
 | `vyforge.ai.prompts.eval-gate` / `max-render-time` | — / `200ms` | Chặn lên production khi eval chưa đạt |
 | `vyforge.ai.mcp.client.enabled` / `allowed-hosts` | — | MCP client |
-| `vyforge.ai.extraction.engines.<docling|paddleocr|tesseract>.url`, `ocr-default` | — | OCR sidecar |
+| `vyforge.ai.extraction.engines.<docling\|paddleocr\|tesseract>.url`, `ocr-default` | — | OCR sidecar |
 | `vyforge.ai.schema.migrate` | `true` | Flyway riêng `flyway_schema_history_ai` |
 | `vyforge.ai.remote.url` | — | Server (thường `http://platform-services`), registration `vyforge-ai`, scope `ai.internal` |
 
@@ -120,7 +120,7 @@ người vận hành; tenant tự mang khoá khi `tenants-may-bring-keys`). Secr
 | files | KB đồng bộ bucket (`FileAvailable`, `FileTrashed`/`FilePurged`); quyền tài liệu `files:file:Download` |
 | authz | Bắt buộc cho REST quản trị và kiểm quyền tool của agent |
 | scheduling | Queue `ai` (ingest, eval, agent resume) |
-| privacy-dsr | `AiErasure` xoá theo chủ thể (`ai:subject:Get|Erase`) |
+| privacy-dsr | `AiErasure` xoá theo chủ thể (`ai:subject:Get\|Erase`) |
 | collaboration, workflow, automation | Có điểm nối trong thiết kế (`ContentClassifier`, `ApprovalRouter`, hành động AI) nhưng **chưa có adapter** trong code |
 
 ## 7. Chế độ triển khai, IAM, sự kiện

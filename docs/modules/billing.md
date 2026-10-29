@@ -83,7 +83,7 @@ Cấu hình tối thiểu: `vyforge.crypto.*` (khoá `SecretCipher`). DBA tự c
 | `vyforge.billing.defaults.dunning-policy` | `standard-vn` | |
 | `vyforge.billing.defaults.features-wait` / `max-event-age` | `6h` / `35d` | Mức dùng |
 | `vyforge.billing.defaults.einvoice-partial-payment` | `per_payment` | Xem mục 8 (mâu thuẫn với README) |
-| `vyforge.billing.bridges.<payment|features|einvoice|report|files>` | bật khi có module | `bridges.report=false` để tắt |
+| `vyforge.billing.bridges.<payment\|features\|einvoice\|report\|files>` | bật khi có module | `bridges.report=false` để tắt |
 | `vyforge.billing.schema.migrate` | `true` | |
 
 Phần lớn mặc định trên là mặc định của `BillingSettings` — tenant ghi đè qua `/settings`.
