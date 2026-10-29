@@ -127,6 +127,7 @@ Module khác (payment, billing…) chỉ cần `platform-automation-api` (option
   qua `vyforge.automation.events.externalize` nhưng chưa thấy trong code — cần xác nhận): `AutomationRulePublished`, `AutomationRuleStatusChanged`,
   `AutomationRuleSuspended`, `AutomationRunFailed`, `AutomationQuotaReached`. Event của automation không làm trigger cho
   luật khác. Thông báo `automation.rule.suspended` khi có notification.
+- **Giấy phép**: module `licensed` (`automation`, từ 0.14.0) — cần license hợp lệ của platform (module licensing).
 
 ## 8. Trạng thái & còn mở
 

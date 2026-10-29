@@ -128,6 +128,7 @@ Automation dùng workflow qua action/trigger của nó (xem `automation.md`).
   `WorkflowStarted`, `WorkflowStepEntered`, `WorkflowTaskCreated`, `WorkflowTaskCompleted`, `WorkflowReturned`,
   `WorkflowInfoRequested`, `WorkflowSlaWarning`, `WorkflowSlaBreached`, `WorkflowEscalated`, `WorkflowCompleted`,
   `WorkflowIncident`, `WorkflowDelegationChanged`. Không chứa bình luận hay dữ liệu bản ghi.
+- **Giấy phép**: module `licensed` (`workflow`, từ 0.14.0) — cần license hợp lệ của platform (module licensing).
 
 ## 8. Trạng thái & còn mở
 
