@@ -264,7 +264,9 @@ cho REST thùng rác; `-authz` không phụ thuộc `-jpa` nên không có vòng
 | `RetentionPolicyResolver` (hạn thùng rác theo entity, tenant) | Annotation `@SoftDeletable(retention)` → `vyforge.jpa.soft-delete.retention` | Module `settings` (tenant tự chọn 30/90 ngày) |
 | `BlindIndexNormalizer` | Theo kiểu: `PHONE_VN` (về `84…`), `NATIONAL_ID` (bỏ khoảng trắng), `EMAIL` (lowercase, trim), `EXACT` | App thêm kiểu (mã khách hàng cũ…) |
 | `SecretCipher` | `AesGcmSecretCipher` (platform-core) | KMS/HSM adapter sau này, cùng interface |
+| `TrashSource` (một nguồn của thùng rác: loại, liệt kê, xem, khôi phục, xoá vĩnh viễn) | `JpaTrashSource` cho entity đã đăng ký `TrashResource` | files (`files:file`), module có dữ liệu xoá mềm khác |
 | `TrashResource` (đăng ký entity hiện trong thùng rác) | Không có (opt-in) | App, module khác |
+| `TrashTypeGate` (chặn thêm theo loại trong tenant hiện tại) | Không có | platform-services: `module.<key>` |
 
 ### 3.3 Luồng: SQL nền lúc khởi động
 
@@ -735,7 +737,9 @@ lúc khởi động báo lỗi khi `@Query` tham chiếu field mã hoá).
 
 ### 5.5 REST: thùng rác dùng chung (tuỳ chọn)
 
-Bật khi app có `-web` + `-authz` và đăng ký ít nhất một `TrashResource`. Base `/api/v1/trash`.
+Bật khi app có `-web` + `-authz` và có ít nhất một bean `TrashSource`; REST gom mọi nguồn của app. Base `/api/v1/trash`.
+Lỗi của mọi nguồn dùng một bộ mã: `trash.not_found` (404), `trash.restore_conflict` (409), `trash.purge_blocked` (423).
+Ngoài các đường dẫn dưới đây có `GET /{type}/{id}` trả một `TrashItem`.
 
 ```yaml
 openapi: 3.1.0
@@ -949,7 +953,9 @@ Không có event cho `LocalizedText` và mã hoá (không phải thay đổi ngh
 | `SoftDeleteListener<T>` | Bean generic theo entity; `beforeSoftDelete` (ném `SoftDeleteVetoException` để chặn), `afterSoftDelete`, `afterRestore`, `beforePurge`, `anonymize` (cho `PurgeMode.ANONYMIZE`) | Xoá mềm khách hàng thì xoá mềm luôn địa chỉ của khách |
 | `PurgeVeto` | `boolean allowPurge(PurgeCandidate c)`; mọi bean được hỏi, một bean cấm là không purge | files: bản ghi có attachment đang legal hold; kế toán: hoá đơn chưa hết hạn lưu |
 | `RetentionPolicyResolver` | `Duration retentionFor(String type, String tenantId)` | Module `settings`: tenant chọn hạn thùng rác 90 ngày |
-| `TrashResource` | `type()`, `entity()`, `title()` (`LocalizedText`), `label(entity)`, `actions()` | Đăng ký `crm:customer` để hiện trong thùng rác chung |
+| `TrashSource` | `types()`, `title(type)`, `retention(type)`, `can(type)`, `list(type, query)`, `get(type, id)`, `restore(type, id)`, `purge(type, id)`; nguồn tự kiểm quyền, mỗi loại thuộc một nguồn | files: file trong thùng rác |
+| `TrashResource` | `type()`, `entity()`, `title()` (`LocalizedText`), `label(entity)`, `actions()` | Đăng ký `crm:customer` vào nguồn JPA |
+| `TrashTypeGate` | `boolean allows(String type)`; loại bị chặn coi như không tồn tại | platform-services: tenant không có `module.files` |
 | `BlindIndexNormalizer` | Bean có tên, `String normalize(String)` | Chuẩn hoá mã khách hàng cũ `KH-000123` → `kh123` |
 | `LocaleChain` | Chuỗi locale cho request | Tenant ở Nhật đặt mặc định `ja, en` |
 | Hàm HQL thêm | App tự thêm `FunctionContributor` (Hibernate SPI) | Không cần sửa starter |
@@ -1114,7 +1120,8 @@ micro giây mỗi giá trị, không đáng kể so với I/O; tránh nạp hàn
 ### 8.3 Phân quyền và thùng rác
 
 - Xem và khôi phục là hai quyền khác nhau; xoá vĩnh viễn là quyền thứ ba, mặc định chỉ cho tenant admin.
-- Thùng rác chỉ hiện loại đã đăng ký `TrashResource` (opt-in): không có REST tổng quát đọc mọi entity.
+- Thùng rác chỉ hiện loại của `TrashSource` đã khai báo (opt-in, entity qua `TrashResource`): không có REST tổng quát đọc
+  mọi entity.
 - Người vận hành xem thùng rác của tenant khác qua cơ chế "tenant đang xem" của platform-services (mục 5.6 của tài liệu đó),
   không có quyền xuyên tenant ngầm.
 
@@ -1206,7 +1213,7 @@ mục 6 của module-conventions áp cho **thùng rác dùng chung**:
 
 | Phần | Nội dung | Cài/bỏ riêng |
 |---|---|---|
-| Backend | Trong `platform-starter-jpa` (package `softdelete`, `trash.web`). Chạy trong app nhúng; **không** chạy trong `platform-services` vì dữ liệu là của app (giống export, D10 của platform-services) | REST chỉ bật khi có `-web` + `-authz` và có `TrashResource`; tắt bằng `vyforge.jpa.trash.api.enabled=false` |
+| Backend | Trong `platform-starter-jpa` (package `softdelete`, `trash`, `trash.web`): SPI `TrashSource` nhiều nguồn, REST gom mọi nguồn của app. Chạy ở nơi giữ dữ liệu: app nghiệp vụ dùng nguồn JPA (`TrashResource`); `platform-services` dùng nguồn files (`FilesTrashSource`, `vyforge.files.trash.source=true`) vì file là dữ liệu của chính server. Entity của app không đi qua `platform-services` | REST chỉ bật khi có `-web` + `-authz` và ít nhất một `TrashSource`; tắt bằng `vyforge.jpa.trash.api.enabled=false` |
 | Package `@vyforge/trash` | Client server-only, hook, component `/admin` | App nghiệp vụ có thể nhúng `<TrashTable>` vào trang `/admin` của mình |
 | Admin MFE `trash-admin` | App Next.js trong `platform-admin/apps/trash-admin`, `basePath` `/m/trash`, ghép từ `@vyforge/trash/admin` | Deploy riêng; shell đọc qua registry |
 
@@ -1256,7 +1263,7 @@ i18n vi/en cho mọi nhãn; component dùng `@vyforge/ui` (`DataTable` của adm
 | Migration ở `META-INF/vyforge/db/<module>` + `flyway_schema_history_<module>` | SQL nền idempotent chạy **trước** Flyway của app, có version bằng `comment on schema`, không có bảng lịch sử | Migration của app cần hàm trước khi chạy; `StarterSchemaMigrator` chạy sau Flyway của app (mục 3.3). Vẫn có file gộp cho DBA (`META-INF/vyforge/sql/jpa-text.sql`) và cờ tắt (`vyforge.jpa.text.install=false`) |
 | Cấu hình theo tenant lưu DB, có API quản trị | Chỉ retention thùng rác theo tenant, qua SPI (module `settings` cung cấp) | Phần còn lại là hành vi của thư viện, không phải cấu hình nghiệp vụ |
 | Package `@vyforge/<module>` | `@vyforge/trash` cho phần quản trị; phần đa ngôn ngữ vào `@vyforge/i18n` và `@vyforge/ui` có sẵn | Không tạo package `@vyforge/jpa-extras` không có người dùng |
-| Backend chạy được trong `platform-services` | Không | Dữ liệu thuộc app (như export) |
+| Backend chạy được trong `platform-services` | Có, chỉ với dữ liệu của server (nguồn files), không với dữ liệu của app | Module của server không có entity `@SoftDeletable`; thùng rác là SPI `TrashSource` nhiều nguồn, dữ liệu của app vẫn ở app (như export) |
 
 ### 11.2 Quyết định đã tự chốt (không hỏi lại, ghi để phiên điều phối review)
 
@@ -1268,7 +1275,8 @@ i18n vi/en cho mọi nhãn; component dùng `@vyforge/ui` (`DataTable` của adm
    search) và `vyforge_unaccent` (ai).
 4. **`purpose` bắt buộc** trong `@Encrypted`; AAD không gắn id dòng (giới hạn ghi ở mục 8.2).
 5. **Blind index 128 bit**, khoá riêng; không có mã hoá deterministic.
-6. **Thùng rác là opt-in** theo `TrashResource`; REST trong `-jpa` với phụ thuộc optional `-web`/`-authz`.
+6. **Thùng rác là opt-in** theo `TrashSource` (entity qua `TrashResource`); REST trong `-jpa` với phụ thuộc optional
+   `-web`/`-authz`.
 7. Job purge và xoay khoá đặt ở `-scheduling` (tránh vòng phụ thuộc).
 8. **`VietnameseText` và `EntityRef` vào `platform-core`** (trả lời Q2, Q6 của collaboration và Q5 của master-data):
    có ngay ở 0.13, không chờ 0.14. Tên `SubjectRef` của collaboration bỏ, dùng `EntityRef`; workflow giữ `SubjectRef` nhưng
