@@ -13,8 +13,8 @@ bằng `SERVICES_MODULES`, giao với giấy phép; mỗi tenant chỉ thấy mo
 | Loại | Tên | Ghi chú |
 |---|---|---|
 | App Java | `com.vyforge.platform:platform-services` (module trong repo platform-java) | platform-java 0.16.1; `Dockerfile` build từ gốc repo, `compose.yaml` (postgres, valkey, kafka) cho dev |
-| Starter nhúng | notification, files, webhooks, features, payment, realtime, ai, api-access, calendar, cms-content, collaboration, ekyc, forms, master-data, organization, privacy (privacy-dsr), search, sequence, settings, tenant-lifecycle, workflow | luôn bật: ops, licensing; nền: web, security, jpa, authz, audit, scheduling, messaging, ratelimit, privacy, observability |
-| **Không** có trong server | export, custom-fields, webhooks-inbound (chỉ nhúng vào app — D10); automation, billing, einvoice, esign (chưa có trong `pom.xml` và danh mục — cần xác nhận kế hoạch) | |
+| Starter nhúng | notification, files, webhooks, features, payment, realtime, ai, api-access, automation, billing, calendar, cms-content, collaboration, custom-fields, einvoice, ekyc, esign, export, forms, master-data, organization, privacy (privacy-dsr), search, sequence, settings, tenant-lifecycle, workflow | luôn bật: ops, licensing; nền: web, security, jpa, authz, audit, scheduling, messaging, ratelimit, privacy, observability |
+| **Không** có trong server | webhooks-inbound (chỉ nhúng vào app). export vẫn nhúng vào app cho định nghĩa xuất, nhập của app; trong server chạy job, lịch, báo cáo, khu quản trị (D10 sửa 03/11/2026) | |
 | Frontend | platform-admin (shell + zone `/m/<module>`) | xem `platform-admin.md` |
 
 ## 3. Tính năng chính

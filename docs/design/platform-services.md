@@ -52,7 +52,7 @@
 | D7 | **Backend: một artifact cho mỗi module, ba cách chạy.** (a) nhúng starter vào app; (b) gộp trong `platform-services`, là một app Spring Boot modular monolith chứa mọi starter P1, bật từng module bằng cấu hình; (c) chạy riêng: vẫn image `platform-services`, chỉ bật một module | Một image thay cho bảy image. "Server riêng" chỉ khác cấu hình, nên không có thêm đơn vị phải release (nguyên tắc 3) |
 | D8 | **App gọi module ở xa bằng chế độ `remote` của chính starter** (`vyforge.<module>.mode: embedded \| remote`), giống `vyforge.authz.mode`. Gọi thay người dùng thì đổi token (RFC 8693); việc của hệ thống thì dùng client credentials; việc gửi đi không cần chờ kết quả thì đi qua Kafka | Code nghiệp vụ dùng cùng interface Java ở cả hai chế độ, đổi chế độ không phải sửa code |
 | D9 | `platform-services` đặt trong **monorepo `platform-java`** (module `platform-services`, như `platform-iam-server`). Các app MFE đặt trong **repo `platform-admin`**, chuyển repo này thành pnpm workspace (`apps/shell`, `apps/<module>-admin`) | Nguyên tắc 2–3: không thêm repo. Image riêng thì app riêng, nhưng vẫn chung một repo |
-| D10 | `export` **luôn nhúng** vào app (nguồn dữ liệu là của app). Các module khác nhúng hoặc chạy ở server đều được. Khi có từ hai app trở lên thì khuyến nghị chạy ở server: realtime (hub), payment (IPN, merchant), webhooks (dispatcher), notification (provider, inbox) | Mục 3.4 |
+| D10 | `export` nhúng vào app cho loại xuất, nhập, báo cáo của app (nguồn dữ liệu là repository của app), **và** chạy được trong `platform-services` theo `SERVICES_MODULES` (job, lịch, mẫu báo cáo, khu quản trị `/m/export` của server); `vyforge.export.api.mode` = `embedded`/`services` trả ở `/export/admin/info` (sửa 03/11/2026, forge-153, mục 10.5). Các module khác nhúng hoặc chạy ở server đều được. Khi có từ hai app trở lên thì khuyến nghị chạy ở server: realtime (hub), payment (IPN, merchant), webhooks (dispatcher), notification (provider, inbox) | Mục 3.4 |
 
 ---
 
@@ -138,7 +138,7 @@ prefetch giữa zone của `@vercel/microfrontends`. Không dùng phương án n
 
 | Cách | Mô tả | Khi nào |
 |---|---|---|
-| **Nhúng** (`embedded`, mặc định) | App thêm `platform-starter-<module>`. Bảng nằm trong database của app, API nằm dưới prefix của app | Một app dùng module, hoặc module cần chung transaction với dữ liệu của app (export luôn ở đây) |
+| **Nhúng** (`embedded`, mặc định) | App thêm `platform-starter-<module>`. Bảng nằm trong database của app, API nằm dưới prefix của app | Một app dùng module, hoặc module cần chung transaction với dữ liệu của app (định nghĩa xuất, nhập của app) |
 | **Gộp trong `platform-services`** | Một app Spring Boot chứa mọi starter P1, bật module bằng cấu hình. App nghiệp vụ đặt starter ở `mode: remote` | Từ hai app trở lên dùng chung module; khách mua bộ service dùng chung |
 | **Chạy riêng** | Cùng image `platform-services`, một deployment chỉ bật một module (hoặc một nhóm), database riêng nếu cần | Module cần scale, cách ly mạng hay lưu trữ khác phần còn lại (K9, K10) |
 
@@ -214,7 +214,7 @@ flowchart LR
 |---|---|---|---|---|
 | notification | Có | Có | Server khi ≥ 2 app | Một bộ provider, template, inbox, suppression cho cả hệ thống. App gửi qua Kafka `notification-requests` (thiết kế đã có) |
 | files | Có | Có | Server khi ≥ 2 app | Một kho file, quota, quét virus. Byte đi thẳng trình duyệt ↔ storage, server chỉ ký. Hạn chế ở chế độ remote: `AttachmentAccessPolicy` theo bản ghi cha của app chưa gọi ngược được; bản đầu chỉ dùng điều kiện IAM (`resource.entityType`, `resource.ownerSub`) |
-| export | **Chỉ nhúng** | Không | — | Nguồn xuất và đích nhập là repository của app, cần chung transaction và quyền (thiết kế export §3.1). Kho file kết quả dùng files (nhúng hoặc remote) |
+| export | Có | Có (`SERVICES_MODULES=export`) | Nhúng cho định nghĩa của app; server cho job, lịch, báo cáo dùng chung | Nguồn xuất và đích nhập là repository của app, cần chung transaction và quyền (thiết kế export §3.1), nên định nghĩa xuất, nhập nằm ở app nhúng export. Trong server, export không có định nghĩa của app; chạy job, lịch, mẫu báo cáo và khu quản trị `/m/export`, API ở `/api/v1/export/admin/**`, `/data-jobs`, `/exports`, `/export-schedules`, `/imports`, `/reports`. Không có chế độ `remote`. Kho file kết quả: `vyforge.export.store` (`EXPORT_STORE_ROOT` ở server) |
 | webhooks (gửi ra) | Có | Có | Server khi ≥ 2 app hoặc cần cách ly egress | Dispatcher, lease theo endpoint, egress policy ở một chỗ. App publish qua outbox của mình ra Kafka `webhooks-messages`, giữ được tính nguyên tử với transaction nghiệp vụ |
 | webhooks-inbound | **Chỉ nhúng** | — | — | Thư viện kiểm chữ ký, không có trạng thái |
 | features | Có | Có | Server khi ≥ 2 app | Một danh mục gói và subscription cho cả hệ thống. Flag ở app: provider `remote` (snapshot `flagd/flags.json`). Entitlement ở app: `RemoteEntitlements` (mục 3.5) |
@@ -593,7 +593,8 @@ Module **không** làm: đăng nhập, khung giao diện, CSP, cấu hình zone,
 | `/api/v1/features/**` | `platform-services` | — | OFREP 300/phút/người (chống dò flag) |
 | `/api/v1/payments/**` | `platform-services-payment` (hoặc `platform-services`) | `/notify/**`, `/return/**`, `/intents/*/status` | `/notify/**` 1.200/phút/IP (cổng gửi dồn); `/status` 60/phút/IP |
 | `/api/v1/realtime/**` | `platform-services-realtime` (hoặc `platform-services`) | `/stream` và `/ws` chỉ khi có `ticket` (module tự kiểm vé) | `GET /stream` rule riêng 10/phút/người, không tính vào bucket chung (thiết kế realtime §3.6) |
-| `/api/v1/<app>/exports/**`… | App nghiệp vụ (export nhúng) | — | Chung |
+| `/api/v1/export/**`, `/data-jobs/**`, `/exports/**`, `/export-schedules/**`, `/imports/**`, `/reports/**` | `platform-services` (biến `EXPORT_URL`; app nhúng export thì trỏ về app) | — | Chung |
+| `/api/v1/<app>/exports/**`… | App nghiệp vụ (export nhúng, `base-path` riêng) | — | Chung |
 | `/api/v*/*/internal/**` | — | — | Chặn, trả 404 |
 
 Gateway không kiểm quyền (ADR-0010); quyền nằm ở `Authz` của từng module. Việc của gateway gồm: thêm route theo bảng,
@@ -800,10 +801,11 @@ Quy ước cho mọi bảng dưới đây:
 | Việc nền queue `files` (scan, transform, purge) | O+T | `files:task:Manage` | `TaskQueueTable` |
 | Storage mặc định của platform, ClamAV, imgproxy (chỉ xem tình trạng) | O | `files:storage:Manage` trên `vrn:files:storage/platform` | `PlatformStorageStatus` *(mới)* |
 
-### 6.3 export (`/m/export`, API của app nhúng export)
+### 6.3 export (`/m/export`, API của app nhúng export hoặc của `platform-services`)
 
-Export luôn nhúng trong app (mục 3.4), nên MFE gọi API của app: manifest đặt `api.base` từ biến `EXPORT_API_BASE`
-(vd. `/api/v1/crm`). Bản triển khai có nhiều app dùng export thì `EXPORT_BACKENDS` liệt kê các app, MFE có ô chọn app.
+Export nhúng trong app hoặc chạy trong `platform-services` (mục 3.4, D10). MFE gọi API theo `api.base` từ biến
+`EXPORT_API_BASE`: `/api/v1` khi export chạy ở server, tiền tố của app khi nhúng (vd. `/api/v1/crm`); `GET
+/export/admin/info` cho biết `mode` (`services` hoặc `embedded`). Bản triển khai có nhiều app dùng export thì `EXPORT_BACKENDS` liệt kê các app, MFE có ô chọn app.
 
 | Màn hình | Nhóm | Action | Component |
 |---|---|---|---|
@@ -1110,3 +1112,15 @@ yêu cầu cho L1). Thứ tự merge: admin-shell → platform-admin (shell) →
   ở giao diện; backend áp `platform-admin` theo điều kiện (b). Khi auth-server thống nhất tên role thì đổi cấu hình
   `operatorRoles`, không đổi code.
 - P2 (backend `platform-services`) và P5 (gateway) có lệnh riêng khi 7 module merge.
+
+### 10.5 Sửa D10: export chạy được trong `platform-services` (03/11/2026, forge-153)
+
+- Lý do: review 30 zone (forge-120 cập nhật 21) cho thấy zone `/m/export` của bản triển khai dùng chung không có
+  backend (`/api/v1/data-jobs` 404) khi export chỉ nhúng vào app.
+- Quyết định: export là module chọn được của `platform-services` (`SERVICES_MODULES=export`), như các module khác: bật
+  theo cấu hình và giấy phép, migration riêng `flyway_schema_history_export`, feature `module.export`/`admin.export`,
+  danh mục action `export:*` đăng ký theo module. `ServicesModule` có thêm đường API phụ (`extraApiBases`) vì export có
+  sáu đường gốc; gateway có route mặc định cho cả sáu (`EXPORT_URL`).
+- Giữ nguyên: định nghĩa xuất, nhập, nguồn báo cáo của app vẫn chỉ có khi app nhúng export (cần repository và
+  transaction của app); export không có chế độ `remote`.
+- `vyforge.export.api.mode` (`embedded` mặc định, `services` ở server) trả trong `/export/admin/info`.

@@ -1778,10 +1778,12 @@ Theo platform-services D1–D10, mục 4.11–4.12, 5.1–5.2, 6.3:
   `@vyforge/admin-shell`. App zone dựng bằng `pnpm create-admin-zone export` khi forge-37 xong; trang chỉ ghép component.
 - **Component quản trị** nằm ở `@vyforge/export/admin` (platform-web): nhận dữ liệu và Server Action qua props, nhận
   `can` để ẩn nút, không tự đọc cookie hay env. Cùng bộ component dùng cho trang `/admin` dựng sẵn trong app nghiệp vụ.
-- **Export luôn nhúng** trong app (D10): API quản trị nằm ở app, dưới tiền tố `vyforge.export.api.base-path` (mặc định
-  `/api/v1`, vd. `/api/v1/crm`). Manifest đặt `api.base` từ `EXPORT_API_BASE`; nhiều app dùng export thì
+- **Nhúng trong app hoặc chạy trong `platform-services`** (D10, sửa 03/11/2026): app nhúng export cho định nghĩa xuất,
+  nhập, báo cáo của mình; API quản trị nằm dưới tiền tố `vyforge.export.api.base-path` (mặc định `/api/v1`, vd.
+  `/api/v1/crm`). `platform-services` bật export bằng `SERVICES_MODULES=export` (job, lịch, mẫu báo cáo, khu quản trị
+  của server, API dưới `/api/v1`). Manifest đặt `api.base` từ `EXPORT_API_BASE`; nhiều app dùng export thì
   `EXPORT_BACKENDS` liệt kê các app.
-- **`GET <base>/export/admin/info`** (đã làm): `{ module: "export", version, apiVersion: 1, capabilities, mode: "embedded" }`;
+- **`GET <base>/export/admin/info`** (đã làm): `{ module: "export", version, apiVersion: 1, capabilities, mode }` (`mode` = `vyforge.export.api.mode`: `embedded` hoặc `services`);
   `capabilities` gồm `format.*`, `import.*`, `engine.*`, `sign.*`, `store.*`, `schedules`, để MFE ẩn màn hình không dùng
   được (vd. không có `sign.pkcs12` thì ẩn hồ sơ ký).
 - API quản trị: `<base>/export/admin/**` (`info`, `definitions`, `config`, `templates/...`), tắt bằng
